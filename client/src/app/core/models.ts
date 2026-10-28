@@ -289,11 +289,74 @@ export interface Dashboard {
 
 // ================= ЗАКАЗЫ МАГАЗИНОВ (Google Таблица) =================
 
-/** Витрина-магазин 103..110. */
+/** Точка продаж (витрина-магазин). id = номер точки (103..110 и далее). */
 export interface Store {
   id: number;
   code: string;
   name: string;
+  active?: boolean;
+  position?: number;
+  address?: string;
+  phone?: string;
+  email?: string;
+  contactPerson?: string;
+  openingHours?: string;
+  note?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+/** Разрез тренда: один лист-дата доставки с итогом по точке. */
+export interface PointTrendPoint {
+  tabDate: string;
+  positions: number;
+  totalCost: number | null;
+}
+
+/** Одна позиция заказа за день-лист (для подсказки на графике). */
+export interface PointDayLine {
+  /** техкарта (товар); для строк без карточки — отрицательный номер строки заказа */
+  id: number;
+  name: string;
+  category: string | null;
+  /** печатное количество (в единице unit) */
+  qty: number;
+  unit: string;
+  sum: number | null;
+}
+
+/** Заказ точки за конкретную дату-лист. */
+export interface PointDayOrder {
+  date: string;
+  positions: number;
+  lines: PointDayLine[];
+  totalCost: number | null;
+}
+
+/** «Здоровье» точки — read-only агрегаты по зеркалу заказов. */
+export interface PointHealth {
+  lastOrderDate: string | null;
+  daysSince: number | null;
+  lastSyncAt: string | null;
+  onLatestTab: number;
+  latestTab: string | null;
+  badge: 'inactive' | 'none' | 'missed' | 'stale' | 'ok';
+}
+
+/** Карточка точки продаж для раздела «Точки продаж». */
+export interface PointCard extends Store {
+  active: boolean;
+  position: number;
+  address: string;
+  phone: string;
+  email: string;
+  contactPerson: string;
+  openingHours: string;
+  note: string;
+  createdAt: string;
+  updatedAt: string;
+  health: PointHealth;
+  trend: PointTrendPoint[];
 }
 
 /** Одна строка заказа (позиция товара в листе магазина). */
@@ -423,4 +486,18 @@ export interface OrderSyncState {
     ordersCreated: number; ordersChanged: number; ordersRemoved: number; full: boolean;
   } | null;
   tabs: OrderSyncTab[];
+}
+
+/** Вошедший пользователь CRM. */
+export interface AuthUser {
+  id: number;
+  login: string;
+  isAdmin: boolean;
+}
+
+/** Строка списка пользователей (раздел «Пользователи»). */
+export interface AuthUserRow extends AuthUser {
+  active: boolean;
+  createdAt: string;
+  lastLoginAt: string | null;
 }

@@ -186,7 +186,7 @@ export class OrderStoreComponent implements OnInit {
   picker = signal('');
   cart = signal<CartLine[]>([]);
   placing = signal(false);
-  lastViolations = signal<{ name: string; qty: number; minQty: number }[]>([]);
+  lastViolations = signal<OrderViolation[]>([]);
 
   fmtQty = fmtQty;
   fmtMoney = fmtMoney;

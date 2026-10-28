@@ -14,6 +14,9 @@ import { cardsRouter } from './routes/cards';
 import { batchesRouter } from './routes/batches';
 import { dashboardRouter } from './routes/dashboard';
 import { ordersRouter } from './routes/orders';
+import { pointsRouter } from './routes/points';
+import { authRouter } from './routes/auth';
+import { requireAuth } from './services/auth';
 
 export function createApp(): express.Express {
   const app = express();
@@ -23,6 +26,10 @@ export function createApp(): express.Express {
   app.use(express.json({ limit: '1mb' }));
 
   app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'mixmarkt-crm' }));
+  // вход/выход и управление пользователями — свои проверки внутри роутера
+  app.use('/api/auth', authRouter);
+  // всё остальное API — только с действующей сессией
+  app.use('/api', requireAuth);
   app.use('/api/meta', metaRouter);
   app.use('/api/products', productsRouter);
   app.use('/api/stock', stockRouter);
@@ -33,6 +40,7 @@ export function createApp(): express.Express {
   app.use('/api/batches', batchesRouter);
   app.use('/api/dashboard', dashboardRouter);
   app.use('/api/orders', ordersRouter);
+  app.use('/api/points', pointsRouter);
 
   app.use('/api', (_req, res) => res.status(404).json({ error: 'Не найдено' }));
 

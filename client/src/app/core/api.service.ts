@@ -126,4 +126,26 @@ export class ApiService {
       params: full ? new HttpParams().set('full', '1') : new HttpParams(),
     });
   }
+
+  // ---- точки продаж (управление магазинами + карточки) ----
+  points$(): Observable<M.PointCard[]> { return this.http.get<M.PointCard[]>(`${this.base}/points`); }
+  point$(id: number): Observable<M.PointCard> { return this.http.get<M.PointCard>(`${this.base}/points/${id}`); }
+  pointVolume$(id: number, months: number): Observable<M.PointTrendPoint[]> {
+    return this.http.get<M.PointTrendPoint[]>(`${this.base}/points/${id}/volume`, {
+      params: new HttpParams().set('months', String(months)),
+    });
+  }
+  pointDay$(id: number, date: string): Observable<M.PointDayOrder> {
+    return this.http.get<M.PointDayOrder>(`${this.base}/points/${id}/day/${date}`);
+  }
+  createPoint(body: unknown): Observable<{ id: number }> { return this.http.post<{ id: number }>(`${this.base}/points`, body); }
+  patchPoint(id: number, body: unknown): Observable<{ ok: boolean }> {
+    return this.http.patch<{ ok: boolean }>(`${this.base}/points/${id}`, body);
+  }
+  deactivatePoint(id: number): Observable<{ ok: boolean }> {
+    return this.http.post<{ ok: boolean }>(`${this.base}/points/${id}/deactivate`, {});
+  }
+  deletePoint(id: number): Observable<{ ok: boolean }> {
+    return this.http.delete<{ ok: boolean }>(`${this.base}/points/${id}`);
+  }
 }

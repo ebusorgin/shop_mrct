@@ -15,7 +15,7 @@ import { Router } from 'express';
 import { pool, tx } from '../db';
 import { ApiError, reqArr, reqNum, wrap } from '../http';
 import { runOrderSync, lastSyncSummary, SyncSummary } from '../services/order-sync';
-import { toBase } from '../services/order-match';
+import { toBase, printedQty } from '../services/order-match';
 
 export const ordersRouter = Router();
 
@@ -24,7 +24,7 @@ const ORDER_SELECT = `
          coalesce(tc.name, o.source_name) as name, o.source_name as "sourceName",
          o.plu, oc.name as category, o.min_qty::float8 as "minQty",
          o.quantity::float8 as qty, o.unit_code as "unitCode",
-         u.code as "cardUnit",
+         u.code as "cardUnit", coalesce(tc.portion_qty::float8, 0) as "portionQty",
          o.ek_price::float8 as ek, o.vk_price::float8 as vk,
          o.date_tab::text as "dateTab", o.status, o.source, o.note,
          o.created_at as "createdAt", o.updated_at as "updatedAt"
@@ -47,6 +47,7 @@ interface OrderItem {
   qty: number;
   unitCode: string | null;
   cardUnit: string | null;
+  portionQty: number;
   ek: number | null;
   vk: number | null;
   dateTab: string;
@@ -172,14 +173,6 @@ ordersRouter.get(
     });
   })
 );
-
-/** «Печатное» количество (кг/шт): qty хранится в базовой единице карточки, unit_code — как в источнике. */
-function printedQty(it: OrderItem): number {
-  const mult = (u: string | null): number => (u === 'кг' ? 1000 : u === 'л' ? 1000 : 1);
-  const base = it.cardUnit ?? it.unitCode ?? 'г';
-  const shown = it.unitCode ?? base;
-  return it.qty * mult(base) / mult(shown);
-}
 
 /**
  * Оформление заказа магазином: позиции из каталога (cardId) или внешним именем.

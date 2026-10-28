@@ -130,3 +130,29 @@ export function toBase(qty: number, printedUnit: string, baseUnitCode: string, p
   if (baseUnitCode === 'мл') return qty * (vol[printedUnit] ?? 1);
   return qty;
 }
+
+/** Минимальный набор полей, нужный для обратного пересчёта (OrderItem удовлетворяет структурно). */
+export interface PrintedQtyInput {
+  qty: number;
+  unitCode: string | null;
+  cardUnit: string | null;
+  portionQty: number;
+}
+
+/**
+ * Обратное к toBase: «печатное» количество источника из базового (г/мл/шт).
+ * Нужно для стоимости: VK в таблице задаётся за печатную единицу (за кг / за порцию).
+ * Общая для сводки заказов и агрегатов раздела «Точки продаж».
+ */
+export function printedQty(it: PrintedQtyInput): number {
+  const base = it.cardUnit ?? it.unitCode ?? 'г';
+  const shown = it.unitCode ?? base;
+  if (COUNT_UNITS.has(shown)) {
+    if (base === 'шт' || it.portionQty <= 0) return it.qty;
+    return it.qty / it.portionQty; // порц: г -> кол-во порций
+  }
+  const massVol: Record<string, number> = { г: 1, кг: 1000, мл: 1, л: 1000 };
+  if (base === 'шт') return it.qty;
+  const f = massVol[shown];
+  return f ? it.qty / f : it.qty;
+}

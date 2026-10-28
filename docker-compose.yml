@@ -1,0 +1,22 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: mixmarkt-crm-db
+    environment:
+      POSTGRES_DB: mixmarkt_crm
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    # БД переживает рестарт Docker Desktop и перезагрузку машины без внешних скриптов
+    restart: unless-stopped
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d mixmarkt_crm"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:

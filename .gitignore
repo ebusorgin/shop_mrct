@@ -1,0 +1,30 @@
+node_modules/
+dist/
+.angular/
+out-tsc/
+.env
+.env.local
+*.log
+.npm-client.log
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+db/
+
+server/uploads/
+
+# временные/экспериментальные скрипты и артефакты
+server/tmp-import-test/
+server/tmp-*
+client/tmp-*
+
+# исходные фото накладных и рабочие таблицы (не для репозитория)
+/SHOP/
+*.xlsx
+*.xls
+*.csv
+*.pdf
+*.jpg
+*.jpeg
+*.png

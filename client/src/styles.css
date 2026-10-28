@@ -1,0 +1,222 @@
+/* ============ MIX markt CRM — глобальные стили ============ */
+:root {
+  --bg: #f4f6f9;
+  --panel: #ffffff;
+  --border: #dfe4ec;
+  --text: #1d2433;
+  --muted: #6b7488;
+  --accent: #1668dc;
+  --accent-soft: #e8f0fe;
+  --green: #1a8a4a;
+  --green-soft: #e5f6ec;
+  --red: #c62f2f;
+  --red-soft: #fdeaea;
+  --amber: #9a6b00;
+  --amber-soft: #fdf3d7;
+  --radius: 10px;
+  --shadow: 0 1px 3px rgba(20, 30, 55, 0.08);
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; height: 100%; }
+body {
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+}
+
+/* ---------- каркас ---------- */
+.shell { display: flex; min-height: 100vh; }
+.sidebar {
+  width: 230px; flex-shrink: 0; background: #10233f; color: #cfd9ea;
+  display: flex; flex-direction: column; padding: 16px 10px; gap: 2px;
+  position: sticky; top: 0; height: 100vh;
+}
+.sidebar .logo { font-size: 17px; font-weight: 700; color: #fff; padding: 6px 12px 16px; }
+.sidebar .logo small { display: block; font-size: 11px; font-weight: 400; color: #8fa1bd; margin-top: 2px; }
+.sidebar a {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 8px;
+  color: #cfd9ea; text-decoration: none; font-size: 14px;
+}
+.sidebar a:hover { background: #1b3357; color: #fff; }
+.sidebar a.active { background: var(--accent); color: #fff; font-weight: 600; }
+.main { flex: 1; padding: 22px 26px; min-width: 0; }
+.page-title { font-size: 21px; font-weight: 700; margin: 0 0 16px; }
+
+/* ---------- панели ---------- */
+.panel {
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 16px; margin-bottom: 16px;
+}
+.panel h3 { margin: 0 0 12px; font-size: 15px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.grid2 > * { min-width: 0; } /* grid-треки по умолчанию min-width:auto — широкий ребёнок (SVG/таблица) ломал раскладку */
+.grid2.wl { grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr); } /* wide-left: журнал слева шире формы */
+.row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+.spacer { flex: 1; }
+
+/* ---------- KPI ---------- */
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.kpi { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); }
+.kpi .v { font-size: 22px; font-weight: 700; }
+.kpi .l { color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+/* ---------- таблицы ---------- */
+table.tbl { width: 100%; border-collapse: collapse; }
+.tbl th {
+  text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .4px;
+  color: var(--muted); padding: 8px 10px; border-bottom: 2px solid var(--border);
+}
+.tbl td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.tbl tr:hover td { background: #f8fafd; }
+.tbl .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; } /* «12 879,55 ₽» не рвём */
+.tbl .nw { white-space: nowrap; } /* даты, «125 кг» и прочее, что нельзя рвать на две строки */
+.tbl .empty td { text-align: center; color: var(--muted); padding: 24px; }
+
+/* ---------- формы ---------- */
+label.f { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+input, select, textarea {
+  font: inherit; color: var(--text); background: #fff;
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; outline: none;
+}
+input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+input[type='number']::-webkit-inner-spin-button { opacity: 1; }
+
+/* ---------- кнопки ---------- */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none;
+  border: 1px solid var(--border); background: #fff; color: var(--text);
+  border-radius: 8px; padding: 8px 14px; font: inherit; font-weight: 600;
+}
+.btn:hover { background: #f2f5fa; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover { background: #0f5ac0; }
+.btn.danger { color: var(--red); border-color: var(--red); background: #fff; }
+.btn.danger:hover { background: var(--red-soft); }
+.btn.sm { padding: 4px 9px; font-size: 12px; border-radius: 6px; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+
+/* ---------- бейджи ---------- */
+.badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+.badge.green { background: var(--green-soft); color: var(--green); }
+.badge.red { background: var(--red-soft); color: var(--red); }
+.badge.amber { background: var(--amber-soft); color: var(--amber); }
+.badge.blue { background: var(--accent-soft); color: var(--accent); }
+.badge.gray { background: #eef1f5; color: var(--muted); }
+
+.muted { color: var(--muted); }
+.mono { font-variant-numeric: tabular-nums; }
+.err { background: var(--red-soft); color: var(--red); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
+.ok-msg { background: var(--green-soft); color: var(--green); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
+.tabs { display: flex; gap: 6px; margin-bottom: 14px; }
+.tabs button {
+  border: 1px solid var(--border); background: #fff; border-radius: 999px; padding: 7px 16px;
+  font: inherit; font-weight: 600; cursor: pointer; color: var(--muted);
+}
+.tabs button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* ---------- блок-схема техкарты ---------- */
+.diagram-wrap {
+  overflow: auto; max-height: 70vh; background: #fbfcfe;
+  border: 1px dashed var(--border); border-radius: var(--radius); padding: 8px;
+}
+.diagram { display: block; } /* без этого у <svg> baseline-щель и лишняя высота */
+.diagram text { font-family: 'Segoe UI', sans-serif; }
+.d-node-raw { fill: #eaf3ff; stroke: #1668dc; }
+.d-node-semi { fill: #fdf3d7; stroke: #b8860b; }
+.d-node-card { fill: #e5f6ec; stroke: #1a8a4a; }
+.d-edge { stroke: #93a3bc; stroke-width: 1.5; fill: none; marker-end: url(#arrow); }
+.d-elabel { fill: var(--muted); font-size: 10px; }
+
+/* ---------- прочее ---------- */
+.list-pick { display: flex; flex-direction: column; gap: 6px; max-height: 70vh; overflow: auto; }
+.list-pick button {
+  text-align: left; border: 1px solid var(--border); background: #fff; border-radius: 8px;
+  padding: 9px 12px; cursor: pointer; font: inherit;
+}
+.list-pick button:hover { background: #f2f5fa; }
+.list-pick button.on { border-color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+.hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
+
+/* ---------- планшет: сайдбар превращается в иконки ---------- */
+@media (max-width: 1120px) { .grid2.wl { grid-template-columns: 1fr; } }
+@media (max-width: 900px) {
+  .grid2 { grid-template-columns: 1fr; }
+  /* страницы задают пропорции колонок инлайн-стилем (style="grid-template-columns: 1.1fr .9fr"),
+     а инлайн всегда бьёт медиазапрос — без !important на телефоне две панели остаются рядом */
+  .grid2[style] { grid-template-columns: 1fr !important; }
+  .sidebar { width: 64px; }
+  .sidebar .logo, .sidebar a span { display: none; }
+}
+
+/* ---------- телефон: верхняя панель + выдвижное меню ---------- */
+.topbar {
+  display: none; position: sticky; top: 0; z-index: 60; align-items: center; gap: 10px;
+  background: #10233f; color: #fff; padding: 10px 14px;
+}
+.topbar .burger {
+  border: 1px solid #2c4a77; background: #1b3357; color: #fff; border-radius: 8px;
+  font-size: 18px; line-height: 1; padding: 7px 12px; cursor: pointer;
+}
+.topbar .tb-logo { font-weight: 700; font-size: 15px; }
+.side-close {
+  display: none; position: absolute; top: 10px; right: 10px; border: 0; background: transparent;
+  color: #cfd9ea; font-size: 18px; cursor: pointer; padding: 6px 10px;
+}
+.scrim { position: fixed; inset: 0; background: rgba(10, 18, 32, .5); z-index: 50; }
+@media (max-width: 640px) {
+  body { font-size: 15px; } /* на телефоне читаем с большего; ниже вернём плотность для форм */
+  .shell { flex-direction: column; }
+  .topbar { display: flex; order: -1; }
+  .sidebar {
+    position: fixed; inset: 0 auto 0 0; width: 250px; height: 100dvh; z-index: 55;
+    transform: translateX(-105%); transition: transform .2s ease; box-shadow: 4px 0 18px rgba(10, 18, 32, .35);
+    padding-top: 44px;
+  }
+  .sidebar.open { transform: none; }
+  .sidebar .logo, .sidebar a span { display: block; } /* снова полный текст, как на десктопе */
+  .sidebar a { font-size: 15px; padding: 12px 14px; } /* зона касания ≥44px */
+  .side-close { display: block; }
+  .main { padding: 14px 12px; }
+  .page-title { font-size: 18px; margin-bottom: 12px; }
+
+  /* таблицы: либо горизонтальный скролл плотных сеток, либо складываем в карточку (.tbl.stack) */
+  .panel:has(.tbl:not(.stack)), .panel:has(.diagram-wrap), .panel:has(.list-pick) { overflow-x: auto; }
+  .tbl th, .tbl td { padding: 7px 8px; white-space: nowrap; }
+  .tbl td { font-size: 13px; }
+
+  /* .tbl.stack — широкая таблица на телефоне становится списком: подписи колонок берутся
+     из data-l, по две ячейки в строке, первая и последняя — на всю ширину.
+     Шапка помечается .th-row: в шаблоне это просто <tr> с <th>, браузер не заворачивает его в thead */
+  .tbl.stack { display: block; width: 100%; }   /* table-layout считает ширину по max-content и вылезает за экран */
+  .tbl.stack tbody { display: block; }
+  .tbl.stack .th-row { display: none; }
+  .tbl.stack thead { display: none; }
+  .tbl.stack tr { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 2px 12px; padding: 9px 0; border-bottom: 1px solid var(--border); align-items: center; }
+  .tbl.stack tr:hover { background: #f8fafd; }
+  .tbl.stack td { display: flex; min-width: 0; justify-content: space-between; align-items: baseline; gap: 10px; padding: 2px 0; white-space: normal; overflow-wrap: anywhere; font-size: 13px; background: none; border: 0; }
+  .tbl.stack td::before { content: attr(data-l, ""); flex: 0 0 auto; white-space: nowrap; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .3px; }
+  /* длинные значения (поставщик) ставим под подпись, иначе две колонки не читаются */
+  .tbl.stack td.wide { display: block; }
+  .tbl.stack td.wide::before { display: block; margin-bottom: 1px; }
+  .tbl.stack td.num { text-align: right; }
+  .tbl.stack td:first-child, .tbl.stack td:last-child, .tbl.stack td.wide { grid-column: 1 / -1; }
+  .tbl.stack td:first-child { font-weight: 600; }
+  .tbl.stack td:first-child::before, .tbl.stack td.no-l::before { content: none; }
+
+  /* крупные элементы форм и кнопок (touch-friendly) */
+  .row { gap: 8px; }
+  .row > label.f, .row > .btn { flex: 1 1 100%; }
+  label.f { font-size: 13px; }
+  input, select, textarea { font-size: 16px; padding: 10px 12px; } /* 16px — чтобы iOS не зуммировал при фокусе */
+  .btn { padding: 10px 16px; }
+  .btn.sm { padding: 8px 12px; font-size: 13px; }
+  .tabs { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; -webkit-overflow-scrolling: touch; }
+  .tabs button { white-space: nowrap; padding: 9px 16px; }
+  .kpis { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+  .kpi { padding: 10px 12px; }
+  .kpi .v { font-size: 18px; }
+  .kpi .l { font-size: 11px; }
+  .diagram-wrap { max-height: 60vh; }
+}

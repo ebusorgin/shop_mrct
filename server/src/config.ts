@@ -18,4 +18,8 @@ export const config = {
   gsheetId: process.env.GSHEET_ORDERS_ID ?? '1tmtmBRcpDDRM5KaONo5wXo51RFcbm92nQ9GibFlHAzA',
   gsheetSyncMin: Number(process.env.GSHEET_SYNC_MIN ?? 10), // период синхронизации, мин
   gsheetRecentTabs: Number(process.env.GSHEET_RECENT_TABS ?? 10), // сколько свежих листов правим каждый цикл
+  // вход в CRM: срок сессии и первый администратор (создаётся, только пока таблица users пуста)
+  sessionDays: Number(process.env.AUTH_SESSION_DAYS ?? 7),
+  authAdminLogin: process.env.AUTH_ADMIN_LOGIN ?? 'admin',
+  authAdminPassword: process.env.AUTH_ADMIN_PASSWORD ?? '',
 };

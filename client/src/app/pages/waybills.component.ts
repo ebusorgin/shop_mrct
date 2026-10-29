@@ -1,6 +1,8 @@
-import { ChangeDetectionStrategy, Component, HostListener, OnInit, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, HostListener, OnInit, computed, effect, inject, signal, untracked } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { ActivatedRoute } from '@angular/router';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ApiService } from '../core/api.service';
 import { Product, Unit, Waybill, WaybillShort, ImportParseResult, ImportItem, ImportDiscount } from '../core/models';
 import { cents, fmtCost, fmtDateTime, fmtMoney, fmtQty, httpErr, today, trim } from '../core/format';
@@ -219,7 +221,7 @@ interface ImpDraft {
 
     <div class="grid2 wl">
       <!-- ===== список ===== -->
-      <div class="panel">
+      <div class="panel" id="journal">
         <h3>Журнал накладных</h3>
         <table class="tbl stack">
           <tr class="th-row"><th>№</th><th>Дата</th><th>Поставщик</th><th>Принял</th><th class="num">Поз.</th><th class="num">Сумма</th><th></th></tr>
@@ -303,7 +305,7 @@ interface ImpDraft {
       </div>
 
       <!-- ===== создание ===== -->
-      <div class="panel">
+      <div class="panel" id="new">
         <h3>Новая накладная (приход на склад)</h3>
         <div class="meta-grid">
           <label class="f">Номер<input [(ngModel)]="number" placeholder="напр. 1042" /></label>
@@ -345,7 +347,7 @@ interface ImpDraft {
     </div>
 
     <!-- ===== умный импорт из файла ===== -->
-    <div class="panel" style="margin-top:16px">
+    <div class="panel" id="smart" style="margin-top:16px">
       <h3>🤖 Умный приход: файл накладной → GPT → склад</h3>
       <label class="drop" [class.busy]="impBusy()">
         <input type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif,application/pdf" (change)="onImpFile($event)" />
@@ -629,6 +631,8 @@ interface ImpDraft {
 })
 export class WaybillsComponent implements OnInit {
   private api = inject(ApiService);
+  private route = inject(ActivatedRoute);
+  private destroyRef = inject(DestroyRef);
 
   /** Esc закрывает увеличенное фото, стрелки листают пакет (как в нормальных просмотрщиках). */
   @HostListener('window:keydown.escape')
@@ -646,6 +650,8 @@ export class WaybillsComponent implements OnInit {
   }
 
   list = signal<WaybillShort[]>([]);
+  /** ?panel= из быстрых действий: прокрутить к панели после загрузки журнала */
+  anchor = signal<string | null>(null);
   detail = signal<Waybill | null>(null);
   products = signal<Product[]>([]);
   units = signal<Unit[]>([]);
@@ -687,6 +693,22 @@ export class WaybillsComponent implements OnInit {
     this.reload();
     this.api.products$().subscribe((p) => this.products.set(p));
     this.api.units$().subscribe((u) => this.units.set(u));
+    // быстрые действия панели приходят как ?panel=new|smart|journal — прокручиваем к нужной панели
+    this.route.queryParams
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe((p) => {
+        const v = typeof p['panel'] === 'string' ? p['panel'] : '';
+        this.anchor.set(['new', 'smart', 'journal'].includes(v) ? v : null);
+      });
+    effect(() => {
+      const id = this.anchor();
+      if (id && this.list().length) {
+        untracked(() => {
+          this.anchor.set(null);
+          document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+      }
+    });
   }
 
   reload(): void {

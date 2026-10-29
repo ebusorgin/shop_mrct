@@ -38,6 +38,11 @@ stockRouter.get(
       where.push(`m.type = $${params.length + 1}`);
       params.push(reqStr(req.query as Record<string, unknown>, 'type'));
     }
+    // поиск по названию позиции: сюда приходят из «истории» остатков и с панели
+    if (typeof req.query.q === 'string' && req.query.q.trim()) {
+      where.push(`lower(p.name) like '%' || $${params.length + 1} || '%'`);
+      params.push(req.query.q.trim().toLowerCase());
+    }
     if (req.query.from) {
       where.push(`m.created_at >= $${params.length + 1}`);
       params.push(String(req.query.from));
@@ -46,6 +51,7 @@ stockRouter.get(
       where.push(`m.created_at < $${params.length + 1}::date + 1`);
       params.push(String(req.query.to));
     }
+    // по умолчанию 200 — панель показывает последние операции и просит ровно столько
     const limit = Math.min(Number(req.query.limit ?? 200) || 200, 1000);
     params.push(limit);
     const { rows } = await pool.query(

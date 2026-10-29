@@ -285,13 +285,26 @@ export interface BatchItem {
   cost: number;
 }
 
+/** Партия (приход) с истекающим сроком: остаток раскладывается по приходам FIFO. */
 export interface NearExpiryRow {
+  productId: number;
   name: string;
   unitCode: string;
+  /** остаток именно этой партии на складе (в базовой единице) */
   qty: number;
   receiptDate: string;
   expiryDate: string;
+  /** дней до истечения: отрицательное — уже просрочено */
+  expiryDays: number;
   status: 'expired' | 'soon';
+}
+
+/** Магазин с позициями ближайшего листа, которые ещё не приняты производством. */
+export interface PendingOrdersRow {
+  storeId: number;
+  storeName: string;
+  dateTab: string | null;
+  cnt: number;
 }
 
 export interface Dashboard {
@@ -300,6 +313,7 @@ export interface Dashboard {
   lowStock: { name: string; unitCode: string; qty: number; minStock: number }[];
   recentBatches: { id: number; cardName: string; portions: number; batchDate: string; status: string; costTotal: number }[];
   monthWaybills: { cnt: number; total: number };
+  pendingOrders: PendingOrdersRow[];
   nearExpiry: NearExpiryRow[];
 }
 

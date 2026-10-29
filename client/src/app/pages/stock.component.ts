@@ -1,18 +1,21 @@
-import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, OnInit, computed, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ApiService } from '../core/api.service';
-import { Movement, Product, StockRow, Unit } from '../core/models';
+import { Movement, NearExpiryRow, Product, StockRow, Unit } from '../core/models';
 import { fmtCost, fmtDateTime, fmtMoney, fmtQty, httpErr, trim } from '../core/format';
 import { ModalComponent } from '../shared/modal.component';
 
-type Tab = 'balances' | 'catalog' | 'journal';
+type Tab = 'balances' | 'catalog' | 'journal' | 'shelf';
 
 @Component({
   selector: 'app-stock',
   standalone: true,
-  imports: [CommonModule, FormsModule, ModalComponent],
+  imports: [CommonModule, FormsModule, ModalComponent, RouterLink],
   changeDetection: ChangeDetectionStrategy.OnPush,
+  styles: [`.red { color: var(--red); }`],
   template: `
     <h1 class="page-title">🏬 Склад</h1>
     @if (err()) { <div class="err">{{ err() }}</div> }
@@ -21,6 +24,7 @@ type Tab = 'balances' | 'catalog' | 'journal';
     <div class="tabs">
       <button [class.on]="tab() === 'balances'" (click)="go('balances')">Остатки</button>
       <button [class.on]="tab() === 'catalog'" (click)="go('catalog')">Номенклатура</button>
+      <button [class.on]="tab() === 'shelf'" (click)="go('shelf')">Сроки годности</button>
       <button [class.on]="tab() === 'journal'" (click)="go('journal')">Журнал движений</button>
     </div>
 
@@ -36,6 +40,8 @@ type Tab = 'balances' | 'catalog' | 'journal';
           <label class="f" style="flex-direction:row;align-items:center;gap:6px">
             <input type="checkbox" [(ngModel)]="onlyLow" (ngModelChange)="applyFilter()" /> только заканчивающиеся
           </label>
+          <div class="spacer"></div>
+          <a class="btn sm primary" [routerLink]="wbLink" [queryParams]="wbQp">+ Принять товар</a>
         </div>
         <hr class="hr" />
         <table class="tbl">
@@ -48,7 +54,10 @@ type Tab = 'balances' | 'catalog' | 'journal';
               <td class="num muted">{{ fmtCost(r.avgCost, r.unitCode) }}</td>
               <td class="num">{{ fmtMoney(r.qty * r.avgCost) }}</td>
               <td>@if (r.low) { <span class="badge red"> ↓ ниже минимума</span> }</td>
-              <td><button class="btn sm" (click)="startAdjust(r)">корректировать</button></td>
+              <td>
+                <button class="btn sm" (click)="startAdjust(r)">корректировать</button>
+                <button class="btn sm" (click)="showMovements(r.name)">история</button>
+              </td>
             </tr>
           } @empty { <tr class="empty"><td colspan="7">нет позиций</td></tr> }
         </table>
@@ -138,6 +147,46 @@ type Tab = 'balances' | 'catalog' | 'journal';
       }
     }
 
+    <!-- ================= СРОКИ ГОДНОСТИ (по партиям прихода) ================= -->
+    @if (tab() === 'shelf') {
+      <div class="panel">
+        <div class="row" style="align-items:center">
+          <div class="muted" style="flex:1;font-size:12px">
+            Остаток раскладывается по партиям FIFO: расход сначала «съедает» самую старую партию,
+            поэтому новая партия не продлевает срок старой. Считаем по приходам из проведённых накладных.
+          </div>
+          <button class="btn sm" [disabled]="shelfBusy()" (click)="loadShelf()">⟳ Обновить</button>
+          <a class="btn sm primary" [routerLink]="wbLink" [queryParams]="wbQp">+ Принять товар</a>
+        </div>
+        @if (shelfBusy()) { <p class="muted">Считаем партии…</p> }
+        <hr class="hr" />
+        <table class="tbl">
+          <tr><th>Продукт</th><th class="num">Остаток партии</th><th>Дата прихода</th><th>Истекает</th><th class="num">Дней</th><th>Статус</th><th></th></tr>
+          @for (r of shelf(); track r.productId + r.receiptDate) {
+            <tr>
+              <td><b>{{ r.name }}</b></td>
+              <td class="num">{{ fmtQty(r.qty, r.unitCode) }}</td>
+              <td class="nw muted">{{ r.receiptDate }}</td>
+              <td class="nw">{{ r.expiryDate }}</td>
+              <td class="num" [class.red]="r.expiryDays < 0">{{ r.expiryDays }}</td>
+              <td>
+                @if (r.status === 'expired') { <span class="badge red">просрочен</span> }
+                @else { <span class="badge amber">скоро · {{ r.expiryDays }} дн.</span> }
+              </td>
+              <td style="white-space:nowrap">
+                <button class="btn sm" (click)="showMovements(r.name)">движения партии</button>
+                <a class="btn sm" [routerLink]="wbLink" [queryParams]="wbQp">приход</a>
+              </td>
+            </tr>
+          } @empty {
+            @if (!shelfBusy()) {
+              <tr class="empty"><td colspan="7">Просроченных и близких к истечению партий нет 👍</td></tr>
+            }
+          }
+        </table>
+      </div>
+    }
+
     <!-- ================= ЖУРНАЛ ================= -->
     @if (tab() === 'journal') {
       <div class="panel">
@@ -153,6 +202,12 @@ type Tab = 'balances' | 'catalog' | 'journal';
             </select>
           </label>
         </div>
+        @if (jProduct) {
+          <div class="row" style="align-items:center;margin-top:8px">
+            <span class="badge blue">позиция: {{ jProduct }}</span>
+            <button class="btn sm" (click)="clearProductFilter()">сбросить фильтр</button>
+          </div>
+        }
         <hr class="hr" />
         <table class="tbl">
           <tr><th>Дата</th><th>Продукт</th><th>Кто</th><th>Тип</th><th class="num">Δ</th><th>Документ</th><th>Комментарий</th></tr>
@@ -178,6 +233,9 @@ type Tab = 'balances' | 'catalog' | 'journal';
 })
 export class StockComponent implements OnInit {
   private api = inject(ApiService);
+  private route = inject(ActivatedRoute);
+  private router = inject(Router);
+  private destroyRef = inject(DestroyRef);
 
   tab = signal<Tab>('balances');
   err = signal('');
@@ -190,6 +248,9 @@ export class StockComponent implements OnInit {
   categories = signal<string[]>([]);
   units = signal<Unit[]>([]);
   journal = signal<Movement[]>([]);
+  /** партии с истекающим сроком (тот же /dashboard с большим лимитом — без нового эндпоинта) */
+  shelf = signal<NearExpiryRow[]>([]);
+  shelfBusy = signal(false);
 
   search = '';
   catFilter = '';
@@ -213,6 +274,8 @@ export class StockComponent implements OnInit {
   jFrom = '';
   jTo = '';
   jType = '';
+  /** фильтр журнала по позиции: приходит из «истории» остатков и из предупреждений панели */
+  jProduct = '';
 
   fmtQty = fmtQty;
   fmtMoney = fmtMoney;
@@ -228,6 +291,21 @@ export class StockComponent implements OnInit {
     this.api.units$().subscribe((u) => this.units.set(u));
     this.api.categories$().subscribe((c) => this.categories.set(c));
     this.loadAll();
+    // переходы с панели и из меню приходят как query-параметры: вкладка, «только дефицит», тип/позиция журнала
+    this.route.queryParams.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((p) => {
+      const t = String(p['tab'] ?? '');
+      if (t === 'balances' || t === 'catalog' || t === 'journal' || t === 'shelf') {
+        this.tab.set(t as Tab);
+        this.err.set('');
+        this.msg.set('');
+      }
+      this.onlyLow = p['low'] === '1';
+      if (typeof p['type'] === 'string') this.jType = p['type'];
+      this.jProduct = typeof p['product'] === 'string' ? p['product'] : '';
+      if (this.tab() === 'journal') this.loadJournal();
+      if (this.tab() === 'shelf' && !this.shelf().length) this.loadShelf();
+      this.applyFilter();
+    });
   }
 
   loadAll(): void {
@@ -246,6 +324,29 @@ export class StockComponent implements OnInit {
     this.msg.set('');
     this.err.set('');
     if (t === 'journal' && this.journal().length === 0) this.loadJournal();
+    if (t === 'shelf' && this.shelf().length === 0) this.loadShelf();
+  }
+
+  /** ссылка на приход с уже открытой формой накладной (используется в шаблоне многократно) */
+  wbLink = ['/waybills'];
+  wbQp = { panel: 'new' };
+
+  /** Строки партий с истекающим сроком — из показателей панели (expiryLimit больше). */
+  loadShelf(): void {
+    this.shelfBusy.set(true);
+    this.api.dashboard$({ expiryLimit: '200' }).subscribe({
+      next: (v) => { this.shelfBusy.set(false); this.shelf.set(v.nearExpiry); },
+      error: (e) => { this.shelfBusy.set(false); this.err.set(httpErr(e)); },
+    });
+  }
+
+  /** История движений конкретной позиции (из «Остатков» или из предупреждения). */
+  showMovements(name: string): void {
+    void this.router.navigate(['/stock'], { queryParams: { tab: 'journal', product: name } });
+  }
+
+  clearProductFilter(): void {
+    void this.router.navigate(['/stock'], { queryParams: { tab: 'journal' } });
   }
 
   applyFilter(): void {
@@ -389,6 +490,7 @@ ${warn}`)) return;
     if (this.jFrom) params['from'] = this.jFrom;
     if (this.jTo) params['to'] = this.jTo;
     if (this.jType) params['type'] = this.jType;
+    if (this.jProduct) params['q'] = this.jProduct;
     this.api.movements$(params).subscribe({
       next: (v) => this.journal.set(v),
       error: (e) => this.err.set(httpErr(e)),

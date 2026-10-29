@@ -94,7 +94,12 @@ export class ApiService {
   }
 
   // ---- dashboard ----
-  dashboard$(): Observable<M.Dashboard> { return this.http.get<M.Dashboard>(`${this.base}/dashboard`); }
+  /** Панель и список сроков годности (expiryLimit — сколько строк nearExpiry вернуть). */
+  dashboard$(params: Record<string, string> = {}): Observable<M.Dashboard> {
+    let hp = new HttpParams();
+    Object.entries(params).forEach(([k, v]) => hp = hp.set(k, v));
+    return this.http.get<M.Dashboard>(`${this.base}/dashboard`, { params: hp });
+  }
 
   // ---- заказы магазинов (Google Таблица) ----
   orderStores$(): Observable<M.Store[]> { return this.http.get<M.Store[]>(`${this.base}/orders/stores`); }

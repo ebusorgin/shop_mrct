@@ -41,6 +41,11 @@ body {
 }
 .sidebar a:hover { background: #1b3357; color: #fff; }
 .sidebar a.active { background: var(--accent); color: #fff; font-weight: 600; }
+/* группы меню: редкие разделы не спорят с ежедневными по вниманию */
+.side-group {
+  margin: 12px 12px 2px; font-size: 10.5px; font-weight: 700; letter-spacing: .7px;
+  text-transform: uppercase; color: #7d90ad;
+}
 .main { flex: 1; padding: 22px 26px; min-width: 0; }
 .page-title { font-size: 21px; font-weight: 700; margin: 0 0 16px; }
 
@@ -55,6 +60,44 @@ body {
 .grid2.wl { grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr); } /* wide-left: журнал слева шире формы */
 .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
 .spacer { flex: 1; }
+
+/* ---------- быстрые действия панели ---------- */
+.quick { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
+.quick-btn {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 8px;
+  border: 1px solid var(--border); background: #fff; color: var(--text); text-decoration: none; font-weight: 600;
+}
+.quick-btn:hover { background: #f2f5fa; }
+.quick-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.quick-btn.primary:hover { background: #0f5ac0; }
+.quick-btn.hot { border-color: var(--amber); background: var(--amber-soft); color: var(--amber); }
+.quick-btn .qi { font-size: 18px; flex: 0 0 auto; line-height: 1; }
+.quick-btn .qt { display: flex; flex-direction: column; min-width: 0; font-size: 13px; }
+.quick-btn .qt small { font-weight: 400; font-size: 11px; opacity: .75; }
+.quick-btn .pill { flex: 0 0 auto; margin-left: auto; }
+
+/* ---------- предупреждения «требует внимания» ---------- */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
+.tile {
+  display: block; padding: 10px 12px; border-radius: 8px; text-decoration: none;
+  border: 1px solid var(--border); background: var(--amber-soft); color: var(--amber);
+}
+.tile:hover { filter: brightness(.98); }
+.tile.critical { background: var(--red-soft); border-color: #efb6b6; color: var(--red); }
+.tile .t-head { display: flex; align-items: baseline; gap: 8px; }
+.tile .t-count { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.tile .t-title { font-size: 13px; font-weight: 600; }
+.tile .t-sub { font-size: 11.5px; opacity: .85; margin-top: 2px; }
+/* бейдж-счётчик на кнопке быстрого действия */
+.pill {
+  display: inline-block; min-width: 22px; text-align: center; padding: 1px 7px; border-radius: 999px;
+  font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+.pill.red { background: var(--red-soft); color: var(--red); }
+.pill.amber { background: var(--amber-soft); color: var(--amber); }
+.pill.green { background: var(--green-soft); color: var(--green); }
+.pill.blue { background: var(--accent-soft); color: var(--accent); }
+.pill.gray { background: #eef1f5; color: var(--muted); }
 
 /* ---------- KPI ---------- */
 .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }
@@ -148,6 +191,9 @@ input[type='number']::-webkit-inner-spin-button { opacity: 1; }
   .grid2[style] { grid-template-columns: 1fr !important; }
   .sidebar { width: 64px; }
   .sidebar .logo, .sidebar a span { display: none; }
+  /* иконочный сайдбар: подписи групп только мешают */
+  .side-group { display: none; }
+  .sidebar { padding-top: 10px; }
   /* узкий сайдбар: подвал компактно, кнопки в столбик */
   .side-foot { padding: 8px 4px 2px; }
   .side-user { display: none; }
@@ -194,6 +240,7 @@ input[type='number']::-webkit-inner-spin-button { opacity: 1; }
   .sidebar.open { transform: none; }
   .sidebar .logo, .sidebar a span { display: block; } /* снова полный текст, как на десктопе */
   .sidebar a { font-size: 15px; padding: 12px 14px; } /* зона касания ≥44px */
+  .side-group { display: block; padding: 0 2px; }
   .side-close { display: block; }
   .main { padding: 14px 12px; }
   .page-title { font-size: 18px; margin-bottom: 12px; }
@@ -235,5 +282,10 @@ input[type='number']::-webkit-inner-spin-button { opacity: 1; }
   .kpi { padding: 10px 12px; min-width: 0; }
   .kpi .v { font-size: 18px; overflow-wrap: anywhere; }
   .kpi .l { font-size: 11px; }
+  /* быстрые действия и плитки предупреждений — в одну колонку, зоны касания крупные */
+  .quick { grid-template-columns: 1fr; }
+  .quick-btn { padding: 12px; min-height: 44px; }
+  .tiles { grid-template-columns: 1fr; }
+  .tile { padding: 12px; }
   .diagram-wrap { max-height: 60vh; }
 }

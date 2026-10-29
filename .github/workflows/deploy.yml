@@ -76,13 +76,17 @@ jobs:
           name: release
 
       - name: Проверить наличие секрета
+        id: secret
         run: |
           if [ -z "${{ secrets.DEPLOY_SSH_KEY }}" ]; then
-            echo "::error::В настройках репозитория не добавлен секрет DEPLOY_SSH_KEY"
-            exit 1
+            echo "::warning::Секрет DEPLOY_SSH_KEY не добавлен — выкладку сделает серверный таймер mixmarkt-autodeploy.timer"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Подготовить SSH
+        if: steps.secret.outputs.present == 'true'
         run: |
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
@@ -91,16 +95,19 @@ jobs:
           chmod 644 ~/.ssh/known_hosts
 
       - name: Загрузить архив на сервер
+        if: steps.secret.outputs.present == 'true'
         run: |
           scp -P "$DEPLOY_PORT" -i ~/.ssh/id_ed25519 \
             release.tgz "$DEPLOY_USER@$DEPLOY_HOST:/tmp/release-${GITHUB_SHA}.tgz"
 
       - name: Применить релиз (с откатом при сбое)
+        if: steps.secret.outputs.present == 'true'
         run: |
           ssh -p "$DEPLOY_PORT" -i ~/.ssh/id_ed25519 "$DEPLOY_USER@$DEPLOY_HOST" \
             "sudo /opt/mixmarkt-crm/bin/apply-release.sh /tmp/release-${GITHUB_SHA}.tgz"
 
       - name: Проверить, что сайт отвечает
+        if: steps.secret.outputs.present == 'true'
         run: |
           for i in $(seq 1 10); do
             if curl -fsS -m 10 "http://$DEPLOY_HOST/api/health"; then

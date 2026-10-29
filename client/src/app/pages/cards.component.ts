@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, ElementRef, OnInit, inject, signal, viewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ApiService } from '../core/api.service';
@@ -37,7 +37,7 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
 
     <div class="grid2" style="grid-template-columns: .55fr 1.45fr;">
       <!-- ===== список ===== -->
-      <div class="panel">
+      <div class="panel" #listEl style="scroll-margin-top: 64px;">
         <h3>Техкарты</h3>
         <div class="list-pick">
           @for (c of list(); track c.id) {
@@ -55,7 +55,7 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
 
       <!-- ===== редактор ===== -->
       @if (draft(); as d) {
-        <div class="panel">
+        <div class="panel" #editorEl style="scroll-margin-top: 64px;">
           <h3>{{ d.id ? 'Редактирование' : 'Создание' }} техкарты</h3>
           <div class="row">
             <label class="f" style="flex:2">Название<input [(ngModel)]="d.name" placeholder="Борщ (порция)" /></label>
@@ -80,11 +80,11 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
           }
           @for (it of d.items; track $index) {
             <div class="row" style="align-items:center;margin-bottom:6px">
-              <select style="width:140px" [(ngModel)]="it.sourceType" (ngModelChange)="it.refId = null">
+              <select style="width:140px; min-width:0" [(ngModel)]="it.sourceType" (ngModelChange)="it.refId = null">
                 <option value="raw">сырьё</option>
                 <option value="semi">полуфабрикат</option>
               </select>
-              <select style="flex:2" [(ngModel)]="it.refId" (ngModelChange)="onPickRef(it)">
+              <select style="flex:2 1 140px; min-width:0" [(ngModel)]="it.refId" (ngModelChange)="onPickRef(it)">
                 <option [ngValue]="null">— выбрать —</option>
                 @if (it.sourceType === 'raw') {
                   @for (p of products(); track p.id) { <option [ngValue]="p.id">{{ p.category }} · {{ p.name }}</option> }
@@ -92,8 +92,8 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
                   @for (s of semis(); track s.id) { <option [ngValue]="s.id">{{ s.name }}</option> }
                 }
               </select>
-              <input style="width:100px" type="number" [(ngModel)]="it.qty" placeholder="кол-во" />
-              <select style="width:75px" [(ngModel)]="it.unitId">
+              <input style="width:100px; min-width:0" type="number" [(ngModel)]="it.qty" placeholder="кол-во" />
+              <select style="width:75px; min-width:0" [(ngModel)]="it.unitId">
                 @for (u of itemUnits(it); track u.id) { <option [ngValue]="u.id">{{ u.code }}</option> }
               </select>
               <button class="btn sm danger" (click)="d.items.splice($index, 1)">✕</button>
@@ -109,7 +109,7 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
               <button class="btn danger" (click)="remove()">Удалить</button>
             }
             <div class="spacer"></div>
-            <button class="btn" (click)="draft.set(null)">Закрыть</button>
+            <button class="btn" (click)="closeEditor()">Закрыть</button>
           </div>
 
           @if (d.id && showPreview()) {
@@ -158,7 +158,7 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
           </div>
         </div>
       } @else {
-        <div class="panel"><p class="muted">Выберите техкарту слева или создайте новую. Блок-схема показывает, как складское сырьё
+        <div class="panel"><p class="muted">Выберите техкарту из списка или создайте новую. Блок-схема показывает, как складское сырьё
           через полуфабрикаты (с учётом уварки) превращается в готовую продукцию.</p></div>
       }
     </div>
@@ -166,6 +166,8 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
 })
 export class CardsComponent implements OnInit {
   private api = inject(ApiService);
+  private listEl = viewChild<ElementRef<HTMLElement>>('listEl');
+  private editorEl = viewChild<ElementRef<HTMLElement>>('editorEl');
 
   list = signal<TechCard[]>([]);
   semis = signal<Semi[]>([]);
@@ -294,6 +296,7 @@ export class CardsComponent implements OnInit {
       items: [],
     });
     this.buildDiagram();
+    this.revealEditor();
   }
 
   editCard(c: TechCard): void {
@@ -306,6 +309,29 @@ export class CardsComponent implements OnInit {
       items: c.items.map((i) => ({ sourceType: i.sourceType, refId: i.refId, qty: i.qty, unitId: i.unitId })),
     });
     this.buildDiagram();
+    this.revealEditor();
+  }
+
+  /**
+   * На телефоне/узком окне панели идут одна под другой, и редактор оказывается ниже экрана:
+   * без прокрутки тап по карте выглядит так, будто ничего не произошло.
+   */
+  private revealEditor(): void {
+    setTimeout(() => {
+      const el = this.editorEl()?.nativeElement;
+      if (!el) return;
+      const top = el.getBoundingClientRect().top;
+      if (top < 0 || top > window.innerHeight - 120) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
+
+  /** Закрыть редактор и вернуться к списку: на телефоне он остался выше экрана. */
+  closeEditor(): void {
+    this.draft.set(null);
+    setTimeout(() => {
+      const el = this.listEl()?.nativeElement;
+      if (el && el.getBoundingClientRect().top < 0) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
   }
 
   addItem(): void {

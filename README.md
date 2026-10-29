@@ -59,21 +59,35 @@ npm run autostart:remove      # убрать автозапуск
 пользователя (без прав администратора) — только так доступны именной канал Docker Desktop.
 Если задача не создаётся, скрипт кладёт `.cmd` в папку «Автозагрузка».
 
-## Автодеплой на боевой сервер (GitHub Actions)
+## Автодеплой на боевой сервер
 
-Пуш в `main` → GitHub собирает сервер и клиент → архив едет по SSH на сервер → сервис перезапускается.
-Workflow: `.github/workflows/deploy.yml`, нужен один секрет репозитория — `DEPLOY_SSH_KEY`.
+Пуш в `main` — и через пару минут на сервере уже новая версия. Выкладка одна и та же для обоих путей
+(скрипт `/opt/mixmarkt-crm/bin/apply-release.sh`), поэтому они не конфликтуют.
+
+**Путь 1 — GitHub Actions (основной).** Workflow `.github/workflows/deploy.yml`: GitHub собирает
+сервер и клиент, архив едет по SSH на сервер, сервис перезапускается. Нужен один секрет репозитория —
+`DEPLOY_SSH_KEY` (приватный ключ `deployer`). Если секрета нет, job `deploy` падает на шаге
+«Проверить наличие секрета», но деплой всё равно произойдёт вторым путём.
+
+**Путь 2 — серверный таймер (страховка).** `mixmarkt-autodeploy.timer` каждые 2 минуты запускает
+`/opt/mixmarkt-crm/bin/autodeploy.sh`: `git fetch origin/main` → если SHA отличается от
+`.deployed-sha`, коммит выкачивается в `/opt/mixmarkt-crm/src`, там собираются сервер и клиент
+(`npm ci` только при смене `package-lock.json`), затем вызывается тот же `apply-release.sh`.
 
 - **Сервер** (`37.230.115.170`, `/opt/mixmarkt-crm`): пользователь `deployer` входит только по ключу, а `sudo`
-  ему разрешён ровно на один скрипт — `/opt/mixmarkt-crm/bin/apply-release.sh` (правило в `/etc/sudoers.d/mixmarkt-deploy`).
+  ему разрешён ровно на один скрипт — `apply-release.sh` (правило в `/etc/sudoers.d/mixmarkt-deploy`).
 - **Что делает `apply-release.sh`:** дамп БД в `/var/backups/mixmarkt/pre-deploy-*.dump` → (при изменении
   `package-lock.json`) `npm ci --omit=dev` → подмена `server/dist` и `client/dist/crm` → `systemctl restart mixmarkt-crm`
   → ожидание `/api/health` до 40 с. Если сервис не поднялся — артефакты откатываются на предыдущие, сервис перезапускается.
+  Выкладки сериализованы общим lock-файлом `/var/lock/mixmarkt-apply.lock`.
 - **Миграции** применяются самим сервисом при старте (`server/src/migrate.ts`), отдельного шага не нужно.
 - **Логи и состояние:** `/var/log/mixmarkt-deploy.log` (logrotate), текущий коммит — `/opt/mixmarkt-crm/.deployed-sha`.
-- **Ручной запуск:** кнопка *Run workflow* (`workflow_dispatch`) в GitHub или по SSH
-  `sudo /opt/mixmarkt-crm/bin/apply-release.sh /tmp/release-<sha>.tgz`.
-- **Сборка на VPS не выполняется:** у сервера 1.8 ГБ RAM, поэтому тяжёлый `ng build` идёт на раннере GitHub.
+  Коммит, на котором упала сборка, пишется в `/opt/mixmarkt-crm/.build-failed-sha` и больше не повторяется
+  (сбросить: `rm /opt/mixmarkt-crm/.build-failed-sha`).
+- **Ручной запуск:** `systemctl start mixmarkt-autodeploy.service` (сразу проверить `origin/main`),
+  кнопка *Run workflow* в GitHub или `sudo /opt/mixmarkt-crm/bin/apply-release.sh /tmp/release-<sha>.tgz`.
+- **Ресурсы:** сборка на VPS идёт с `nice 10` и `--max-old-space-size=1024`, на сервере 2 ГБ swap-файла;
+  сборка занимает около минуты и не мешает работающему сервису (он перезапускается только на выкладке).
 
 ## Архитектура и ключевые решения
 

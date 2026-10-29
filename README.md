@@ -59,6 +59,22 @@ npm run autostart:remove      # убрать автозапуск
 пользователя (без прав администратора) — только так доступны именной канал Docker Desktop.
 Если задача не создаётся, скрипт кладёт `.cmd` в папку «Автозагрузка».
 
+## Автодеплой на боевой сервер (GitHub Actions)
+
+Пуш в `main` → GitHub собирает сервер и клиент → архив едет по SSH на сервер → сервис перезапускается.
+Workflow: `.github/workflows/deploy.yml`, нужен один секрет репозитория — `DEPLOY_SSH_KEY`.
+
+- **Сервер** (`37.230.115.170`, `/opt/mixmarkt-crm`): пользователь `deployer` входит только по ключу, а `sudo`
+  ему разрешён ровно на один скрипт — `/opt/mixmarkt-crm/bin/apply-release.sh` (правило в `/etc/sudoers.d/mixmarkt-deploy`).
+- **Что делает `apply-release.sh`:** дамп БД в `/var/backups/mixmarkt/pre-deploy-*.dump` → (при изменении
+  `package-lock.json`) `npm ci --omit=dev` → подмена `server/dist` и `client/dist/crm` → `systemctl restart mixmarkt-crm`
+  → ожидание `/api/health` до 40 с. Если сервис не поднялся — артефакты откатываются на предыдущие, сервис перезапускается.
+- **Миграции** применяются самим сервисом при старте (`server/src/migrate.ts`), отдельного шага не нужно.
+- **Логи и состояние:** `/var/log/mixmarkt-deploy.log` (logrotate), текущий коммит — `/opt/mixmarkt-crm/.deployed-sha`.
+- **Ручной запуск:** кнопка *Run workflow* (`workflow_dispatch`) в GitHub или по SSH
+  `sudo /opt/mixmarkt-crm/bin/apply-release.sh /tmp/release-<sha>.tgz`.
+- **Сборка на VPS не выполняется:** у сервера 1.8 ГБ RAM, поэтому тяжёлый `ng build` идёт на раннере GitHub.
+
 ## Архитектура и ключевые решения
 
 - **Единицы измерения.** Всё хранится в *базовых* единицах измерения: масса — г, объём — мл, количество — шт. Накладная/техкарта могут указывать кг, л, десятки — сервер конвертирует по `units.base_factor` и проверяет размерность. UI сам показывает «50 кг» вместо «50000 г».

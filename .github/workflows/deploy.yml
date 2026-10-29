@@ -1,0 +1,113 @@
+# Автодеплой на боевой сервер.
+# Пуш в main -> сборка на раннере GitHub -> архив уезжает по SSH -> система применяет релиз.
+# Нужен один секрет репозитория: DEPLOY_SSH_KEY (приватный ключ пользователя deployer
+# на сервере; публичная часть уже в /home/deployer/.ssh/authorized_keys).
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Деплои не должны идти параллельно: новый ждёт завершения текущего.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  DEPLOY_HOST: 37.230.115.170
+  DEPLOY_USER: deployer
+  DEPLOY_PORT: 22
+  # Публичный ключ хоста: ssh-keyscan -t ed25519 37.230.115.170
+  DEPLOY_HOST_KEY: "37.230.115.170 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAII+e5qh2VNAzq0he/w1Ztp1i182KyYPaTlrwIpQqALnM"
+
+jobs:
+  build:
+    name: Сборка
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            client/package-lock.json
+
+      - name: Сервер — зависимости и сборка
+        working-directory: server
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Клиент — зависимости и сборка
+        working-directory: client
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Упаковать релиз
+        run: |
+          rm -rf release && mkdir -p release/server release/client/dist
+          cp -a server/dist release/server/dist
+          cp server/package.json server/package-lock.json release/server/
+          cp -a client/dist/crm release/client/dist/crm
+          echo "$GITHUB_SHA" > release/SHA
+          tar -czf release.tgz -C release .
+          ls -la release.tgz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: release.tgz
+          retention-days: 14
+
+  deploy:
+    name: Выкладка
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+
+      - name: Проверить наличие секрета
+        run: |
+          if [ -z "${{ secrets.DEPLOY_SSH_KEY }}" ]; then
+            echo "::error::В настройках репозитория не добавлен секрет DEPLOY_SSH_KEY"
+            exit 1
+          fi
+
+      - name: Подготовить SSH
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$DEPLOY_HOST_KEY" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Загрузить архив на сервер
+        run: |
+          scp -P "$DEPLOY_PORT" -i ~/.ssh/id_ed25519 \
+            release.tgz "$DEPLOY_USER@$DEPLOY_HOST:/tmp/release-${GITHUB_SHA}.tgz"
+
+      - name: Применить релиз (с откатом при сбое)
+        run: |
+          ssh -p "$DEPLOY_PORT" -i ~/.ssh/id_ed25519 "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo /opt/mixmarkt-crm/bin/apply-release.sh /tmp/release-${GITHUB_SHA}.tgz"
+
+      - name: Проверить, что сайт отвечает
+        run: |
+          for i in $(seq 1 10); do
+            if curl -fsS -m 10 "http://$DEPLOY_HOST/api/health"; then
+              echo "деплой ${GITHUB_SHA} применён"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::health check не прошёл после деплоя"
+          exit 1

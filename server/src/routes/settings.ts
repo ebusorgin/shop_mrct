@@ -72,16 +72,19 @@ settingsRouter.post(
     const transport = gpt.viaProxy ? gpt.proxyUrl : 'напрямую';
     try {
       const oa = await createGptClient();
+      // 8 токенов рабочая модель не вывозит (у неё их съедает размышление) — берём запас,
+      // иначе тест вернёт пустой content и «связь есть» будет выглядеть как поломка.
       const r = await oa.chat.completions.create({
         model: config.openaiModel,
-        max_completion_tokens: 8,
+        max_completion_tokens: 300,
         messages: [{ role: 'user', content: 'ответь одним словом: работает' }],
       });
+      const reply = String(r.choices[0]?.message?.content ?? '').trim();
       res.json({
         ok: true,
         ms: Date.now() - started,
         transport,
-        reply: String(r.choices[0]?.message?.content ?? '').trim().slice(0, 80),
+        reply: (reply || `связь есть, текст пустой (${r.choices[0]?.finish_reason ?? 'без choice'})`).slice(0, 80),
       });
     } catch (e) {
       // SDK прячет причину за «Connection error.» — достаём её из cause и подсказываем, что смотреть

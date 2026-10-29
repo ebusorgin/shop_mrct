@@ -1072,7 +1072,7 @@ export class WaybillsComponent implements OnInit {
           this.parsed.set(r);
           this.discNotes.set([]); // разбор новый — заметки про учёт скидок из прежнего больше не актуальны
           this.extrasPreview.set(list.slice(1).map((f) => f.dataUrl));
-          this.curLb.set(0);
+          // lightbox не открываем (curLb остаётся null) — сразу виден распознанный список, фото доступно по клику на миниатюру
           this.impNumber = r.doc.number ?? '';
           this.impSupplier = r.doc.supplier ?? '';
           this.impDate = r.doc.date ?? today();

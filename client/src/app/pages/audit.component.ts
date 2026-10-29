@@ -303,6 +303,16 @@ export class AuditComponent implements OnInit {
     passwordReset: 'пароль сброшен',
     full: 'все листы',
     code: 'код',
+    // снимки «до/после» в продуктах и полуфабрикатах идут колонками БД — подписываем и их
+    name: 'название',
+    category: 'категория',
+    unit_id: 'единица',
+    min_stock: 'минимум',
+    shelf_life_days: 'срок годности, дн',
+    g_per_pcs: 'грамм в 1 шт',
+    ml_per_pcs: 'мл в 1 шт',
+    g_per_ml: 'грамм в 1 мл (плотность)',
+    ai_model: 'значение подсказал ИИ',
   };
 
   actionLabel(a: string): string {

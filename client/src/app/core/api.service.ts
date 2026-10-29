@@ -175,4 +175,13 @@ export class ApiService {
     return this.http.patch<{ ok: boolean; gpt: M.GptSettings }>(`${this.base}/settings/gpt`, body);
   }
   testGpt$(): Observable<M.GptTestResult> { return this.http.post<M.GptTestResult>(`${this.base}/settings/gpt/test`, {}); }
+
+  // ---- подсказки ИИ: спросить значение, подставить в поле (сохраняет человек) ----
+  askCoefficient$(body: {
+    sourceType: 'raw' | 'semi';
+    refId: number;
+    field: 'gPerPcs' | 'mlPerPcs' | 'gPerMl';
+  }): Observable<M.AiCoefficient> {
+    return this.http.post<M.AiCoefficient>(`${this.base}/ai/coefficient`, body);
+  }
 }

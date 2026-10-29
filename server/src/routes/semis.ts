@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { pool, tx } from '../db';
-import { ApiError, reqArr, reqInt, reqNum, reqStr, wrap } from '../http';
+import { ApiError, reqArr, reqInt, reqNum, reqStr, wrap, aiSource } from '../http';
 import { assertBaseUnit } from '../services/expansion';
 import { audit, auditTx, diff } from '../services/audit';
 
@@ -39,7 +39,7 @@ function parseInputs(raw: unknown): SemiInputDto[] {
     if (role !== 'base' && role !== 'additive') throw new ApiError(400, 'role: base|additive');
     const sourceType = String(x.sourceType ?? 'raw');
     if (sourceType !== 'raw' && sourceType !== 'semi') throw new ApiError(400, 'sourceType: raw|semi');
-    // additive yield_pct опционален: пусто/0 => null (нет уварки, расход 1:1).
+    // additive yield_pct опционален: пусто/0 => null (нет выхода после обработки, расход 1:1).
     const rawAddYield = x.yieldPct;
     const addYield = rawAddYield == null || rawAddYield === '' ? NaN : Number(rawAddYield);
     return {
@@ -54,14 +54,40 @@ function parseInputs(raw: unknown): SemiInputDto[] {
   if (bases.length !== 1) throw new ApiError(400, 'Нужен ровно один базовый вход (role=base)');
   for (const i of inputs) {
     if (i.role === 'base' && (i.yieldPct! <= 0 || i.yieldPct! > 100))
-      throw new ApiError(400, 'Уварок/выход должен быть в (0, 100]');
+      throw new ApiError(400, 'Выход после обработки должен быть в (0, 100]');
     if (i.role === 'additive') {
       if (i.qtyPerOutput! <= 0) throw new ApiError(400, 'Расход добавки должен быть > 0');
       if (i.yieldPct != null && (i.yieldPct <= 0 || i.yieldPct > 100))
-        throw new ApiError(400, 'Уварок/выход добавки должен быть в (0, 100] или пуст');
+        throw new ApiError(400, 'Выход после обработки добавки должен быть в (0, 100] или пуст');
     }
   }
   return inputs;
+}
+
+/** Снимок состава для журнала: компонент (человеческое имя), роль, норма на 1 баз. ед. выхода, выход после обработки. */
+const SNAPSHOT_INPUTS_SQL = `
+  select coalesce(p.name, sub.name) as name, si.role,
+         si.qty_per_output::float8 as qty, si.yield_pct::float8 as yield_pct
+    from semi_inputs si
+    left join products p on si.source_type = 'raw'  and p.id = si.ref_id
+    left join semi_products sub on si.source_type = 'semi' and sub.id = si.ref_id
+   where si.semi_id = $1
+   order by (si.role = 'base') desc, si.id`;
+
+/** Что поменялось в самом составе: «Морковь чищенная: 200 → 0.6». Считается по имени компонента. */
+function normChanges(
+  before: { name: string | null; qty: number | null; yield_pct: number | null }[],
+  after: { name: string | null; qty: number | null; yield_pct: number | null }[]
+): Record<string, { from: unknown; to: unknown }> {
+  const out: Record<string, { from: unknown; to: unknown }> = {};
+  const prev = new Map(before.map((r) => [r.name ?? '—', r]));
+  for (const r of after) {
+    const p = prev.get(r.name ?? '—');
+    if (!p) continue; // добавленный/удалённый вход уже виден в счётчике «состав»
+    if (p.qty !== r.qty) out[String(r.name)] = { from: p.qty, to: r.qty };
+    if (p.yield_pct !== r.yield_pct) out[`${String(r.name)} · выход после обработки`] = { from: p.yield_pct, to: r.yield_pct };
+  }
+  return out;
 }
 
 const LIST_SQL = `
@@ -155,7 +181,7 @@ semisRouter.patch(
         [id]
       );
       if (!before.length) throw new ApiError(404, 'Полуфабрикат не найден');
-      const { rows: beforeInputs } = await client.query('select count(*)::int as n from semi_inputs where semi_id = $1', [id]);
+      const { rows: beforeInputs } = await client.query(SNAPSHOT_INPUTS_SQL, [id]);
       await client.query(
         'update semi_products set name=$2, unit_id=$3, note=$4, shelf_life_days=$5, g_per_pcs=$6, ml_per_pcs=$7, g_per_ml=$8, updated_by=$9 where id=$1',
         [id, name, unitId, note, shelfLifeDays, gPerPcs, mlPerPcs, gPerMl, req.user?.id ?? null]
@@ -163,15 +189,23 @@ semisRouter.patch(
       await client.query('delete from semi_inputs where semi_id = $1', [id]);
       await insertInputs(client, id, inputs);
       await assertNoCycle(client, id);
+      const { rows: afterInputs } = await client.query(SNAPSHOT_INPUTS_SQL, [id]);
+      const changes = {
+        ...diff(
+          { ...before[0], inputs: beforeInputs.length },
+          { name, unit_id: unitId, note, shelf_life_days: shelfLifeDays, g_per_pcs: gPerPcs, ml_per_pcs: mlPerPcs, g_per_ml: gPerMl, inputs: inputs.length }
+        ),
+        // нормы входов тоже должны быть видны: иначе правка рецептуры остаётся в журнале пустой записью
+        ...normChanges(beforeInputs, afterInputs),
+      };
+      // коэффициент мог подсказать GPT — помечаем источник, чтобы правка от руки не выглядела фактом
+      const ai = aiSource(req.body ?? {});
       await auditTx(client, req.user, {
         action: 'update',
         entity: 'semi',
         entityId: id,
         title: `Полуфабрикат «${name}»`,
-        details: diff(
-          { ...before[0], inputs: beforeInputs[0].n },
-          { name, unit_id: unitId, note, shelf_life_days: shelfLifeDays, g_per_pcs: gPerPcs, ml_per_pcs: mlPerPcs, g_per_ml: gPerMl, inputs: inputs.length }
-        ),
+        details: ai && Object.keys(changes).length ? { ...changes, ai_model: ai } : changes,
       });
     });
     res.json({ ok: true });

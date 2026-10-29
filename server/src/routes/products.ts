@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { pool, tx } from '../db';
-import { ApiError, reqStr, reqNum, optNum, wrap } from '../http';
+import { ApiError, reqStr, reqNum, optNum, wrap, aiSource } from '../http';
 import { assertBaseUnit } from '../services/expansion';
 import { auditTx, diff } from '../services/audit';
 
@@ -123,26 +123,28 @@ productsRouter.patch(
     }
     const id = Number(req.params.id);
     await tx(async (client) => {
-      // снимок «до» — для журнала: видно, что именно поменяли
-      const { rows: before } = await client.query(
-        'select name, category, unit_id, min_stock, shelf_life_days, active from products where id = $1',
-        [id]
-      );
+      // снимок «до» — для журнала: видно, что именно поменяли.
+      // коэффициенты (г в 1 шт, мл в 1 шт, плотность) — обязательно: от них зависят расход и себестоимость,
+      // без них правка одного коэффициента попадала в журнал как пустое изменение.
+      const snapCols =
+        'name, category, unit_id, min_stock, shelf_life_days, active, g_per_pcs::float8 as g_per_pcs, ml_per_pcs::float8 as ml_per_pcs, g_per_ml::float8 as g_per_ml';
+      const { rows: before } = await client.query(`select ${snapCols} from products where id = $1`, [id]);
       if (!before.length) throw new ApiError(404, 'Продукт не найден');
       params.push(req.user?.id ?? null);
       fields.push(`updated_by = $${params.length}`);
       params.push(id);
       await client.query(`update products set ${fields.join(', ')} where id = $${params.length}`, params);
-      const { rows: after } = await client.query(
-        'select name, category, unit_id, min_stock, shelf_life_days, active from products where id = $1',
-        [id]
-      );
+      const { rows: after } = await client.query(`select ${snapCols} from products where id = $1`, [id]);
+      const changes = diff(before[0], after[0]);
+      // число мог подсказать GPT (кнопка «Спросить у ИИ») — в журнале это должно отличаться
+      // от ручной правки, но только когда менять действительно было что
+      const ai = aiSource(req.body ?? {});
       await auditTx(client, req.user, {
         action: 'update',
         entity: 'product',
         entityId: id,
         title: `Продукт «${after[0].name}»`,
-        details: diff(before[0], after[0]),
+        details: ai && Object.keys(changes).length ? { ...changes, ai_model: ai } : changes,
       });
     });
     res.json({ ok: true });

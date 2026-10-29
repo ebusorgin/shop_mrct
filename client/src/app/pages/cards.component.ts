@@ -117,7 +117,7 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
               <label class="f">Порций для проверки<input type="number" style="width:100px" [(ngModel)]="previewPortions" (ngModelChange)="loadPreview()" /></label>
             </div>
             <table class="tbl">
-              <tr><th>Сырьё (после раскрытия уварка)</th><th class="num">Нужно</th><th class="num">На складе</th><th></th></tr>
+              <tr><th>Сырьё (с учётом выхода после обработки)</th><th class="num">Нужно</th><th class="num">На складе</th><th></th></tr>
               @for (r of preview(); track r.productId) {
                 <tr>
                   <td>{{ r.name }}</td>
@@ -159,7 +159,7 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
         </div>
       } @else {
         <div class="panel"><p class="muted">Выберите техкарту из списка или создайте новую. Блок-схема показывает, как складское сырьё
-          через полуфабрикаты (с учётом уварки) превращается в готовую продукцию.</p></div>
+          через полуфабрикаты (с учётом выхода после обработки) превращается в готовую продукцию.</p></div>
       }
     </div>
   `,
@@ -256,7 +256,7 @@ export class CardsComponent implements OnInit {
 
   /**
    * Подсказка: Σ сырья на порцию по размерностям (масса/объём/штуки не смешиваем, объём ≈ масса 1:1 для воды)
-   * и ожидаемая уварка, если вход заметно больше выхода. Для варки превышение — норма, поэтому только намёк.
+   * и ожидаемый выход после обработки, если вход заметно больше порции. Для варки превышение — норма, поэтому только намёк.
    */
   sumHint(): { parts: string; verdict: string; over: boolean } | null {
     const d = this.draft();
@@ -282,7 +282,7 @@ export class CardsComponent implements OnInit {
     if (ratio <= 1.05) return { parts: label, verdict: 'укладывается в порцию ✓', over: false };
     return {
       parts: `${label} vs порция ${fmtQty(d.portionQty * pu.baseFactor, pu.code)}`,
-      verdict: `вход в ×${trim(Math.round(ratio * 10) / 10)} больше порции — ожидаемая уварка ≈ −${Math.round((1 - 1 / ratio) * 100)}%`,
+      verdict: `вход в ×${trim(Math.round(ratio * 10) / 10)} больше порции — ожидаемый выход после обработки ≈ ${Math.round(100 / ratio)}%`,
       over: true,
     };
   }

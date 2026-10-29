@@ -37,7 +37,7 @@ import { fmtDateTime, fmtMoney, fmtQty, httpErr, today, trim } from '../core/for
 
       @if (preview().length) {
         <hr class="hr" />
-        <b class="muted" style="font-size:12px">Будет списано сырьё (после раскрытия полуфабрикатов и уварка):</b>
+        <b class="muted" style="font-size:12px">Будет списано сырьё (после раскрытия полуфабрикатов и выхода после обработки):</b>
         <table class="tbl">
           <tr><th>Сырьё</th><th class="num">Расход</th><th class="num">Остаток сейчас</th><th>Достаточность</th></tr>
           @for (r of preview(); track r.productId) {

@@ -129,6 +129,41 @@ export function toBase(qty: number, unitId: number, baseUnitId: number, units: U
   return toBaseCross(qty, unitId, baseUnitId, units);
 }
 
+/**
+ * Применить выход после обработки (потери при обработке) к количеству ВЫХОДА.
+ *
+ * Выход после обработки — это отношение масс (или объёмов): при чистке и варке уходит масса, а не «штуки».
+ * Пока выход в г/мл делить можно и нужно. Если же выход заготовки — штуки, то «÷ 90 %»
+ * над штуками утверждает, что 10 % яиц истаяло, и даёт абсурд вида «1.111 яйца на 1 яйцо».
+ * Поэтому для штук выход после обработки применяем в массе: штуки выхода × «грамм в 1 шт» заготовки ÷ выход после обработки
+ * = граммы входа (inGrams=true), и ЭТУ массу переводим в единицу входа по её собственному
+ * «грамм в 1 шт». Без коэффициента честного пути нет — тогда считаем по-старому (делим штуки),
+ * но расчёт помечается как требующий коэффициент.
+ */
+function applyYield(
+  outQtyBase: number,
+  yieldPct: number,
+  semiUnitId: number,
+  semiConv: ProdConv | undefined,
+  units: UnitsMap
+): { qty: number; inGrams: boolean } {
+  const y = yieldPct / 100;
+  const dim = units.get(semiUnitId)?.dimension;
+  const gPerPcs = semiConv?.gPerPcs != null && semiConv.gPerPcs > 0 ? Number(semiConv.gPerPcs) : null;
+  if (dim === 'count' && gPerPcs != null && y > 0 && y < 1) {
+    // штуки выхода → граммы выхода → граммы входа (÷ выход после обработки по массе); число остаётся в г,
+    // обратного деления на gPerPcs здесь нет — его делает перевод в единицу входа
+    return { qty: (outQtyBase * gPerPcs) / y, inGrams: true };
+  }
+  return { qty: outQtyBase / y, inGrams: false };
+}
+
+/** id базовой единицы массы (г) — стартовая точка для перевода граммов входа. */
+function massUnitId(units: UnitsMap): number | null {
+  for (const [id, u] of units) if (u.dimension === 'mass') return id;
+  return null;
+}
+
 export interface RawNeed {
   productId: number;
   qty: number; // базовые единицы продукта
@@ -146,10 +181,12 @@ export async function assertBaseUnit(client: PoolClient, unitId: number, what: s
 /**
  * Раскрывает позиции техкарты (кол-во на порцию × порции) в ЧИСТОЕ сырьё со склада.
  * Рекурсия: полуфабрикат может состоять из других полуфабрикатов — разворачиваем цепочку
- * до листовых сырьевых продуктов с учётом уварки/очистки на каждом уровне.
+ * до листовых сырьевых продуктов с учётом выхода после обработки/очистки на каждом уровне.
  *   base-вход:    нужно входа = количество выхода / (yield_pct/100)
  *   additive-вход: нужно входа = количество выхода * qty_per_output
- *                  (если у добавки задан yield_pct — её собственный уварок: делим на yield_pct/100)
+ *                  (если у добавки задан yield_pct — её собственный выход после обработки: делим на yield_pct/100)
+ * Выход после обработки делит не штуки: если выход заготовки в штуках, потери считаются по массе
+ * (см. applyYield). Для г/мл выхода формулы остаются ровно такими же, как были.
  */
 export async function expandCard(
   client: PoolClient,
@@ -232,14 +269,18 @@ async function resolveSemi(
 ): Promise<void> {
   const inputs = await loadSemiInputs(ctx.client, semiId);
   const base = inputs.find((x) => x.role === 'base');
-  if (!base) throw new ApiError(400, `У полуфабриката #${semiId} не задан базовый вход с уварком`);
+  if (!base) throw new ApiError(400, `У полуфабриката #${semiId} не задан базовый вход с выходом после обработки`);
+  // коэффициенты самой заготовки — они переводят «штуки выхода» в массу, на которую и вешается выход после обработки
+  const selfConv = ctx.semiConv.get(semiId);
 
-  const feed = async (inp: SemiInputRow, qOutDim: number) => {
+  const feed = async (inp: SemiInputRow, qOutDim: number, inGrams = false) => {
     if (!inp.in_unit_id) {
       throw new ApiError(400, `У полуфабриката #${semiId}: вход #${inp.ref_id} не связан с единицей измерения`);
     }
     const tConv = inp.source_type === 'raw' ? ctx.prodConv.get(inp.ref_id) : ctx.semiConv.get(inp.ref_id);
-    const qTarget = toBaseCross(qOutDim, semiUnitId, inp.in_unit_id, ctx.units, tConv);
+    // число в граммах (выход после обработки по массе) → переводим из размерности mass, а не из единицы выхода
+    const fromUnitId = inGrams ? massUnitId(ctx.units) ?? semiUnitId : semiUnitId;
+    const qTarget = toBaseCross(qOutDim, fromUnitId, inp.in_unit_id, ctx.units, tConv);
     if (inp.source_type === 'raw') {
       add(inp.ref_id, qTarget);
       return;
@@ -250,11 +291,16 @@ async function resolveSemi(
     await resolveSemi(ctx, inp.ref_id, qTarget, inp.in_unit_id, add, new Set([...path, inp.ref_id]));
   };
 
-  await feed(base, outQtyBase / (Number(base.yield_pct) / 100));
+  const baseY = Number(base.yield_pct);
+  if (!(baseY > 0)) throw new ApiError(400, `У полуфабриката #${semiId}: не задан выход после обработки базового входа`);
+  const baseYield = applyYield(outQtyBase, baseY, semiUnitId, selfConv, ctx.units);
+  await feed(base, baseYield.qty, baseYield.inGrams);
   for (const inp of inputs.filter((x) => x.role === 'additive')) {
-    let q = outQtyBase * Number(inp.qpo);
-    if (inp.yield_pct != null) q = q / (Number(inp.yield_pct) / 100);
-    await feed(inp, q);
+    const q = outQtyBase * Number(inp.qpo);
+    const own = Number(inp.yield_pct);
+    // свой выход добавки — тоже потери массы, считаем его в той же размерности выхода
+    const ay = own > 0 && own < 100 ? applyYield(q, own, semiUnitId, selfConv, ctx.units) : { qty: q, inGrams: false };
+    await feed(inp, ay.qty, ay.inGrams);
   }
 }
 

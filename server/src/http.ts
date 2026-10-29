@@ -58,3 +58,15 @@ export function qInt(req: Request, field: string): number | null {
   const v = Number(raw);
   return Number.isInteger(v) ? v : null;
 }
+
+/**
+ * Имя модели ИИ, подсказавшей значение (кнопка «Спросить у ИИ»). Приходит от клиента,
+ * поэтому берём только безопасные символы имени модели и не длиннее 40 — строка попадёт
+ * в журнал действий. Пусто/мусор => null: правка считается ручной.
+ */
+export function aiSource(body: Record<string, unknown>): string | null {
+  const v = body.aiModel;
+  if (typeof v !== 'string') return null;
+  const s = v.trim().slice(0, 40);
+  return s && /^[\w.\-/:]+$/.test(s) ? s : null;
+}

@@ -21,6 +21,7 @@ import { storeRouter } from './routes/store';
 import { eventsRouter } from './routes/events';
 import { hooksRouter } from './routes/hooks';
 import { settingsRouter } from './routes/settings';
+import { aiRouter } from './routes/ai';
 import { requireAdmin, requireAuth, requireOffice } from './services/auth';
 
 export function createApp(): express.Express {
@@ -56,6 +57,8 @@ export function createApp(): express.Express {
   app.use('/api/audit', requireOffice, auditRouter);
   // настройки CRM (транспорт GPT и т.п.) — только администратор
   app.use('/api/settings', requireAdmin, settingsRouter);
+  // подсказки ИИ (спросить — и подставить в поле): читают справочник, в базу не пишут
+  app.use('/api/ai', requireOffice, aiRouter);
   // живой канал «сервер -> браузер» (SSE): плашка «в таблице изменения»
   app.use('/api/events', eventsRouter);
 

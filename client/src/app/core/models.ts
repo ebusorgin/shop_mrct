@@ -651,3 +651,19 @@ export interface GptTestResult {
   reply?: string;
   error?: string;
 }
+
+/**
+ * Результат кнопки «Спросить у ИИ»: число для поля-коэффициента и объяснение.
+ * Ничего не сохраняет — значение подставляется в поле, сохраняет человек.
+ */
+export interface AiCoefficient {
+  field: 'gPerPcs' | 'mlPerPcs' | 'gPerMl';
+  /** В чём модель ответила (г/мл, г/шт, мл/шт) — сверяемся с ней перед подстановкой. */
+  unit: string;
+  /** Число для поля; null — вразумительного ответа нет (или он физически невозможен). */
+  value: number | null;
+  /** high | medium | low — как сама модель оценила ответ. */
+  confidence: string;
+  reason: string;
+  model: string;
+}

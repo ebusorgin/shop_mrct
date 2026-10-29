@@ -14,5 +14,8 @@
     "autostart:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-autostart.ps1",
     "autostart:remove": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/remove-autostart.ps1",
     "autostart:run": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-crm.ps1"
+  },
+  "dependencies": {
+    "ssh2": "^1.17.0"
   }
 }

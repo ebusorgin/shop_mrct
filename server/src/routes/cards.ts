@@ -3,6 +3,7 @@ import { PoolClient } from 'pg';
 import { pool, tx } from '../db';
 import { ApiError, reqArr, reqInt, reqNum, reqStr, wrap } from '../http';
 import { expandCard, assertBaseUnit } from '../services/expansion';
+import { audit, auditTx, diff } from '../services/audit';
 
 export const cardsRouter = Router();
 
@@ -105,10 +106,18 @@ cardsRouter.post(
     const id = await tx(async (client) => {
       await assertBaseUnit(client, portionUnitId, 'Техкарта');
       const { rows } = await client.query(
-        'insert into tech_cards (name, portion_qty, portion_unit_id, note) values ($1,$2,$3,$4) returning id',
-        [name, portionQty, portionUnitId, note]
+        `insert into tech_cards (name, portion_qty, portion_unit_id, note, created_by, updated_by)
+         values ($1,$2,$3,$4,$5,$5) returning id`,
+        [name, portionQty, portionUnitId, note, req.user?.id ?? null]
       );
       await saveItems(client, rows[0].id, items);
+      await auditTx(client, req.user, {
+        action: 'create',
+        entity: 'tech_card',
+        entityId: rows[0].id as number,
+        title: `Техкарта «${name}»`,
+        details: { portionQty, portionUnitId, items: items.length },
+      });
       return rows[0].id as number;
     });
     res.status(201).json({ id });
@@ -126,12 +135,28 @@ cardsRouter.patch(
     const items = parseItems(reqArr(req.body, 'items'));
     await tx(async (client) => {
       await assertBaseUnit(client, portionUnitId, 'Техкарта');
+      const { rows: before } = await client.query(
+        'select name, portion_qty::float8 as portion_qty, portion_unit_id, note from tech_cards where id = $1',
+        [id]
+      );
+      if (!before.length) throw new ApiError(404, 'Техкарта не найдена');
+      const { rows: beforeItems } = await client.query('select count(*)::int as n from tech_card_items where card_id = $1', [id]);
       await client.query(
-        'update tech_cards set name=$2, portion_qty=$3, portion_unit_id=$4, note=$5 where id=$1',
-        [id, name, portionQty, portionUnitId, note]
+        'update tech_cards set name=$2, portion_qty=$3, portion_unit_id=$4, note=$5, updated_by=$6 where id=$1',
+        [id, name, portionQty, portionUnitId, note, req.user?.id ?? null]
       );
       await client.query('delete from tech_card_items where card_id = $1', [id]);
       await saveItems(client, id, items);
+      await auditTx(client, req.user, {
+        action: 'update',
+        entity: 'tech_card',
+        entityId: id,
+        title: `Техкарта «${name}»`,
+        details: diff(
+          { ...before[0], items: beforeItems[0].n },
+          { name, portion_qty: portionQty, portion_unit_id: portionUnitId, note, items: items.length }
+        ),
+      });
     });
     res.json({ ok: true });
   })
@@ -141,11 +166,20 @@ cardsRouter.delete(
   '/:id',
   wrap(async (req, res) => {
     const { rows } = await pool.query(
-      'select count(*) from production_batches where card_id = $1 and status = $2',
-      [Number(req.params.id), 'posted']
+      `select tc.name,
+         (select count(*) from production_batches where card_id = tc.id and status = 'posted') as posted
+       from tech_cards tc where tc.id = $1`,
+      [Number(req.params.id)]
     );
-    if (Number(rows[0].count) > 0) throw new ApiError(409, 'По техкарте есть отгрузки — удаление запрещено');
+    if (!rows.length) throw new ApiError(404, 'Техкарта не найдена');
+    if (Number(rows[0].posted) > 0) throw new ApiError(409, 'По техкарте есть отгрузки — удаление запрещено');
     await pool.query('delete from tech_cards where id = $1', [Number(req.params.id)]);
+    await audit(req.user, {
+      action: 'delete',
+      entity: 'tech_card',
+      entityId: req.params.id,
+      title: `Техкарта «${rows[0].name}»`,
+    });
     res.json({ ok: true });
   })
 );

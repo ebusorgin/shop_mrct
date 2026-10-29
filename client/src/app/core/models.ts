@@ -49,6 +49,10 @@ export interface Movement {
   docId: number | null;
   comment: string | null;
   created_at: string;
+  /** Кто сделал движение (логин); null — система/старые записи. */
+  userLogin?: string | null;
+  /** ФИО автора движения (без ФИО — логин). */
+  userName?: string | null;
 }
 
 export interface WaybillShort {
@@ -62,6 +66,14 @@ export interface WaybillShort {
   /** Число дополнительных листов фото. */
   extraCount?: number;
   status?: 'posted' | 'reversed';
+  /** Кто принял накладную на склад и когда. */
+  acceptedLogin?: string | null;
+  acceptedName?: string | null;
+  acceptedAt?: string | null;
+  /** Кто отменил приход и когда (только для отменённых). */
+  reversedLogin?: string | null;
+  reversedName?: string | null;
+  reversedAt?: string | null;
 }
 
 /** Результат GPT-разбора файла накладной (одна строка документа). */
@@ -258,6 +270,10 @@ export interface Batch {
   note: string;
   portionQty: number;
   portionUnitCode: string;
+  /** Кто отгрузил партию и когда. */
+  createdLogin?: string | null;
+  createdName?: string | null;
+  createdAt?: string | null;
 }
 
 export interface BatchItem {
@@ -304,6 +320,11 @@ export interface Store {
   note?: string;
   createdAt?: string;
   updatedAt?: string;
+  /** Кто завёл точку и кто последним её правил (логин). */
+  createdByLogin?: string | null;
+  createdByName?: string | null;
+  updatedByLogin?: string | null;
+  updatedByName?: string | null;
 }
 
 /** Разрез тренда: один лист-дата доставки с итогом по точке. */
@@ -384,6 +405,12 @@ export interface OrderItem {
   note: string;
   createdAt: string;
   updatedAt: string;
+  /** Кто оформил заказ и кто последним сменил статус (логин). */
+  createdByLogin?: string | null;
+  createdByName?: string | null;
+  statusByLogin?: string | null;
+  statusByName?: string | null;
+  statusAt?: string | null;
 }
 
 export interface OrdersSummary {
@@ -455,6 +482,10 @@ export interface OrderChange {
   tabDate: string | null;
   details: Record<string, unknown> | null;
   actor: string;
+  /** Логин автора изменения (user_login; для старых записей — actor). */
+  userLogin?: string | null;
+  /** ФИО автора изменения (без ФИО — логин). */
+  userName?: string | null;
   createdAt: string;
 }
 
@@ -486,18 +517,98 @@ export interface OrderSyncState {
     ordersCreated: number; ordersChanged: number; ordersRemoved: number; full: boolean;
   } | null;
   tabs: OrderSyncTab[];
+  /** Состояние живого канала: вотчер «горячего» листа и открытые SSE-вкладки. */
+  watch?: {
+    lastCheckAt: string | null;
+    lastChangeAt: string | null;
+    intervalSec: number;
+    clients: number;
+  } | null;
 }
 
 /** Вошедший пользователь CRM. */
 export interface AuthUser {
   id: number;
   login: string;
+  /** ФИО для подписи; без ФИО совпадает с логином. */
+  fullName: string;
   isAdmin: boolean;
+  /** Магазинный пользователь: точка, к которой привязан; null — офис. */
+  storeId: number | null;
+  storeName: string | null;
 }
 
 /** Строка списка пользователей (раздел «Пользователи»). */
 export interface AuthUserRow extends AuthUser {
+  /** ФИО как сохранено (null — не задано, в списке показывается логин). */
+  fullNameRaw: string | null;
   active: boolean;
   createdAt: string;
   lastLoginAt: string | null;
+}
+
+/** Своя точка магазинного сотрудника (страница «Мой магазин»). */
+export interface MyStore {
+  id: number;
+  code: string;
+  name: string;
+  active: boolean;
+  address: string | null;
+  phone: string | null;
+  email: string | null;
+  contactPerson: string | null;
+  openingHours: string | null;
+  note: string | null;
+  /** Последняя дата-лист с заказами (архив). */
+  lastOrderDate: string | null;
+  /** Сколько дней-листов с заказами всего. */
+  orderDays: number;
+  /** Позиций в последнем листе. */
+  lastDateLines: number;
+  /** Позиций в работе (оформлен/подтверждён). */
+  openLines: number;
+  /** Позиций за сегодня. */
+  todayLines: number;
+  /** Активных сотрудников точки. */
+  employees: number;
+}
+
+// ================= ЖУРНАЛ ДЕЙСТВИЙ =================
+
+/** Вид действия в журнале (фильтр «что сделал»). */
+export type AuditAction =
+  | 'create' | 'update' | 'delete' | 'post' | 'reverse' | 'adjust' | 'approve'
+  | 'login' | 'logout' | 'password' | 'role' | 'sync';
+
+/** Раздел системы, к которому относится запись. */
+export type AuditEntity =
+  | 'product' | 'waybill' | 'semi' | 'tech_card' | 'batch'
+  | 'order' | 'store' | 'user' | 'stock' | 'sheet';
+
+/** Одна запись журнала: кто, что, когда и с какими деталями. */
+export interface AuditEntry {
+  id: number;
+  userId: number | null;
+  userLogin: string;
+  /** ФИО автора записи (снимок на момент действия). */
+  userName?: string | null;
+  action: AuditAction | string;
+  entity: AuditEntity | string;
+  entityId: string | null;
+  title: string;
+  details: Record<string, unknown>;
+  createdAt: string;
+}
+
+/** Страница журнала + сводка для фильтров. */
+export interface AuditPage {
+  total: number;
+  limit: number;
+  offset: number;
+  entries: AuditEntry[];
+  summary: {
+    people: { userLogin: string; userName?: string | null; cnt: number }[];
+    entities: { entity: string; cnt: number }[];
+    actions: { action: string; cnt: number }[];
+  };
 }

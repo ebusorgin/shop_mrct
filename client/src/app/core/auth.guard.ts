@@ -18,3 +18,22 @@ export const adminGuard: CanActivateFn = () => {
   if (!auth.user()) return router.createUrlTree(['/login']);
   return auth.isAdmin() ? true : router.createUrlTree(['/']);
 };
+
+/**
+ * Офисные разделы CRM. Магазинному сотруднику они недоступны:
+ * он всегда попадает на страницу своего магазина.
+ */
+export const officeGuard: CanActivateFn = () => {
+  const auth = inject(AuthState);
+  const router = inject(Router);
+  if (!auth.user()) return router.createUrlTree(['/login']);
+  return auth.isStoreUser() ? router.createUrlTree(['/store']) : true;
+};
+
+/** Страница своего магазина — только магазинному сотруднику. */
+export const storeGuard: CanActivateFn = () => {
+  const auth = inject(AuthState);
+  const router = inject(Router);
+  if (!auth.user()) return router.createUrlTree(['/login']);
+  return auth.isStoreUser() ? true : router.createUrlTree(['/']);
+};

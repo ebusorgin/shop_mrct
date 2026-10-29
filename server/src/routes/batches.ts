@@ -3,6 +3,7 @@ import { pool, tx } from '../db';
 import { ApiError, reqInt, wrap } from '../http';
 import { applyMovement } from '../services/stock';
 import { expandCard } from '../services/expansion';
+import { auditTx } from '../services/audit';
 
 export const batchesRouter = Router();
 
@@ -28,9 +29,9 @@ batchesRouter.post(
       const need = await expandCard(client, cardId, portions);
 
       const { rows: batch } = await client.query(
-        `insert into production_batches (card_id, portions, batch_date, note)
-         values ($1,$2, coalesce($3::date, current_date), $4) returning id`,
-        [cardId, portions, batchDate, note]
+        `insert into production_batches (card_id, portions, batch_date, note, created_by, created_login)
+         values ($1,$2, coalesce($3::date, current_date), $4, $5, $6) returning id`,
+        [cardId, portions, batchDate, note, req.user?.id ?? null, req.user?.login ?? 'system']
       );
       const batchId = batch[0].id as number;
 
@@ -57,6 +58,7 @@ batchesRouter.post(
           unitCost,
           docType: 'batch',
           docId: batchId,
+          actor: req.user,
           comment: `Расход: ${cardInfo[0].name} × ${portions} порц.`,
         });
         await client.query(
@@ -68,6 +70,13 @@ batchesRouter.post(
 
       costTotal = Math.round(costTotal * 100) / 100;
       await client.query('update production_batches set cost_total = $2 where id = $1', [batchId, costTotal]);
+      await auditTx(client, req.user, {
+        action: 'post',
+        entity: 'batch',
+        entityId: batchId,
+        title: `Партия · ${cardInfo[0].name} × ${portions}`,
+        details: { cardId, portions, batchDate, costTotal, items: itemsOut.length },
+      });
       return { id: batchId, costTotal, items: itemsOut };
     });
 
@@ -82,10 +91,13 @@ batchesRouter.get(
       select b.id, b.card_id as "cardId", tc.name as "cardName", b.portions,
              to_char(b.batch_date, 'YYYY-MM-DD') as "batchDate",
              b.cost_total::float8 as "costTotal", b.status, b.note,
+             b.created_login as "createdLogin", b.created_at as "createdAt",
+             coalesce(nullif(btrim(cu.full_name), ''), b.created_login) as "createdName",
              tc.portion_qty::float8 as "portionQty", pu.code as "portionUnitCode"
         from production_batches b
         join tech_cards tc on tc.id = b.card_id
         join units pu on pu.id = tc.portion_unit_id
+        left join users cu on cu.id = b.created_by
        order by b.batch_date desc, b.id desc`);
     res.json(rows);
   })
@@ -116,7 +128,9 @@ batchesRouter.post(
     const batchId = Number(req.params.id);
     await tx(async (client) => {
       const { rows: st } = await client.query(
-        'select status from production_batches where id = $1 for update',
+        `select tc.name, b.status, b.portions
+           from production_batches b join tech_cards tc on tc.id = b.card_id
+          where b.id = $1 for update of b`,
         [batchId]
       );
       if (!st.length) throw new ApiError(404, 'Партия не найдена');
@@ -136,6 +150,7 @@ batchesRouter.post(
           delta: it.qty,
           docType: 'batch',
           docId: batchId,
+          actor: req.user,
           comment: 'Возврат: отмена партии',
         });
       }
@@ -143,6 +158,13 @@ batchesRouter.post(
         "update production_batches set status = 'reversed', cost_total = 0 where id = $1",
         [batchId]
       );
+      await auditTx(client, req.user, {
+        action: 'reverse',
+        entity: 'batch',
+        entityId: batchId,
+        title: `Партия · ${st[0].name} × ${st[0].portions}`,
+        details: { items: items.length },
+      });
     });
     res.json({ ok: true });
   })

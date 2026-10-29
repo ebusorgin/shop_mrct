@@ -1,14 +1,26 @@
 import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { AuthService } from '../core/auth.service';
+import { ApiService } from '../core/api.service';
 import { AuthUserRow } from '../core/models';
 import { httpErr } from '../core/format';
 import { ModalComponent } from '../shared/modal.component';
+
+/** Строка выбора магазина в формах пользователя. */
+interface StoreOption {
+  id: number;
+  name: string;
+  code: string;
+  active: boolean;
+}
 
 /**
  * Раздел «Пользователи» (только админ): список аккаунтов CRM, создание,
  * сброс пароля, выдача прав администратора и отключение входа.
  * Пароли живут на сервере (scrypt), здесь их никто не видит — можно только задать новый.
+ *
+ * Тип пользователя: офис (вся CRM, может быть админом) или магазин —
+ * привязан к одной точке продаж; к одной точке можно привязать несколько человек.
  */
 @Component({
   selector: 'app-users',
@@ -29,8 +41,8 @@ import { ModalComponent } from '../shared/modal.component';
       <table class="tbl stack">
         <thead>
           <tr>
-            <th>Логин</th>
-            <th>Роль</th>
+            <th>Сотрудник</th>
+            <th>Доступ</th>
             <th>Статус</th>
             <th>Последний вход</th>
             <th style="text-align:right">Действия</th>
@@ -40,13 +52,19 @@ import { ModalComponent } from '../shared/modal.component';
           @for (r of rows(); track r.id) {
             <tr [class.off]="!r.active">
               <td>
-                <strong>{{ r.login }}</strong>
+                <strong>{{ r.fullName }}</strong>
                 @if (r.id === meId()) { <span class="badge gray" style="margin-left:6px">вы</span> }
+                <div class="muted small">{{ r.login }}</div>
               </td>
-              <td data-l="Роль">
-                <span class="badge" [class.blue]="r.isAdmin" [class.gray]="!r.isAdmin">
-                  {{ r.isAdmin ? 'админ' : 'пользователь' }}
-                </span>
+              <td data-l="Доступ">
+                @if (r.storeId) {
+                  <span class="badge amber" title="Доступ только к своему магазину">магазин</span>
+                  <div class="muted small">{{ r.storeName }}</div>
+                } @else if (r.isAdmin) {
+                  <span class="badge blue">админ</span>
+                } @else {
+                  <span class="badge gray">офис</span>
+                }
               </td>
               <td data-l="Статус">
                 <span class="badge" [class.green]="r.active" [class.red]="!r.active">
@@ -55,12 +73,17 @@ import { ModalComponent } from '../shared/modal.component';
               </td>
               <td data-l="Вход" class="nw">{{ fmtDate(r.lastLoginAt) }}</td>
               <td data-l="Действия" class="acts">
+                <button type="button" class="btn sm" (click)="openProfile(r)" [disabled]="busyId() === r.id">
+                  Профиль
+                </button>
                 <button type="button" class="btn sm" (click)="openPwd(r)" [disabled]="busyId() === r.id">
                   Пароль
                 </button>
-                <button type="button" class="btn sm" (click)="toggleAdmin(r)" [disabled]="busyId() === r.id">
-                  {{ r.isAdmin ? 'Снять админа' : 'Сделать админом' }}
-                </button>
+                @if (!r.storeId) {
+                  <button type="button" class="btn sm" (click)="toggleAdmin(r)" [disabled]="busyId() === r.id">
+                    {{ r.isAdmin ? 'Снять админа' : 'Сделать админом' }}
+                  </button>
+                }
                 <button
                   type="button"
                   class="btn sm"
@@ -89,19 +112,72 @@ import { ModalComponent } from '../shared/modal.component';
             <input [(ngModel)]="newLogin" autocomplete="off" [disabled]="busy()" placeholder="ivan" />
           </label>
           <label class="f">
+            ФИО
+            <input [(ngModel)]="newName" maxlength="50" autocomplete="off" [disabled]="busy()" placeholder="Иванов Иван" />
+          </label>
+          <label class="f">
+            Магазин
+            <select [(ngModel)]="newStoreId" [disabled]="busy()">
+              <option [ngValue]="null">— офис, доступ ко всей CRM —</option>
+              @for (s of stores(); track s.id) {
+                <option [ngValue]="s.id">{{ s.name }} · {{ s.code }}{{ s.active ? '' : ' (закрыт)' }}</option>
+              }
+            </select>
+          </label>
+          <label class="f">
             Пароль
             <input type="text" [(ngModel)]="newPassword" autocomplete="new-password" [disabled]="busy()" />
           </label>
-          <label class="chk">
-            <input type="checkbox" [(ngModel)]="newAdmin" [disabled]="busy()" />
+          <label class="chk" [class.off]="newStoreId !== null">
+            <input type="checkbox" [(ngModel)]="newAdmin" [disabled]="busy() || newStoreId !== null" />
             <span>Администратор — может управлять пользователями</span>
           </label>
-          <div class="muted small">Логин: 3–40 символов, латиница, цифры, точка, дефис, подчёркивание. Пароль не короче 6 символов.</div>
+          <div class="muted small">
+            Логин: 3–40 символов, латиница, цифры, точка, дефис, подчёркивание. Пароль не короче 6 символов.
+            ФИО — до 50 символов, можно одним словом.
+          </div>
+          <div class="muted small">
+            Если выбрать магазин — это сотрудник точки: он привязан только к этому магазину
+            (к одной точке можно привязать нескольких человек) и не может быть администратором.
+          </div>
         </div>
         <div modalFooter>
           <button type="button" class="btn" (click)="createOpen.set(false)" [disabled]="busy()">Отмена</button>
           <button type="button" class="btn primary" (click)="create()" [disabled]="busy()">
             {{ busy() ? 'Создаём…' : 'Создать' }}
+          </button>
+        </div>
+      </app-modal>
+    }
+
+    @if (editUser(); as u) {
+      <app-modal [title]="'Профиль: ' + u.login" (closed)="editUser.set(null)">
+        @if (formErr()) { <div class="err">{{ formErr() }}</div> }
+        <div class="col">
+          <label class="f">
+            ФИО сотрудника
+            <input [(ngModel)]="editName" maxlength="50" autocomplete="off" [disabled]="busy()" placeholder="Иванов Иван" />
+          </label>
+          <label class="f">
+            Магазин
+            <select [(ngModel)]="editStoreId" [disabled]="busy()">
+              <option [ngValue]="null">— офис, доступ ко всей CRM —</option>
+              @for (s of stores(); track s.id) {
+                <option [ngValue]="s.id">{{ s.name }} · {{ s.code }}{{ s.active ? '' : ' (закрыт)' }}</option>
+              }
+            </select>
+          </label>
+          @if (editStoreId !== null) {
+            <div class="muted small">
+              Сотрудник магазина привязан к одной точке. Права администратора снимаются автоматически.
+            </div>
+          }
+       
+        </div>
+        <div modalFooter>
+          <button type="button" class="btn" (click)="editUser.set(null)" [disabled]="busy()">Отмена</button>
+          <button type="button" class="btn primary" (click)="saveProfile(u)" [disabled]="busy()">
+            {{ busy() ? 'Сохраняем…' : 'Сохранить' }}
           </button>
         </div>
       </app-modal>
@@ -136,6 +212,7 @@ import { ModalComponent } from '../shared/modal.component';
     .col { display: flex; flex-direction: column; gap: 10px; }
     .chk { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
     .chk input { width: auto; }
+    .chk.off { opacity: .5; cursor: default; }
     .acts { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
     tr.off td { opacity: .6; }
     @media (max-width: 900px) {
@@ -146,25 +223,34 @@ import { ModalComponent } from '../shared/modal.component';
 })
 export class UsersComponent implements OnInit {
   private auth = inject(AuthService);
+  private api = inject(ApiService);
 
   rows = signal<AuthUserRow[]>([]);
+  stores = signal<StoreOption[]>([]);
   busyId = signal<number | null>(null);
   err = signal('');
   msg = signal('');
 
   createOpen = signal(false);
   pwdUser = signal<AuthUserRow | null>(null);
+  editUser = signal<AuthUserRow | null>(null);
   busy = signal(false);
   formErr = signal('');
 
   newLogin = '';
+  newName = '';
   newPassword = '';
   newAdmin = false;
+  newStoreId: number | null = null;
+
+  editName = '';
+  editStoreId: number | null = null;
 
   meId = (): number => this.auth.user()?.id ?? 0;
 
   ngOnInit(): void {
     this.load();
+    this.loadStores();
   }
 
   load(): void {
@@ -175,12 +261,55 @@ export class UsersComponent implements OnInit {
     });
   }
 
+  /** Список точек для привязки; ошибка не должна ломать раздел пользователей. */
+  private loadStores(): void {
+    this.api.points$().subscribe({
+      next: (v) =>
+        this.stores.set(
+          v
+            .map((p) => ({ id: p.id, name: p.name, code: p.code, active: Boolean(p.active) }))
+            .sort((a, b) => a.name.localeCompare(b.name, 'ru'))
+        ),
+      error: () => undefined,
+    });
+  }
+
   openCreate(): void {
     this.newLogin = '';
+    this.newName = '';
     this.newPassword = '';
     this.newAdmin = false;
+    this.newStoreId = null;
     this.formErr.set('');
     this.createOpen.set(true);
+  }
+
+  openProfile(r: AuthUserRow): void {
+    // берём именно сохранённое значение: однословное ФИО может совпасть с логином
+    this.editName = r.fullNameRaw ?? '';
+    this.editStoreId = r.storeId;
+    this.formErr.set('');
+    this.editUser.set(r);
+  }
+
+  saveProfile(r: AuthUserRow): void {
+    if (this.busy()) return;
+    const fullName = this.editName.trim().replace(/\s+/g, ' ').slice(0, 50);
+    const storeChanged = r.storeId !== this.editStoreId;
+    this.busy.set(true);
+    this.formErr.set('');
+    this.auth.patchUser$(r.id, { fullName: fullName || null, ...(storeChanged ? { storeId: this.editStoreId } : {}) }).subscribe({
+      next: () => {
+        this.busy.set(false);
+        this.editUser.set(null);
+        this.flash(`Профиль «${r.login}» сохранён`);
+        this.load();
+      },
+      error: (e) => {
+        this.busy.set(false);
+        this.formErr.set(httpErr(e));
+      },
+    });
   }
 
   openPwd(r: AuthUserRow): void {
@@ -202,18 +331,20 @@ export class UsersComponent implements OnInit {
     }
     this.busy.set(true);
     this.formErr.set('');
-    this.auth.createUser$({ login, password: this.newPassword, isAdmin: this.newAdmin }).subscribe({
-      next: (r) => {
-        this.busy.set(false);
-        this.createOpen.set(false);
-        this.flash(`Пользователь «${login}» создан (id ${r.id})`);
-        this.load();
-      },
-      error: (e) => {
-        this.busy.set(false);
-        this.formErr.set(httpErr(e));
-      },
-    });
+    this.auth
+      .createUser$({ login, fullName: this.newName.trim().replace(/\s+/g, ' ').slice(0, 50), password: this.newPassword, isAdmin: this.newAdmin, storeId: this.newStoreId })
+      .subscribe({
+        next: (r) => {
+          this.busy.set(false);
+          this.createOpen.set(false);
+          this.flash(`Пользователь «${login}» создан (id ${r.id})`);
+          this.load();
+        },
+        error: (e) => {
+          this.busy.set(false);
+          this.formErr.set(httpErr(e));
+        },
+      });
   }
 
   resetPwd(r: AuthUserRow): void {
@@ -239,6 +370,7 @@ export class UsersComponent implements OnInit {
   }
 
   toggleAdmin(r: AuthUserRow): void {
+    if (r.storeId) return; // магазинному пользователю права админа не выдаются
     this.patch(r, { isAdmin: !r.isAdmin }, r.isAdmin ? `«${r.login}» больше не администратор` : `«${r.login}» теперь администратор`);
   }
 
@@ -246,7 +378,7 @@ export class UsersComponent implements OnInit {
     this.patch(r, { active: !r.active }, r.active ? `Вход для «${r.login}» закрыт` : `Вход для «${r.login}» открыт`);
   }
 
-  private patch(r: AuthUserRow, body: { isAdmin?: boolean; active?: boolean }, ok: string): void {
+  private patch(r: AuthUserRow, body: { isAdmin?: boolean; active?: boolean; fullName?: string | null; storeId?: number | null }, ok: string): void {
     if (this.busyId() !== null) return;
     this.err.set('');
     this.busyId.set(r.id);

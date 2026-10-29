@@ -14,6 +14,7 @@ export class AuthService {
   readonly user = this.state.user;
   readonly ready = this.state.ready;
   readonly isAdmin = this.state.isAdmin;
+  readonly isStoreUser = this.state.isStoreUser;
 
   /** Проверка сессии на старте приложения (до первого срабатывания guard). */
   load(): Promise<void> {
@@ -56,10 +57,16 @@ export class AuthService {
   users$(): Observable<AuthUserRow[]> {
     return this.http.get<AuthUserRow[]>(`${this.base}/users`);
   }
-  createUser$(body: { login: string; password: string; isAdmin: boolean }): Observable<{ id: number }> {
+  createUser$(body: { login: string; password: string; fullName?: string; isAdmin: boolean; storeId?: number | null }): Observable<{ id: number }> {
     return this.http.post<{ id: number }>(`${this.base}/users`, body);
   }
-  patchUser$(id: number, body: { password?: string; isAdmin?: boolean; active?: boolean }): Observable<{ ok: boolean }> {
+  patchUser$(id: number, body: {
+    password?: string;
+    isAdmin?: boolean;
+    active?: boolean;
+    fullName?: string | null;
+    storeId?: number | null;
+  }): Observable<{ ok: boolean }> {
     return this.http.patch<{ ok: boolean }>(`${this.base}/users/${id}`, body);
   }
 }

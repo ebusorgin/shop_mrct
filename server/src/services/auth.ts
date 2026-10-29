@@ -8,7 +8,12 @@ import { pool } from '../db';
 export interface AuthUser {
   id: number;
   login: string;
+  /** ФИО для подписи в журнале и колонках «кто»; без ФИО совпадает с логином. */
+  fullName: string;
   isAdmin: boolean;
+  /** Магазинный пользователь: точка, к которой привязан; null — офис. */
+  storeId: number | null;
+  storeName: string | null;
 }
 
 declare global {
@@ -96,15 +101,27 @@ export async function readSession(req: Request): Promise<{ token: string; user: 
   const token = readCookie(req, SESSION_COOKIE);
   if (!token) return null;
   const { rows } = await pool.query(
-    `select u.id, u.login, u.is_admin
+    `select u.id, u.login, u.is_admin, u.store_id, st.name as store_name,
+            coalesce(nullif(btrim(u.full_name), ''), u.login) as full_name
        from sessions s
        join users u on u.id = s.user_id
+       left join stores st on st.id = u.store_id
       where s.token_hash = $1 and s.expires_at > now() and u.active
       limit 1`,
     [sha256(token)]
   );
   if (!rows.length) return null;
-  return { token, user: { id: Number(rows[0].id), login: String(rows[0].login), isAdmin: Boolean(rows[0].is_admin) } };
+  return {
+    token,
+    user: {
+      id: Number(rows[0].id),
+      login: String(rows[0].login),
+      fullName: String(rows[0].full_name),
+      isAdmin: Boolean(rows[0].is_admin),
+      storeId: rows[0].store_id === null ? null : Number(rows[0].store_id),
+      storeName: rows[0].store_name === null ? null : String(rows[0].store_name),
+    },
+  };
 }
 
 export async function deleteSession(token: string): Promise<void> {
@@ -142,6 +159,27 @@ export const requireAuth: RequestHandler = (req: Request, res: Response, next: N
 export const requireAdmin: RequestHandler = (req: Request, res: Response, next: NextFunction) => {
   if (!req.user?.isAdmin) {
     res.status(403).json({ error: 'Доступно только администратору' });
+    return;
+  }
+  next();
+};
+
+/**
+ * Офисные разделы CRM (склад, накладные, техкарты, точки, журнал…):
+ * магазинному сотруднику они недоступны — у него только своя точка.
+ */
+export const requireOffice: RequestHandler = (req: Request, res: Response, next: NextFunction) => {
+  if (req.user?.storeId != null) {
+    res.status(403).json({ error: 'Доступно только сотрудникам офиса' });
+    return;
+  }
+  next();
+};
+
+/** Только магазинный сотрудник: привязан к точке (страница своего магазина). */
+export const requireStore: RequestHandler = (req: Request, res: Response, next: NextFunction) => {
+  if (req.user?.storeId == null) {
+    res.status(403).json({ error: 'Доступно только сотруднику магазина' });
     return;
   }
   next();

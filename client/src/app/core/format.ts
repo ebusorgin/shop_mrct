@@ -38,6 +38,15 @@ export function today(): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
+/** Момент времени из ISO -> «28.10.2026 14:05» (локальное время); пусто -> «—». */
+export function fmtDateTime(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const p = (x: number) => String(x).padStart(2, '0');
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso.slice(0, 16).replace('T', ' ');
+  return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 /** Извлекает человекочитаемую ошибку из ответа HttpErrorResponse. */
 export function httpErr(e: unknown): string {
   const anyErr = e as { error?: { error?: string; details?: unknown }; status?: number; message?: string };

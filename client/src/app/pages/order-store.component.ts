@@ -1,11 +1,12 @@
-import { ChangeDetectionStrategy, Component, Input, OnInit, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, Input, OnInit, computed, effect, inject, signal, untracked } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { ApiService } from '../core/api.service';
 import { OrdersService } from '../core/orders.service';
 import { OrderCatalogItem, OrderDate, OrderItem, OrderViolation, OrdersSummary } from '../core/models';
-import { fmtMoney, fmtQty, httpErr, today, trim } from '../core/format';
+import { fmtDateTime, fmtMoney, fmtQty, httpErr, today, trim } from '../core/format';
+import { LiveService } from '../core/live.service';
 
 interface CartLine {
   cardId: number;
@@ -22,7 +23,7 @@ interface CartLine {
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="row" style="align-items:center; margin-bottom:6px">
-      <a class="btn sm" routerLink="/orders">← Заказы</a>
+      @if (!storeView) { <a class="btn sm" routerLink="/orders">← Заказы</a> }
       <h1 class="page-title" style="margin:0">🛒 {{ title() }}</h1>
     </div>
     @if (err()) { <div class="err">{{ err() }}</div> }
@@ -90,13 +91,20 @@ interface CartLine {
               <td data-l="Статус">
                 <span class="badge" [class]="badgeCls(it.status)">{{ statusLabel(it.status) }}</span>
                 @if (it.source === 'g_sheet') { <span class="badge gray" title="из Google Таблицы">G</span> }
+                @if (it.statusByLogin) {
+                  <div class="who" [title]="'статус сменил: ' + it.statusByLogin + ' · ' + fmtWhen(it.statusAt)">
+                    {{ it.statusByName || it.statusByLogin }} · {{ fmtWhen(it.statusAt) }}
+                  </div>
+                }
               </td>
               <td style="white-space:nowrap">
-                @if (it.status !== 'confirmed' && it.status !== 'collected' && it.status !== 'cancelled') {
-                  <button class="btn sm" (click)="setStatus(it, 'confirmed')">✓</button>
-                }
-                @if (it.status === 'confirmed') {
-                  <button class="btn sm" (click)="setStatus(it, 'collected')">📦 собрали</button>
+                @if (!storeView) {
+                  @if (it.status !== 'confirmed' && it.status !== 'collected' && it.status !== 'cancelled') {
+                    <button class="btn sm" (click)="setStatus(it, 'confirmed')">✓</button>
+                  }
+                  @if (it.status === 'confirmed') {
+                    <button class="btn sm" (click)="setStatus(it, 'collected')">📦 собрали</button>
+                  }
                 }
                 @if (it.status !== 'cancelled' && it.status !== 'collected') {
                   <button class="btn sm danger" (click)="setStatus(it, 'cancelled')">✕</button>
@@ -111,6 +119,7 @@ interface CartLine {
     </div>
 
     <!-- ===== оформление нового заказа ===== -->
+    @if (!storeView || isToday()) {
     <div class="panel">
       <h3>➕ Оформить заказ (дата {{ pretty(date()) }})</h3>
       <label class="f" style="margin-bottom:10px">Добавить из каталога
@@ -163,13 +172,20 @@ interface CartLine {
         }
       }
     </div>
+    }
   `,
-  styles: [`.red { color: var(--red); }`],
+  styles: [`.red { color: var(--red); } .who { font-size: 11px; color: var(--muted); white-space: nowrap; }`],
 })
 export class OrderStoreComponent implements OnInit {
   private api = inject(ApiService);
   readonly ordersSvc = inject(OrdersService);
   private route = inject(ActivatedRoute);
+  private live = inject(LiveService);
+
+  /** Точка зафиксирована (страница своего магазина): выбор магазина не нужен. */
+  @Input() fixedStoreId: number | null = null;
+  /** Режим магазина: без подтверждения/сборки, без ссылки «Заказы», заказ — только на сегодня. */
+  @Input() storeView = false;
 
   storeId = 0;
   dates = signal<OrderDate[]>([]);
@@ -191,8 +207,28 @@ export class OrderStoreComponent implements OnInit {
   fmtQty = fmtQty;
   fmtMoney = fmtMoney;
   trim = trim;
+  fmtWhen = fmtDateTime;
 
-  title = computed(() => `Магазин ${this.storeId}`);
+  title(): string {
+    return this.storeView ? 'Заказы магазина' : `Магазин ${this.storeId}`;
+  }
+
+  /** Сегодняшний лист — единственный, на который магазин может оформить заказ. */
+  isToday(): boolean {
+    return this.date() === today();
+  }
+
+  constructor() {
+    // в таблице что-то поменяли и сервер уже перечитал её — обновляем список заказов
+    effect(() => {
+      if (this.live.sheetVersion() > 0 && this.storeId) {
+        untracked(() => {
+          this.loadDates();
+          this.ordersSvc.ensureCategories(true);
+        });
+      }
+    });
+  }
 
   pickedCatalog = computed(() => {
     const kw = this.picker().trim().toLowerCase();
@@ -202,6 +238,13 @@ export class OrderStoreComponent implements OnInit {
   });
 
   async ngOnInit(): Promise<void> {
+    // страница магазина: своя точка известна заранее, список точек офиса не запрашиваем
+    if (this.fixedStoreId) {
+      this.storeId = this.fixedStoreId;
+      await Promise.all([this.ordersSvc.ensureCatalog(), this.ordersSvc.ensureCategories()]);
+      await this.loadDates();
+      return;
+    }
     this.route.paramMap.subscribe(async (pm) => {
       this.storeId = Number(pm.get('storeId')) || 0;
       await this.ordersSvc.ensureStores();

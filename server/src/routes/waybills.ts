@@ -7,6 +7,7 @@ import { config } from '../config';
 import { ApiError, optNum, reqArr, reqNum, reqStr, wrap } from '../http';
 import { applyMovement } from '../services/stock';
 import { loadUnits, toBaseCross, loadProductConv, type ProdConv } from '../services/expansion';
+import { auditTx, type Actor } from '../services/audit';
 
 export const waybillsRouter = Router();
 
@@ -38,6 +39,8 @@ export interface WaybillInHead {
   docTotalNet?: number | null;
   docTotalVat?: number | null;
   docTotalGross?: number | null;
+  /** Кто принял накладную на склад: пишем в waybills.accepted_by/accepted_login. */
+  actor?: Actor;
 }
 
 /**
@@ -61,9 +64,11 @@ export async function ingestWaybill(client: PoolClient, head: WaybillInHead, ite
   const { rows: wb } = await client.query(
     `insert into waybills (number, supplier, doc_date, file_name, stored_file, file_data, file_mime, extra_files,
                            currency, supplier_pib, total_net, total_vat, total_gross,
-                           doc_total_net, doc_total_vat, doc_total_gross)
+                           doc_total_net, doc_total_vat, doc_total_gross,
+                           accepted_by, accepted_login, accepted_at)
      values ($1, $2, coalesce($3::date, current_date), $4, $5, $6, $7, $8,
-             coalesce($9, 'RSD'), $10, $11, $12, $13, $14, $15, $16)
+             coalesce($9, 'RSD'), $10, $11, $12, $13, $14, $15, $16,
+             $17, $18, now())
      returning id`,
     [
       head.number, head.supplier, head.docDate, head.fileName ?? null, head.storedFile ?? null,
@@ -72,6 +77,7 @@ export async function ingestWaybill(client: PoolClient, head: WaybillInHead, ite
       head.currency ?? null, head.supplierPib ?? null,
       round2(totalNet), round2(totalVat), round2(round2(totalNet) + round2(totalVat)),
       head.docTotalNet ?? null, head.docTotalVat ?? null, head.docTotalGross ?? null,
+      head.actor?.id ?? null, head.actor?.login ?? null,
     ]
   );
   const waybillId = wb[0].id as number;
@@ -111,6 +117,7 @@ export async function ingestWaybill(client: PoolClient, head: WaybillInHead, ite
       docType: 'waybill',
       docId: waybillId,
       comment: `Приход по накладной №${head.number}`,
+      actor: head.actor ?? null,
     });
   }
   return waybillId;
@@ -124,6 +131,12 @@ waybillsRouter.get(
              w.status, count(i.id) as "itemsCount",
              (w.stored_file is not null or w.file_data is not null) as "hasFile",
              coalesce(jsonb_array_length(w.extra_files), 0) as "extraCount",
+             w.accepted_login as "acceptedLogin",
+             (select coalesce(nullif(btrim(u.full_name), ''), w.accepted_login) from users u where u.id = w.accepted_by) as "acceptedName",
+             to_char(w.accepted_at, 'YYYY-MM-DD HH24:MI') as "acceptedAt",
+             w.reversed_login as "reversedLogin",
+             (select coalesce(nullif(btrim(u.full_name), ''), w.reversed_login) from users u where u.id = w.reversed_by) as "reversedName",
+             to_char(w.reversed_at, 'YYYY-MM-DD HH24:MI') as "reversedAt",
              coalesce(sum(i.qty * i.price), 0)::float8 as total
         from waybills w
         left join waybill_items i on i.waybill_id = w.id
@@ -189,13 +202,22 @@ waybillsRouter.get(
   '/:id',
   wrap(async (req, res) => {
     const { rows: head } = await pool.query(
-      `select id, number, supplier, to_char(doc_date,'YYYY-MM-DD') as "docDate", status,
-              file_name as "fileName", (stored_file is not null or file_data is not null) as "hasFile",
-              extra_files as "extraFiles",
-              currency, supplier_pib as "supplierPib",
-              total_net::float8 as "totalNet", total_vat::float8 as "totalVat", total_gross::float8 as "totalGross",
-              doc_total_net::float8 as "docTotalNet", doc_total_vat::float8 as "docTotalVat", doc_total_gross::float8 as "docTotalGross"
-         from waybills where id = $1`,
+      `select w.id, w.number, w.supplier, to_char(w.doc_date,'YYYY-MM-DD') as "docDate", w.status,
+              w.file_name as "fileName", (w.stored_file is not null or w.file_data is not null) as "hasFile",
+              w.extra_files as "extraFiles",
+              w.currency, w.supplier_pib as "supplierPib",
+              w.accepted_login as "acceptedLogin",
+              coalesce(nullif(btrim(au.full_name), ''), w.accepted_login) as "acceptedName",
+              to_char(w.accepted_at, 'DD.MM.YYYY HH24:MI') as "acceptedAt",
+              w.reversed_login as "reversedLogin",
+              coalesce(nullif(btrim(ru.full_name), ''), w.reversed_login) as "reversedName",
+              to_char(w.reversed_at, 'DD.MM.YYYY HH24:MI') as "reversedAt",
+              w.total_net::float8 as "totalNet", w.total_vat::float8 as "totalVat", w.total_gross::float8 as "totalGross",
+              w.doc_total_net::float8 as "docTotalNet", w.doc_total_vat::float8 as "docTotalVat", w.doc_total_gross::float8 as "docTotalGross"
+         from waybills w
+         left join users au on au.id = w.accepted_by
+         left join users ru on ru.id = w.reversed_by
+        where w.id = $1`,
       [req.params.id]
     );
     if (!head.length) throw new ApiError(404, 'Накладная не найдена');
@@ -236,7 +258,17 @@ waybillsRouter.post(
       price: optNum(it, 'price'),
     }));
 
-    const id = await tx((client) => ingestWaybill(client, { number, supplier, docDate }, items));
+    const id = await tx(async (client) => {
+      const waybillId = await ingestWaybill(client, { number, supplier, docDate, actor: req.user }, items);
+      await auditTx(client, req.user, {
+        action: 'post',
+        entity: 'waybill',
+        entityId: waybillId,
+        title: `Накладная №${number}${supplier ? ' · ' + supplier : ''}`,
+        details: { mode: 'manual', items: items.length, supplier, docDate },
+      });
+      return waybillId;
+    });
     res.status(201).json({ id });
   })
 );
@@ -277,11 +309,15 @@ waybillsRouter.post(
           docType: 'waybill',
           docId: waybillId,
           comment: `Отмена накладной №${st[0].number}`,
+          actor: req.user,
         });
       }
 
       // сначала помечаем отменённой — чтобы пересчёт ниже исключил и её движения
-      await client.query("update waybills set status = 'reversed' where id = $1", [waybillId]);
+      await client.query(
+        "update waybills set status = 'reversed', reversed_by = $2, reversed_login = $3, reversed_at = now() where id = $1",
+        [waybillId, req.user?.id ?? null, req.user?.login ?? null]
+      );
 
       // 2) пересчёт остатка и avg_cost по журналу; движения ВСЕХ отменённых накладных
       //    (приход и сторно) выбрасываются — иначе сторно одной отмены, проигранное при
@@ -308,6 +344,14 @@ waybillsRouter.post(
         }
         await client.query('update stock set qty = $2, avg_cost = $3, updated_at = now() where product_id = $1', [pid, q, c]);
       }
+
+      await auditTx(client, req.user, {
+        action: 'reverse',
+        entity: 'waybill',
+        entityId: waybillId,
+        title: `Накладная №${st[0].number}`,
+        details: { productsRecalculated: productIds.length },
+      });
 
       return productIds.length;
     });

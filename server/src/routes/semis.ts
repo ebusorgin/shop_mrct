@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { pool, tx } from '../db';
 import { ApiError, reqArr, reqInt, reqNum, reqStr, wrap } from '../http';
 import { assertBaseUnit } from '../services/expansion';
+import { audit, auditTx, diff } from '../services/audit';
 
 export const semisRouter = Router();
 
@@ -116,11 +117,19 @@ semisRouter.post(
     const id = await tx(async (client) => {
       await assertBaseUnit(client, unitId, 'Полуфабрикат');
       const { rows } = await client.query(
-        'insert into semi_products (name, unit_id, note, shelf_life_days, g_per_pcs, ml_per_pcs, g_per_ml) values ($1,$2,$3,$4,$5,$6,$7) returning id',
-        [name, unitId, note, shelfLifeDays, gPerPcs, mlPerPcs, gPerMl]
+        `insert into semi_products (name, unit_id, note, shelf_life_days, g_per_pcs, ml_per_pcs, g_per_ml, created_by, updated_by)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$8) returning id`,
+        [name, unitId, note, shelfLifeDays, gPerPcs, mlPerPcs, gPerMl, req.user?.id ?? null]
       );
       await insertInputs(client, rows[0].id, inputs);
       await assertNoCycle(client, rows[0].id);
+      await auditTx(client, req.user, {
+        action: 'create',
+        entity: 'semi',
+        entityId: rows[0].id as number,
+        title: `Полуфабрикат «${name}»`,
+        details: { unitId, note, shelfLifeDays, inputs: inputs.length },
+      });
       return rows[0].id as number;
     });
     res.status(201).json({ id });
@@ -141,13 +150,29 @@ semisRouter.patch(
     const inputs = parseInputs(reqArr(req.body, 'inputs'));
     await tx(async (client) => {
       await assertBaseUnit(client, unitId, 'Полуфабрикат');
+      const { rows: before } = await client.query(
+        'select name, unit_id, note, shelf_life_days, g_per_pcs::float8 as g_per_pcs, ml_per_pcs::float8 as ml_per_pcs, g_per_ml::float8 as g_per_ml from semi_products where id = $1',
+        [id]
+      );
+      if (!before.length) throw new ApiError(404, 'Полуфабрикат не найден');
+      const { rows: beforeInputs } = await client.query('select count(*)::int as n from semi_inputs where semi_id = $1', [id]);
       await client.query(
-        'update semi_products set name=$2, unit_id=$3, note=$4, shelf_life_days=$5, g_per_pcs=$6, ml_per_pcs=$7, g_per_ml=$8 where id=$1',
-        [id, name, unitId, note, shelfLifeDays, gPerPcs, mlPerPcs, gPerMl]
+        'update semi_products set name=$2, unit_id=$3, note=$4, shelf_life_days=$5, g_per_pcs=$6, ml_per_pcs=$7, g_per_ml=$8, updated_by=$9 where id=$1',
+        [id, name, unitId, note, shelfLifeDays, gPerPcs, mlPerPcs, gPerMl, req.user?.id ?? null]
       );
       await client.query('delete from semi_inputs where semi_id = $1', [id]);
       await insertInputs(client, id, inputs);
       await assertNoCycle(client, id);
+      await auditTx(client, req.user, {
+        action: 'update',
+        entity: 'semi',
+        entityId: id,
+        title: `Полуфабрикат «${name}»`,
+        details: diff(
+          { ...before[0], inputs: beforeInputs[0].n },
+          { name, unit_id: unitId, note, shelf_life_days: shelfLifeDays, g_per_pcs: gPerPcs, ml_per_pcs: mlPerPcs, g_per_ml: gPerMl, inputs: inputs.length }
+        ),
+      });
     });
     res.json({ ok: true });
   })
@@ -157,14 +182,22 @@ semisRouter.delete(
   '/:id',
   wrap(async (req, res) => {
     const { rows } = await pool.query(
-      `select
+      `select sp.name,
          (select count(*) from tech_card_items where source_type='semi' and ref_id = $1) as cards,
-         (select count(*) from semi_inputs where source_type='semi' and ref_id = $1) as semis`,
+         (select count(*) from semi_inputs where source_type='semi' and ref_id = $1) as semis
+       from semi_products sp where sp.id = $1`,
       [req.params.id]
     );
+    if (!rows.length) throw new ApiError(404, 'Полуфабрикат не найден');
     if (Number(rows[0].cards) > 0) throw new ApiError(409, 'Полуфабрикат используется в техкартах');
     if (Number(rows[0].semis) > 0) throw new ApiError(409, 'Полуфабрикат используется в составе других полуфабрикатов');
     await pool.query('delete from semi_products where id = $1', [req.params.id]);
+    await audit(req.user, {
+      action: 'delete',
+      entity: 'semi',
+      entityId: req.params.id,
+      title: `Полуфабрикат «${rows[0].name}»`,
+    });
     res.json({ ok: true });
   })
 );

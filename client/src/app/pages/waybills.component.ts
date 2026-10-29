@@ -3,7 +3,7 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ApiService } from '../core/api.service';
 import { Product, Unit, Waybill, WaybillShort, ImportParseResult, ImportItem, ImportDiscount } from '../core/models';
-import { cents, fmtCost, fmtMoney, fmtQty, httpErr, today, trim } from '../core/format';
+import { cents, fmtCost, fmtDateTime, fmtMoney, fmtQty, httpErr, today, trim } from '../core/format';
 
 interface DraftItem {
   productId: number | null;
@@ -157,6 +157,9 @@ interface ImpDraft {
     .wb-head{align-items:center}
     .wb-head h3{margin:0}
     .wb-head .pib{font-size:12px}
+    /* кто принял накладную / отменил приход */
+    .wb-head .accepted{font-size:12px;display:inline-flex;gap:4px;align-items:baseline}
+    .small{font-size:12px}
     .wb-sums{display:flex;flex-wrap:wrap;gap:4px 16px;justify-content:flex-end;align-items:baseline;font-size:13px;margin-top:6px}
     .wb-sums .doc-line{font-size:12px}
 
@@ -219,12 +222,20 @@ interface ImpDraft {
       <div class="panel">
         <h3>Журнал накладных</h3>
         <table class="tbl stack">
-          <tr class="th-row"><th>№</th><th>Дата</th><th>Поставщик</th><th class="num">Поз.</th><th class="num">Сумма</th><th></th></tr>
+          <tr class="th-row"><th>№</th><th>Дата</th><th>Поставщик</th><th>Принял</th><th class="num">Поз.</th><th class="num">Сумма</th><th></th></tr>
           @for (w of list(); track w.id) {
             <tr class="wb-row" [class.reversed]="w.status === 'reversed'" (click)="open(w.id)">
               <td><b>{{ w.number }}</b> @if (w.status === 'reversed') { <span class="badge">отменена</span> }</td>
               <td class="nw" data-l="дата">{{ w.docDate }}</td>
               <td class="wide" data-l="поставщик">{{ w.supplier }}</td>
+              <td class="nw small" data-l="принял">
+                @if (w.acceptedLogin) {
+                  <b [title]="w.acceptedLogin">{{ w.acceptedName || w.acceptedLogin }}</b>
+                  <div class="muted">{{ fmtWhen(w.acceptedAt) }}</div>
+                } @else {
+                  <span class="muted">—</span>
+                }
+              </td>
               <td class="num" data-l="позиций">{{ w.itemsCount }}</td>
               <td class="num" data-l="сумма">{{ fmtMoney(w.total) }}</td>
               <td class="no-l">
@@ -235,7 +246,7 @@ interface ImpDraft {
               </td>
             </tr>
           } @empty {
-            <tr class="empty"><td colspan="6">Накладных пока нет</td></tr>
+            <tr class="empty"><td colspan="7">Накладных пока нет</td></tr>
           }
         </table>
 
@@ -245,6 +256,12 @@ interface ImpDraft {
             <h3>Накладная №{{ d.number }} · {{ d.docDate }}</h3>
             @if (d.supplierPib) { <span class="muted pib">PIB {{ d.supplierPib }}</span> }
             <span class="badge">{{ d.currency ?? 'RSD' }}</span>
+            @if (d.acceptedLogin) {
+              <span class="muted small accepted">принял: <b [title]="d.acceptedLogin">{{ d.acceptedName || d.acceptedLogin }}</b> · {{ fmtWhen(d.acceptedAt) }}</span>
+            }
+            @if (d.reversedLogin) {
+              <span class="muted small accepted">отменил: <b [title]="d.reversedLogin">{{ d.reversedName || d.reversedLogin }}</b> · {{ fmtWhen(d.reversedAt) }}</span>
+            }
             @if (d.status === 'reversed') { <span class="badge amber">отменена — склад сторнирован</span> }
             <div class="spacer"></div>
             @if (d.hasFile) {
@@ -645,6 +662,8 @@ export class WaybillsComponent implements OnInit {
   fmtQty = fmtQty;
   fmtCost = fmtCost;
   trim = trim;
+  /** Момент приёмки/отмены — общий форматтер даты-времени. */
+  fmtWhen = fmtDateTime;
   c = cents; // округление денег до копеек в формулах шаблона
 
   /** Нетто/PDV карточки: считаем из строк (надёжно и для старых накладных без totals). */

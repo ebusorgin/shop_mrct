@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { pool, tx } from '../db';
 import { ApiError, reqStr, reqNum, optNum, wrap } from '../http';
 import { assertBaseUnit } from '../services/expansion';
+import { auditTx, diff } from '../services/audit';
 
 export const productsRouter = Router();
 
@@ -81,10 +82,17 @@ productsRouter.post(
     const id = await tx(async (client) => {
       await assertBaseUnit(client, unitId, 'Продукт');
       const { rows } = await client.query(
-        'insert into products (name, category, unit_id, min_stock, shelf_life_days, g_per_pcs, ml_per_pcs, g_per_ml) values ($1,$2,$3,$4,$5,$6,$7,$8) returning id',
-        [name, category || 'прочее', unitId, minStock, shelfLifeDays, gPerPcs, mlPerPcs, gPerMl]
+        'insert into products (name, category, unit_id, min_stock, shelf_life_days, g_per_pcs, ml_per_pcs, g_per_ml, created_by, updated_by) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9) returning id',
+        [name, category || 'прочее', unitId, minStock, shelfLifeDays, gPerPcs, mlPerPcs, gPerMl, req.user?.id ?? null]
       );
       await client.query('insert into stock (product_id, qty, avg_cost) values ($1, 0, 0)', [rows[0].id]);
+      await auditTx(client, req.user, {
+        action: 'create',
+        entity: 'product',
+        entityId: rows[0].id,
+        title: `Продукт «${name}»`,
+        details: { category: category || 'прочее', unitId, minStock, shelfLifeDays, gPerPcs, mlPerPcs, gPerMl },
+      });
       return rows[0].id as number;
     });
     res.status(201).json({ id });
@@ -113,8 +121,30 @@ productsRouter.patch(
     if (req.body.unitId !== undefined) {
       await tx(async (client) => assertBaseUnit(client, reqNum(req.body, 'unitId'), 'Продукт'));
     }
-    params.push(req.params.id);
-    await pool.query(`update products set ${fields.join(', ')} where id = $${params.length}`, params);
+    const id = Number(req.params.id);
+    await tx(async (client) => {
+      // снимок «до» — для журнала: видно, что именно поменяли
+      const { rows: before } = await client.query(
+        'select name, category, unit_id, min_stock, shelf_life_days, active from products where id = $1',
+        [id]
+      );
+      if (!before.length) throw new ApiError(404, 'Продукт не найден');
+      params.push(req.user?.id ?? null);
+      fields.push(`updated_by = $${params.length}`);
+      params.push(id);
+      await client.query(`update products set ${fields.join(', ')} where id = $${params.length}`, params);
+      const { rows: after } = await client.query(
+        'select name, category, unit_id, min_stock, shelf_life_days, active from products where id = $1',
+        [id]
+      );
+      await auditTx(client, req.user, {
+        action: 'update',
+        entity: 'product',
+        entityId: id,
+        title: `Продукт «${after[0].name}»`,
+        details: diff(before[0], after[0]),
+      });
+    });
     res.json({ ok: true });
   })
 );
@@ -126,6 +156,8 @@ productsRouter.delete(
     if (!Number.isInteger(id)) throw new ApiError(400, 'Некорректный id');
 
     const result = await tx(async (client) => {
+      const { rows: prod } = await client.query('select name from products where id = $1', [id]);
+      const title = `Продукт «${prod[0]?.name ?? '#' + id}»`;
       // Текущий остаток на складе (в базовых единицах).
       const stockRes = await client.query(
         'select coalesce(qty, 0)::float8 as qty from stock where product_id = $1',
@@ -143,13 +175,27 @@ productsRouter.delete(
 
       if (recipeUsed > 0) {
         // Физически удалять нельзя — позиция участвует в рецептурах, иначе они «сломались» бы.
-        await client.query('update products set active = false where id = $1', [id]);
+        await client.query('update products set active = false, updated_by = $2 where id = $1', [id, req.user?.id ?? null]);
+        await auditTx(client, req.user, {
+          action: 'delete',
+          entity: 'product',
+          entityId: id,
+          title,
+          details: { mode: 'archive', reason: 'используется в рецептурах', stockQty },
+        });
         return { ok: true, deactivated: true, reason: 'recipe', stockQty };
       }
 
       if (stockQty !== 0) {
         // Остаток не обнулён — не удаляем физически, только в архив.
-        await client.query('update products set active = false where id = $1', [id]);
+        await client.query('update products set active = false, updated_by = $2 where id = $1', [id, req.user?.id ?? null]);
+        await auditTx(client, req.user, {
+          action: 'delete',
+          entity: 'product',
+          entityId: id,
+          title,
+          details: { mode: 'archive', reason: 'остаток на складе', stockQty },
+        });
         return { ok: true, deactivated: true, reason: 'stock', stockQty };
       }
 
@@ -166,6 +212,17 @@ productsRouter.delete(
       );
       await client.query('delete from products where id = $1', [id]);
       const h = hist.rows[0];
+      await auditTx(client, req.user, {
+        action: 'delete',
+        entity: 'product',
+        entityId: id,
+        title,
+        details: {
+          mode: 'hard',
+          stockQty,
+          cleaned: { movements: Number(h.mv), waybillItems: Number(h.wb), batchItems: Number(h.bi) },
+        },
+      });
       return {
         ok: true,
         deleted: true,

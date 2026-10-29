@@ -35,17 +35,18 @@ export function lastSyncSummary(): SyncSummary | null {
   return lastSummary;
 }
 
-/** Запуск цикла; повторный вызов во время прогона возвращает тот же промис. */
-export function runOrderSync(opts: { full?: boolean } = {}): Promise<SyncSummary> {
+/** Запуск цикла; повторный вызов во время прогона возвращает тот же промис.
+ *  `tab` сужает прогон до одной вкладки — так работает синк по уведомлению из таблицы. */
+export function runOrderSync(opts: { full?: boolean; tab?: string } = {}): Promise<SyncSummary> {
   if (running && !opts.full) return running;
-  const p = doSync(opts.full ?? false).finally(() => {
+  const p = doSync(opts.full ?? false, opts.tab).finally(() => {
     if (running === p) running = null;
   });
   if (!opts.full) running = p;
   return p;
 }
 
-async function doSync(full: boolean): Promise<SyncSummary> {
+async function doSync(full: boolean, onlyTab?: string): Promise<SyncSummary> {
   const summary: SyncSummary = {
     tabsSeen: 0, tabsParsed: 0, tabsFailed: 0, unchanged: 0,
     ordersCreated: 0, ordersChanged: 0, ordersRemoved: 0, full,
@@ -66,7 +67,10 @@ async function doSync(full: boolean): Promise<SyncSummary> {
 
     const datedTabs = tabs.filter((t) => dates.has(t.name));
     let targets: SheetTab[];
-    if (full || known.length === 0) {
+    if (onlyTab) {
+      // уведомление из таблицы: правим только ту вкладку, о которой сообщили
+      targets = datedTabs.filter((t) => t.name === onlyTab);
+    } else if (full || known.length === 0) {
       targets = datedTabs;
     } else {
       const recent = datedTabs.slice(-config.gsheetRecentTabs);

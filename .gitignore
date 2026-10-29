@@ -28,3 +28,4 @@ client/tmp-*
 *.jpg
 *.jpeg
 *.png
+.deploy-tmp/

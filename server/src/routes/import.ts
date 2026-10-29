@@ -7,6 +7,7 @@ import { ApiError, optNum, reqArr, reqNum, reqStr, wrap } from '../http';
 import { parseWaybillDoc, CatalogProduct } from '../services/llm';
 import { convertAcross, type ProdConv } from '../services/expansion';
 import { ingestWaybill } from './waybills';
+import { auditTx } from '../services/audit';
 
 export const importRouter = Router();
 
@@ -684,8 +685,8 @@ importRouter.post(
             productId = ex[0].id as number; // такое название уже есть — дописываемся к нему
           } else {
             const { rows: ins } = await client.query(
-              `insert into products (name, category, unit_id) values ($1, $2, $3) returning id`,
-              [name, category, unitReq]
+              `insert into products (name, category, unit_id, created_by, updated_by) values ($1, $2, $3, $4, $4) returning id`,
+              [name, category, unitReq, req.user?.id ?? null]
             );
             productId = ins[0].id as number;
             await client.query('insert into stock (product_id, qty, avg_cost) values ($1, 0, 0)', [productId]);
@@ -719,6 +720,7 @@ importRouter.post(
           number,
           supplier,
           docDate,
+          actor: req.user,
           fileName,
           storedFile,
           fileData: fileBuf,
@@ -732,6 +734,13 @@ importRouter.post(
         },
         items
       );
+      await auditTx(client, req.user, {
+        action: 'post',
+        entity: 'waybill',
+        entityId: waybillId,
+        title: `Накладная №${number}${supplier ? ' · ' + supplier : ''}`,
+        details: { mode: 'import', items: items.length, createdProducts: created.length, aliasesSaved },
+      });
       return { waybillId, created, aliasesSaved };
     });
 

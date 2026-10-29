@@ -6,6 +6,8 @@ dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
 
 export const config = {
   port: Number(process.env.PORT ?? 4000),
+  // интерфейс прослушивания: за nginx на сервере — 127.0.0.1, для доступа по LAN — 0.0.0.0 (по умолчанию)
+  host: process.env.HOST ?? '0.0.0.0',
   allowNegativeStock: (process.env.ALLOW_NEGATIVE_STOCK ?? 'false') === 'true',
   sqlDir: path.resolve(__dirname, '..', 'sql'),
   // GPT-парсинг входящих накладных (ключ только на сервере!)
@@ -18,6 +20,9 @@ export const config = {
   gsheetId: process.env.GSHEET_ORDERS_ID ?? '1tmtmBRcpDDRM5KaONo5wXo51RFcbm92nQ9GibFlHAzA',
   gsheetSyncMin: Number(process.env.GSHEET_SYNC_MIN ?? 10), // период синхронизации, мин
   gsheetRecentTabs: Number(process.env.GSHEET_RECENT_TABS ?? 10), // сколько свежих листов правим каждый цикл
+  // уведомления об изменениях таблицы: вебхук Apps Script и страховочный вотчер листа
+  sheetHookToken: process.env.GSHEET_HOOK_TOKEN ?? '', // пусто — вебхук выключен (503)
+  sheetWatchSec: Number(process.env.GSHEET_WATCH_SEC ?? 5), // 0 — вотчер выключен
   // вход в CRM: срок сессии и первый администратор (создаётся, только пока таблица users пуста)
   sessionDays: Number(process.env.AUTH_SESSION_DAYS ?? 7),
   authAdminLogin: process.env.AUTH_ADMIN_LOGIN ?? 'admin',

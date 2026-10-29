@@ -1,6 +1,7 @@
 import { PoolClient } from 'pg';
 import { ApiError } from '../http';
 import { config } from '../config';
+import type { Actor } from './audit';
 
 export type MovementType = 'receipt' | 'writeoff' | 'adjustment';
 
@@ -13,6 +14,8 @@ export interface MoveInput {
   docType?: string;
   docId?: number;
   comment?: string;
+  /** Кто сделал движение: пишется в movements.user_login — видно в журнале склада. */
+  actor?: Actor;
 }
 
 /**
@@ -47,8 +50,12 @@ export async function applyMovement(client: PoolClient, m: MoveInput): Promise<v
     [m.productId, newQty, avgCost]
   );
   await client.query(
-    `insert into movements (product_id, type, qty, unit_cost, doc_type, doc_id, comment)
-     values ($1, $2, $3, $4, $5, $6, $7)`,
-    [m.productId, m.type, m.delta, m.unitCost ?? (m.type === 'writeoff' ? oldCost : 0), m.docType ?? null, m.docId ?? null, m.comment ?? null]
+    `insert into movements (product_id, type, qty, unit_cost, doc_type, doc_id, comment, user_id, user_login)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [
+      m.productId, m.type, m.delta, m.unitCost ?? (m.type === 'writeoff' ? oldCost : 0),
+      m.docType ?? null, m.docId ?? null, m.comment ?? null,
+      m.actor?.id ?? null, m.actor?.login ?? null,
+    ]
   );
 }

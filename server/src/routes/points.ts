@@ -16,6 +16,7 @@ import { Router } from 'express';
 import { pool } from '../db';
 import { ApiError, reqInt, reqNum, wrap } from '../http';
 import { printedQty } from '../services/order-match';
+import { audit, diff } from '../services/audit';
 
 export const pointsRouter = Router();
 
@@ -46,6 +47,11 @@ interface PointCard {
   note: string;
   createdAt: string;
   updatedAt: string;
+  /** кто завёл точку и кто последним её правил (логин) */
+  createdByLogin: string | null;
+  createdByName: string | null;
+  updatedByLogin: string | null;
+  updatedByName: string | null;
   health: {
     lastOrderDate: string | null;
     daysSince: number | null;
@@ -195,6 +201,9 @@ async function loadCards(): Promise<PointCard[]> {
            s.opening_hours as "openingHours", s.note,
            to_char(s.created_at, 'YYYY-MM-DD') as "createdAt",
            to_char(s.updated_at, 'YYYY-MM-DD') as "updatedAt",
+           cu.login as "createdByLogin", uu.login as "updatedByLogin",
+           coalesce(nullif(btrim(cu.full_name), ''), cu.login) as "createdByName",
+           coalesce(nullif(btrim(uu.full_name), ''), uu.login) as "updatedByName",
            (select max(o.date_tab)::text from orders o where o.store_id = s.id) as "lastOrderDate",
            (select greatest(0, current_date - max(o.date_tab)) from orders o where o.store_id = s.id) as "daysSince",
            (select count(*)::int from orders o where o.store_id = s.id
@@ -203,6 +212,8 @@ async function loadCards(): Promise<PointCard[]> {
            (select max(ot.last_sync_at) from orders o3
               join order_tabs ot on ot.id = o3.tab_id where o3.store_id = s.id) as "lastSyncAt"
       from stores s
+      left join users cu on cu.id = s.created_by
+      left join users uu on uu.id = s.updated_by
      order by s.position, s.id`);
 
   const trend = await loadTrend();
@@ -223,6 +234,10 @@ async function loadCards(): Promise<PointCard[]> {
       note: r.note ?? '',
       createdAt: r.createdAt ?? '',
       updatedAt: r.updatedAt ?? '',
+      createdByLogin: r.createdByLogin ?? null,
+      createdByName: r.createdByName ?? null,
+      updatedByLogin: r.updatedByLogin ?? null,
+      updatedByName: r.updatedByName ?? null,
       health: {
         lastOrderDate: r.lastOrderDate ?? null,
         daysSince,
@@ -342,14 +357,22 @@ pointsRouter.post(
     const active = req.body.active === undefined ? true : Boolean(req.body.active);
 
     await pool.query(
-      `insert into stores (id, code, name, active, position, address, phone, email, contact_person, opening_hours, note)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      `insert into stores (id, code, name, active, position, address, phone, email, contact_person, opening_hours, note, created_by, updated_by)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12)`,
       [
         id, code, name, active, position,
         optStr(req.body, 'address'), optStr(req.body, 'phone'), optStr(req.body, 'email'),
         optStr(req.body, 'contactPerson'), optStr(req.body, 'openingHours'), optStr(req.body, 'note'),
+        req.user?.id ?? null,
       ]
     );
+    await audit(req.user, {
+      action: 'create',
+      entity: 'store',
+      entityId: id,
+      title: `Точка «${name}»`,
+      details: { code, active, position },
+    });
     res.status(201).json({ id });
   })
 );
@@ -360,7 +383,10 @@ pointsRouter.patch(
     const id = Number(req.params.id);
     const name = String(req.body.name ?? '').trim();
     if (!name) throw new ApiError(400, 'Поле «name» обязательно');
-    const { rows: cur } = await pool.query('select id from stores where id = $1', [id]);
+    const { rows: cur } = await pool.query(
+      'select id, code, name, active, position, address, phone, email, contact_person, opening_hours, note from stores where id = $1',
+      [id]
+    );
     if (!cur.length) throw new ApiError(404, 'Точка не найдена');
 
     const code = optStr(req.body, 'code') || `Mix 38${id}`;
@@ -372,14 +398,27 @@ pointsRouter.patch(
 
     await pool.query(
       `update stores set code=$2, name=$3, active=$4, position=$5, address=$6, phone=$7, email=$8,
-              contact_person=$9, opening_hours=$10, note=$11, updated_at=now()
+              contact_person=$9, opening_hours=$10, note=$11, updated_at=now(), updated_by=$12
         where id=$1`,
       [
         id, code, name, active, position,
         optStr(req.body, 'address'), optStr(req.body, 'phone'), optStr(req.body, 'email'),
         optStr(req.body, 'contactPerson'), optStr(req.body, 'openingHours'), optStr(req.body, 'note'),
+        req.user?.id ?? null,
       ]
     );
+    await audit(req.user, {
+      action: 'update',
+      entity: 'store',
+      entityId: id,
+      title: `Точка «${name}»`,
+      details: diff(cur[0] as Record<string, unknown>, {
+        code, name, active, position,
+        address: optStr(req.body, 'address'), phone: optStr(req.body, 'phone'), email: optStr(req.body, 'email'),
+        contact_person: optStr(req.body, 'contactPerson'), opening_hours: optStr(req.body, 'openingHours'),
+        note: optStr(req.body, 'note'),
+      }),
+    });
     res.json({ ok: true });
   })
 );
@@ -388,8 +427,12 @@ pointsRouter.post(
   '/:id/deactivate',
   wrap(async (req, res) => {
     const id = Number(req.params.id);
-    const { rows } = await pool.query('update stores set active = false, updated_at = now() where id = $1 returning id', [id]);
+    const { rows } = await pool.query(
+      'update stores set active = false, updated_at = now(), updated_by = $2 where id = $1 returning id, name',
+      [id, req.user?.id ?? null]
+    );
     if (!rows.length) throw new ApiError(404, 'Точка не найдена');
+    await audit(req.user, { action: 'update', entity: 'store', entityId: id, title: `Точка «${rows[0].name}»`, details: { active: false } });
     res.json({ ok: true });
   })
 );
@@ -398,12 +441,17 @@ pointsRouter.delete(
   '/:id',
   wrap(async (req, res) => {
     const id = Number(req.params.id);
-    const { rows } = await pool.query('select count(*)::int as c from orders where store_id = $1', [id]);
+    const { rows } = await pool.query(
+      `select s.name, (select count(*)::int from orders where store_id = s.id) as c
+         from stores s where s.id = $1`,
+      [id]
+    );
+    if (!rows.length) throw new ApiError(404, 'Точка не найдена');
     if (Number(rows[0].c) > 0) {
       throw new ApiError(409, 'По точке есть заказы — удалите нельзя, можно деактивировать');
     }
-    const { rows: del } = await pool.query('delete from stores where id = $1 returning id', [id]);
-    if (!del.length) throw new ApiError(404, 'Точка не найдена');
+    await pool.query('delete from stores where id = $1', [id]);
+    await audit(req.user, { action: 'delete', entity: 'store', entityId: id, title: `Точка «${rows[0].name}»` });
     res.json({ ok: true });
   })
 );

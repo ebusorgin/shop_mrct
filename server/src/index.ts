@@ -3,6 +3,7 @@ import { config } from './config';
 import { migrate } from './migrate';
 import { pool } from './db';
 import { startOrderSyncLoop } from './services/order-sync';
+import { startSheetWatch } from './services/sheet-watch';
 import { ensureAdminUser, purgeExpiredSessions } from './services/auth';
 
 async function main(): Promise<void> {
@@ -10,10 +11,11 @@ async function main(): Promise<void> {
   await ensureAdminUser();
   await purgeExpiredSessions();
   const app = createApp();
-  app.listen(config.port, () => {
-    console.log(`MIX markt CRM API: http://localhost:${config.port}/api`);
+  app.listen(config.port, config.host, () => {
+    console.log(`MIX markt CRM API: http://${config.host}:${config.port}/api`);
   });
   startOrderSyncLoop();
+  startSheetWatch();
 }
 
 main().catch(async (e: unknown) => {

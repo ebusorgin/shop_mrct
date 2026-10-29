@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnInit, effect, inject, signal, untracked } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
@@ -6,6 +6,7 @@ import { ApiService } from '../core/api.service';
 import { OrdersService } from '../core/orders.service';
 import { OrderChange, OrderSyncState, Store } from '../core/models';
 import { httpErr } from '../core/format';
+import { LiveService } from '../core/live.service';
 
 @Component({
   selector: 'app-orders',
@@ -50,6 +51,13 @@ import { httpErr } from '../core/format';
           </p>
         }
         @if (st.state?.last_error) { <div class="err" style="margin-top:8px">{{ st.state?.last_error }}</div> }
+        @if (st.watch; as w) {
+          <p class="muted" style="font-size:12px">
+            Живой канал: {{ live.connected() ? 'подключён' : 'нет' }} · открытых вкладок {{ w.clients }}
+            @if (w.intervalSec > 0) { · вотчер проверяет лист каждые {{ w.intervalSec }} с (последняя проверка {{ when(w.lastCheckAt) }}) }
+            @else { · вотчер выключен, работает только вебхук }
+          </p>
+        }
 
         <table class="tbl stack">
           <tr class="th-row"><th>Лист</th><th>Дата</th><th class="num">Строк</th><th>Синхронизирован</th><th>Ошибка</th></tr>
@@ -82,10 +90,11 @@ import { httpErr } from '../core/format';
         </label>
       </div>
       <table class="tbl stack">
-        <tr class="th-row"><th>Когда</th><th>Магазин</th><th>Товар</th><th>Изменение</th><th>Лист</th></tr>
+        <tr class="th-row"><th>Когда</th><th>Кто</th><th>Магазин</th><th>Товар</th><th>Изменение</th><th>Лист</th></tr>
         @for (c of journal()?.changes ?? []; track c.id) {
           <tr>
             <td class="mono" data-l="Когда">{{ when(c.createdAt) }}</td>
+            <td data-l="Кто" class="who" [title]="c.userLogin || c.actor || ''">{{ c.userName || c.userLogin || c.actor || '—' }}</td>
             <td data-l="Магазин">{{ c.storeName ?? '—' }}</td>
             <td>{{ c.sourceName }}</td>
             <td data-l="Изменение">
@@ -94,14 +103,16 @@ import { httpErr } from '../core/format';
             </td>
             <td data-l="Лист" class="muted">{{ c.sheetName ?? '—' }}</td>
           </tr>
-        } @empty { <tr class="empty"><td colspan="5">Изменений пока нет</td></tr> }
+        } @empty { <tr class="empty"><td colspan="6">Изменений пока нет</td></tr> }
       </table>
     </div>
   `,
+  styles: [`.who { white-space: nowrap; }`],
 })
 export class OrdersComponent implements OnInit {
   private api = inject(ApiService);
   readonly ordersSvc = inject(OrdersService);
+  readonly live = inject(LiveService);
 
   stores = signal<Store[]>([]);
   sync = signal<OrderSyncState | null>(null);
@@ -110,6 +121,18 @@ export class OrdersComponent implements OnInit {
   err = signal('');
   busy = signal(false);
   private timer: ReturnType<typeof setInterval> | null = null;
+
+  constructor() {
+    // пришло событие из таблицы — сразу подтягиваем состояние прогона и журнал
+    effect(() => {
+      if (this.live.sheetVersion() > 0) {
+        untracked(() => {
+          this.refreshSync();
+          this.loadJournal();
+        });
+      }
+    });
+  }
 
   async ngOnInit(): Promise<void> {
     this.stores.set(await this.ordersSvc.ensureStores());

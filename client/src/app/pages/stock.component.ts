@@ -3,7 +3,7 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ApiService } from '../core/api.service';
 import { Movement, Product, StockRow, Unit } from '../core/models';
-import { fmtCost, fmtMoney, fmtQty, httpErr, trim } from '../core/format';
+import { fmtCost, fmtDateTime, fmtMoney, fmtQty, httpErr, trim } from '../core/format';
 import { ModalComponent } from '../shared/modal.component';
 
 type Tab = 'balances' | 'catalog' | 'journal';
@@ -155,11 +155,12 @@ type Tab = 'balances' | 'catalog' | 'journal';
         </div>
         <hr class="hr" />
         <table class="tbl">
-          <tr><th>Дата</th><th>Продукт</th><th>Тип</th><th class="num">Δ</th><th>Документ</th><th>Комментарий</th></tr>
+          <tr><th>Дата</th><th>Продукт</th><th>Кто</th><th>Тип</th><th class="num">Δ</th><th>Документ</th><th>Комментарий</th></tr>
           @for (m of journal(); track m.id) {
             <tr>
-              <td class="mono">{{ m.created_at }}</td>
+              <td class="mono nw">{{ fmtWhen(m.created_at) }}</td>
               <td><b>{{ m.productName }}</b></td>
+              <td class="muted" [title]="m.userLogin ?? ''">{{ m.userName || m.userLogin || '—' }}</td>
               <td>
                 @if (m.type === 'receipt') { <span class="badge green">приход</span> }
                 @if (m.type === 'writeoff') { <span class="badge red">расход</span> }
@@ -169,7 +170,7 @@ type Tab = 'balances' | 'catalog' | 'journal';
               <td class="muted">{{ m.docType ?? '—' }} @if (m.docId) { #{{ m.docId }}}</td>
               <td class="muted">{{ m.comment }}</td>
             </tr>
-          } @empty { <tr class="empty"><td colspan="6">нет движений</td></tr> }
+          } @empty { <tr class="empty"><td colspan="7">нет движений</td></tr> }
         </table>
       </div>
     }
@@ -217,6 +218,7 @@ export class StockComponent implements OnInit {
   fmtMoney = fmtMoney;
   fmtCost = fmtCost;
   trim = trim;
+  fmtWhen = fmtDateTime;
 
   /** Только базовые единицы (г/мл/шт) — в них склад хранит остатки. */
   baseUnits = computed(() => this.units().filter((u) => u.baseFactor === 1));

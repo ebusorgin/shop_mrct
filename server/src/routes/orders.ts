@@ -11,13 +11,24 @@
  *  GET  /api/orders/sync                 — состояние синхронизатора
  *  POST /api/orders/sync                 — запустить прогон (full=1 — все вкладки)
  */
-import { Router } from 'express';
+import { Router, Request } from 'express';
 import { pool, tx } from '../db';
 import { ApiError, reqArr, reqNum, wrap } from '../http';
 import { runOrderSync, lastSyncSummary, SyncSummary } from '../services/order-sync';
+import { watchState } from '../services/sheet-watch';
 import { toBase, printedQty } from '../services/order-match';
+import { asUser, audit, auditTx } from '../services/audit';
+import { requireOffice } from '../services/auth';
 
 export const ordersRouter = Router();
+
+/**
+ * Точка, с которой работает запрос. Магазинному сотруднику всегда своя
+ * (чужие заказы не видны и не меняются), офису — та, что пришла в запросе.
+ */
+function ownStore(req: Request): number | null {
+  return req.user?.storeId ?? null;
+}
 
 const ORDER_SELECT = `
   select o.id, o.store_id as "storeId", st.name as "storeName", o.card_id as "cardId",
@@ -27,12 +38,19 @@ const ORDER_SELECT = `
          u.code as "cardUnit", coalesce(tc.portion_qty::float8, 0) as "portionQty",
          o.ek_price::float8 as ek, o.vk_price::float8 as vk,
          o.date_tab::text as "dateTab", o.status, o.source, o.note,
-         o.created_at as "createdAt", o.updated_at as "updatedAt"
+         o.created_at as "createdAt", o.updated_at as "updatedAt",
+         o.created_by as "createdById", cu.login as "createdByLogin",
+         coalesce(nullif(btrim(cu.full_name), ''), cu.login) as "createdByName",
+         coalesce(o.status_by_login, su.login) as "statusByLogin",
+         coalesce(nullif(btrim(su.full_name), ''), o.status_by_login, su.login) as "statusByName",
+         o.status_at as "statusAt"
     from orders o
     join stores st on st.id = o.store_id
     left join tech_cards tc on tc.id = o.card_id
     left join units u on u.id = tc.portion_unit_id
-    left join order_categories oc on oc.id = o.category_id`;
+    left join order_categories oc on oc.id = o.category_id
+    left join users cu on cu.id = o.created_by
+    left join users su on su.id = o.status_by`;
 
 interface OrderItem {
   id: number;
@@ -56,6 +74,12 @@ interface OrderItem {
   note: string;
   createdAt: string;
   updatedAt: string;
+  createdById: number | null;
+  createdByLogin: string | null;
+  createdByName: string | null;
+  statusByLogin: string | null;
+  statusByName: string | null;
+  statusAt: string | null;
 }
 
 const dec = (r: Record<string, unknown>): OrderItem =>
@@ -69,6 +93,7 @@ const dec = (r: Record<string, unknown>): OrderItem =>
 
 ordersRouter.get(
   '/stores',
+  requireOffice,
   wrap(async (_req, res) => {
     const { rows } = await pool.query('select id, code, name from stores where active order by position');
     res.json(rows);
@@ -79,7 +104,7 @@ ordersRouter.get(
 ordersRouter.get(
   '/dates',
   wrap(async (req, res) => {
-    const store = Number(req.query.store);
+    const store = ownStore(req) ?? Number(req.query.store);
     if (!Number.isInteger(store)) throw new ApiError(400, 'store обязателен');
     const { rows } = await pool.query(
       `select date_tab::text as date, count(*)::int as cnt,
@@ -116,7 +141,7 @@ ordersRouter.get(
 ordersRouter.get(
   '/',
   wrap(async (req, res) => {
-    const store = Number(req.query.store);
+    const store = ownStore(req) ?? Number(req.query.store);
     if (!Number.isInteger(store)) throw new ApiError(400, 'store обязателен');
     const date = typeof req.query.date === 'string' && req.query.date ? req.query.date : null;
     const cat = typeof req.query.category === 'string' && req.query.category ? req.query.category.toLowerCase() : null;
@@ -182,13 +207,15 @@ ordersRouter.get(
 ordersRouter.post(
   '/place',
   wrap(async (req, res) => {
-    const store = Number(req.query.store ?? req.body.store);
+    const store = ownStore(req) ?? Number(req.query.store ?? req.body.store);
     if (!Number.isInteger(store)) throw new ApiError(400, 'store обязателен');
     const date = typeof req.body.date === 'string' && req.body.date ? req.body.date : new Date().toISOString().slice(0, 10);
     const force = req.body.force === true;
     const lines = reqArr(req.body, 'items');
 
     const result = await tx(async (client) => {
+      // автор транзакции — для триггера журнала заказов (order_changes)
+      await asUser(client, req.user);
       const { rows: stRows } = await client.query('select id, name from stores where id = $1 and active', [store]);
       if (!stRows.length) throw new ApiError(404, 'Магазин не найден');
 
@@ -261,15 +288,22 @@ ordersRouter.post(
         } else {
           const { rows: ins } = await client.query(
             `insert into orders (tab_id, store_id, card_id, source_name, min_qty, quantity, unit_code,
-                                 date_tab, status, source, note)
-             values (null, $1, $2, $3, $4, $5, $6, $7::date, 'placed', 'manual', $8)
+                                 date_tab, status, source, note, created_by)
+             values (null, $1, $2, $3, $4, $5, $6, $7::date, 'placed', 'manual', $8, $9)
              returning id`,
-            [store, cardId, name, minQty, baseQty, unit, date, String(raw.note ?? '')]
+            [store, cardId, name, minQty, baseQty, unit, date, String(raw.note ?? ''), req.user?.id ?? null]
           );
           created.push({ id: ins[0].id, name, qty: baseQty, unit: baseUnit });
         }
       }
       if (violations.length && !created.length) throw new ApiError(422, 'Минимальные количества не соблюдены', { violations });
+      await auditTx(client, req.user, {
+        action: 'create',
+        entity: 'order',
+        entityId: created[0]?.id ?? null,
+        title: `Заказ · ${stRows[0].name} на ${date}`,
+        details: { lines: created.length, merged: merged.length, violations: violations.length, date },
+      });
       return { created, merged, violations };
     });
 
@@ -278,30 +312,75 @@ ordersRouter.post(
 );
 
 const STATUSES = ['synced', 'placed', 'confirmed', 'collected', 'cancelled'];
+/** Человекочитаемые статусы — для журнала: «подтвердил заказ», «собрал», «отменил». */
+const STATUS_RU: Record<string, string> = {
+  synced: 'синхронизирован',
+  placed: 'оформлен',
+  confirmed: 'подтверждён',
+  collected: 'собран',
+  cancelled: 'отменён',
+};
 ordersRouter.patch(
   '/:id',
   wrap(async (req, res) => {
     const id = Number(req.params.id);
-    const { rows } = await pool.query('select id from orders where id = $1', [id]);
-    if (!rows.length) throw new ApiError(404, 'Заказ не найден');
-    const sets: string[] = ['updated_at = now()'];
-    const params: unknown[] = [];
-    if (req.body.status !== undefined) {
-      const s = String(req.body.status);
-      if (!STATUSES.includes(s)) throw new ApiError(400, `status: ${STATUSES.join('|')}`);
-      params.push(s);
-      sets.push(`status = $${params.length}`);
-    }
-    if (req.body.note !== undefined) {
-      params.push(String(req.body.note));
-      sets.push(`note = $${params.length}`);
-    }
-    if (req.body.qty !== undefined) {
-      params.push(reqNum(req.body, 'qty'));
-      sets.push(`quantity = $${params.length}::numeric`);
-    }
-    params.push(id);
-    await pool.query(`update orders set ${sets.join(', ')} where id = $${params.length}`, params);
+    const audit_ = await tx(async (client) => {
+      const { rows } = await client.query(
+        `select o.id, o.store_id as "storeId", o.status, coalesce(tc.name, o.source_name) as name, st.name as "storeName"
+           from orders o join stores st on st.id = o.store_id
+           left join tech_cards tc on tc.id = o.card_id
+          where o.id = $1 for update of o`,
+        [id]
+      );
+      if (!rows.length) throw new ApiError(404, 'Заказ не найден');
+      // магазинный сотрудник меняет только свои заказы и только отменяет их
+      const scope = ownStore(req);
+      if (scope !== null) {
+        if (Number(rows[0].storeId) !== scope) throw new ApiError(404, 'Заказ не найден');
+        if (req.body.status !== undefined && String(req.body.status) !== 'cancelled') {
+          throw new ApiError(403, 'Магазин может только отменить свой заказ');
+        }
+        if (req.body.qty !== undefined && !['synced', 'placed'].includes(String(rows[0].status))) {
+          throw new ApiError(409, 'Заказ уже принят производством — количество менять нельзя');
+        }
+      }
+      // автор транзакции — для триггера журнала заказов (order_changes)
+      await asUser(client, req.user);
+      const sets: string[] = ['updated_at = now()'];
+      const params: unknown[] = [];
+      let status: string | null = null;
+      if (req.body.status !== undefined) {
+        const s = String(req.body.status);
+        if (!STATUSES.includes(s)) throw new ApiError(400, `status: ${STATUSES.join('|')}`);
+        status = s;
+        params.push(s);
+        sets.push(`status = $${params.length}`);
+        // кто и когда сменил статус — видно прямо в строке заказа (принял/собрал/отменил)
+        params.push(req.user?.id ?? null, req.user?.login ?? 'system');
+        sets.push(`status_by = $${params.length - 1}`, `status_by_login = $${params.length}`, 'status_at = now()');
+      }
+      if (req.body.note !== undefined) {
+        params.push(String(req.body.note));
+        sets.push(`note = $${params.length}`);
+      }
+      if (req.body.qty !== undefined) {
+        params.push(reqNum(req.body, 'qty'));
+        sets.push(`quantity = $${params.length}::numeric`);
+      }
+      params.push(id);
+      await client.query(`update orders set ${sets.join(', ')} where id = $${params.length}`, params);
+      return { order: rows[0], status };
+    });
+    const item = audit_.order as Record<string, unknown>;
+    await audit(req.user, {
+      action: audit_.status ? 'approve' : 'update',
+      entity: 'order',
+      entityId: id,
+      title: `Заказ · ${item.name} · ${item.storeName}`,
+      details: audit_.status
+        ? { status: audit_.status, statusRu: STATUS_RU[audit_.status] ?? audit_.status, from: item.status }
+        : { note: req.body.note, qty: req.body.qty },
+    });
     res.json({ ok: true });
   })
 );
@@ -310,7 +389,7 @@ ordersRouter.patch(
 ordersRouter.get(
   '/journal',
   wrap(async (req, res) => {
-    const store = Number(req.query.store) || null;
+    const store = ownStore(req) ?? (Number(req.query.store) || null);
     const limit = Math.min(500, Number(req.query.limit) || 200);
     const conds: string[] = [];
     const params: unknown[] = [];
@@ -321,10 +400,13 @@ ordersRouter.get(
       `select c.id, c.change_type as "changeType", c.source_name as "sourceName",
               c.store_id as "storeId", st.name as "storeName",
               ot.sheet_name as "sheetName", ot.extract_date::text as "tabDate",
-              c.details, c.actor, c.created_at as "createdAt"
+              c.details, c.actor, c.user_login as "userLogin",
+              coalesce(c.user_name, cu.full_name, c.user_login) as "userName",
+              c.created_at as "createdAt"
          from order_changes c
          left join stores st on st.id = c.store_id
          left join order_tabs ot on ot.id = c.tab_id
+         left join users cu on cu.id = c.user_id
          ${where}
         order by c.id desc limit $${params.length}`,
       params
@@ -344,6 +426,7 @@ ordersRouter.get(
 // ---------- синхронизатор ----------
 ordersRouter.get(
   '/sync',
+  requireOffice,
   wrap(async (_req, res) => {
     const { rows } = await pool.query('select * from order_sync_run where id = 1');
     const { rows: tabs } = await pool.query(
@@ -351,16 +434,18 @@ ordersRouter.get(
               last_sync_at as "lastSyncAt", last_error as "lastError"
          from order_tabs order by extract_date desc nulls last limit 30`
     );
-    res.json({ state: rows[0] ?? null, summary: lastSyncSummary(), tabs });
+    res.json({ state: rows[0] ?? null, summary: lastSyncSummary(), tabs, watch: watchState() });
   })
 );
 
 ordersRouter.post(
   '/sync',
+  requireOffice,
   wrap(async (req, res) => {
     const full = req.query.full === '1';
     // не ждём полного прогона — фр опрашивает /sync для прогресса
     runOrderSync({ full }).catch(() => undefined);
+    void audit(req.user, { action: 'sync', entity: 'sheet', title: `Синхронизация Google Таблицы${full ? ' (все листы)' : ''}`, details: { full } });
     res.status(202).json({ ok: true, started: true, full });
   })
 );
@@ -371,5 +456,7 @@ ordersRouter.get('/:id', wrap(async (req, res) => {
   if (!Number.isInteger(id)) throw new ApiError(404, 'Заказ не найден');
   const { rows } = await pool.query(`${ORDER_SELECT} where o.id = $1`, [id]);
   if (!rows.length) throw new ApiError(404, 'Заказ не найден');
+  const scope = ownStore(req);
+  if (scope !== null && Number(rows[0].storeId) !== scope) throw new ApiError(404, 'Заказ не найден');
   res.json(dec(rows[0]));
 }));

@@ -3,7 +3,7 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ApiService } from '../core/api.service';
 import { Batch, BatchItem, ExpansionRow, TechCard } from '../core/models';
-import { fmtMoney, fmtQty, httpErr, today, trim } from '../core/format';
+import { fmtDateTime, fmtMoney, fmtQty, httpErr, today, trim } from '../core/format';
 
 @Component({
   selector: 'app-batches',
@@ -59,13 +59,19 @@ import { fmtMoney, fmtQty, httpErr, today, trim } from '../core/format';
     <div class="panel">
       <h3>Журнал отгрузок</h3>
       <table class="tbl">
-        <tr><th>Дата</th><th>Продукция</th><th class="num">Порций</th><th class="num">Себестоимость</th><th>Комментарий</th><th>Статус</th><th></th></tr>
+        <tr><th>Дата</th><th>Продукция</th><th class="num">Порций</th><th class="num">Себестоимость</th><th>Кто отгрузил</th><th>Комментарий</th><th>Статус</th><th></th></tr>
         @for (b of batches(); track b.id) {
           <tr>
             <td class="mono">{{ b.batchDate }}</td>
             <td><b>{{ b.cardName }}</b> ({{ trim(b.portionQty) }} {{ b.portionUnitCode }})</td>
             <td class="num">{{ b.portions }}</td>
             <td class="num">{{ fmtMoney(b.costTotal) }}</td>
+            <td class="muted">
+              @if (b.createdLogin) {
+                <b style="color:inherit" [title]="b.createdLogin">{{ b.createdName || b.createdLogin }}</b>
+                <div style="font-size:11px">{{ fmtWhen(b.createdAt) }}</div>
+              } @else { — }
+            </td>
             <td class="muted">{{ b.note }}</td>
             <td>
               @if (b.status === 'posted') { <span class="badge green">проведено</span> }
@@ -82,7 +88,7 @@ import { fmtMoney, fmtQty, httpErr, today, trim } from '../core/format';
           </tr>
           @if (openId() === b.id) {
             <tr>
-              <td colspan="7" style="background:#f8fafd">
+              <td colspan="8" style="background:#f8fafd">
                 <table class="tbl">
                   <tr><th>Списанное сырьё</th><th class="num">Кол-во</th><th class="num">Себест./ед.</th><th class="num">Сумма</th></tr>
                   @for (i of details()[b.id] ?? []; track i.productId) {
@@ -97,7 +103,7 @@ import { fmtMoney, fmtQty, httpErr, today, trim } from '../core/format';
               </td>
             </tr>
           }
-        } @empty { <tr class="empty"><td colspan="7">Отгрузок пока не было</td></tr> }
+        } @empty { <tr class="empty"><td colspan="8">Отгрузок пока не было</td></tr> }
       </table>
     </div>
   `,
@@ -122,6 +128,7 @@ export class BatchesComponent implements OnInit {
   fmtQty = fmtQty;
   fmtMoney = fmtMoney;
   trim = trim;
+  fmtWhen = fmtDateTime;
 
   ngOnInit(): void {
     this.api.cards$().subscribe((c) => this.cards.set(c));

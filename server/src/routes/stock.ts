@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { pool, tx } from '../db';
 import { ApiError, reqNum, reqStr, wrap } from '../http';
 import { applyMovement } from '../services/stock';
+import { auditTx } from '../services/audit';
 
 export const stockRouter = Router();
 
@@ -51,10 +52,13 @@ stockRouter.get(
       `select m.id, m.product_id as "productId", p.name as "productName", u.code as "unitCode",
               m.type, m.qty::float8 as qty, m.unit_cost::float8 as "unitCost",
               m.doc_type as "docType", m.doc_id as "docId", m.comment,
+              m.user_login as "userLogin",
+              coalesce(nullif(btrim(mu.full_name), ''), m.user_login) as "userName",
               to_char(m.created_at, 'YYYY-MM-DD HH24:MI') as created_at
          from movements m
          join products p on p.id = m.product_id
          join units u on u.id = p.unit_id
+         left join users mu on mu.id = m.user_id
         ${where.length ? 'where ' + where.join(' and ') : ''}
         order by m.id desc limit $${params.length}`,
       params
@@ -78,6 +82,15 @@ stockRouter.post(
         delta,
         docType: 'manual',
         comment: comment || 'ручная корректировка',
+        actor: req.user,
+      });
+      const { rows } = await client.query('select name from products where id = $1', [productId]);
+      await auditTx(client, req.user, {
+        action: 'adjust',
+        entity: 'stock',
+        entityId: productId,
+        title: `Склад: «${rows[0]?.name ?? '#' + productId}»`,
+        details: { delta, comment: comment || 'ручная корректировка' },
       });
     });
     res.json({ ok: true });

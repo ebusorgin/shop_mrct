@@ -148,4 +148,19 @@ export class ApiService {
   deletePoint(id: number): Observable<{ ok: boolean }> {
     return this.http.delete<{ ok: boolean }>(`${this.base}/points/${id}`);
   }
+
+  // ---- страница своего магазина (магазинный сотрудник) ----
+  myStore$(): Observable<M.MyStore> { return this.http.get<M.MyStore>(`${this.base}/store`); }
+  patchMyStore$(body: unknown): Observable<{ ok: boolean }> {
+    return this.http.patch<{ ok: boolean }>(`${this.base}/store`, body);
+  }
+
+  // ---- журнал действий (кто, что, когда) ----
+  audit$(params: Record<string, string> = {}): Observable<M.AuditPage> {
+    let hp = new HttpParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== '' && v !== null && v !== undefined) hp = hp.set(k, v);
+    });
+    return this.http.get<M.AuditPage>(`${this.base}/audit`, { params: hp });
+  }
 }

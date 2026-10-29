@@ -84,8 +84,9 @@ export class LoginComponent {
     });
   }
 
-  /** Куда вернуться после входа: только внутренний путь из параметра next. */
+  /** Куда вернуться после входа: магазинному сотруднику — его страница, иначе внутренний путь из next. */
   private nextUrl(): string {
+    if (this.auth.isStoreUser()) return '/store';
     const n = this.route.snapshot.queryParamMap.get('next') ?? '';
     return n.startsWith('/') && !n.startsWith('//') ? n : '/';
   }

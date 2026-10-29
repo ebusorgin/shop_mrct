@@ -50,6 +50,13 @@ import { PointFormComponent } from '../shared/point-form.component';
             }
           </div>
 
+          @if (p.createdByLogin || p.updatedByLogin) {
+            <div class="muted small" style="font-size:11px">
+              @if (p.createdByLogin) { завёл {{ p.createdByName || p.createdByLogin }} }
+              @if (p.updatedByLogin) { · правил {{ p.updatedByName || p.updatedByLogin }} }
+            </div>
+          }
+
           <div class="trend">
             <div class="trend-cap"><span class="muted small">Объём заказа по доставкам</span></div>
             @if (p.trend.length) {

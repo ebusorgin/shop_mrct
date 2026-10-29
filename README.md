@@ -99,13 +99,18 @@ npm run autostart:remove      # убрать автозапуск
 - Транспорт: `server/src/services/gpt-transport.ts` — в режиме прокси подменяется `fetch` OpenAI SDK на
   `http(s).request` через `socks-proxy-agent` (Tor) или `https-proxy-agent` (обычный `http://host:port`).
 - На сервере нужен SOCKS5-прокси на `127.0.0.1:9050`: пакет `tor` + `systemctl enable --now tor`.
+- Раздел **«Настройки»** в меню виден только администратору; API `/api/settings*` закрыт тем же
+  `requireAdmin` (магазинный пользователь получит 403). Рядом с галочкой — индикатор «порт доступен /
+  недоступен»: сервер проверяет TCP-подключение к прокси, это видно даже без запроса к GPT.
 - **В РФ обычные Tor-узлы блокируются DPI** (bootstrap застревает на 10%), поэтому в `/etc/tor/torrc` включены
   мосты Snowflake и установлен `snowflake-client`:
   ```
   UseBridges 1
-  ClientTransportPlugin snowflake exec /usr/bin/snowflake-client -url https://snowflake-broker.torproject.net/ -ice stun:stun.l.google.com:19302
+  ClientTransportPlugin snowflake exec /usr/bin/snowflake-client -url https://snowflake-broker.torproject.net/ -ice stun:stun.l.google.com:19302,stun:stun.cloudflare.com:3478
   Bridge snowflake 192.0.2.3:1 2B280B23E1107BB62ABFC40DDCC8824814F80A72
   ```
+  Поднятие Snowflake занимает ~40 с после запуска `tor`, поэтому сразу после ребута первая проверка связи
+  может не пройти — достаточно подождать минуту.
 - Кнопка **«Проверить связь с GPT»** на странице настроек делает настоящий короткий запрос к модели выбранным
   транспортом и показывает время ответа или текст ошибки — этого достаточно, чтобы понять, живой ли Tor.
 - Ключ OpenAI остаётся только в `server/.env`; через Tor идёт зашифрованный TLS, выходной узел видит лишь адрес.
@@ -163,5 +168,3 @@ client/    Angular 19 standalone+signals: src/app/pages/{dashboard,waybills,stoc
 docker-compose.yml   PostgreSQL 16 (restart: unless-stopped)
 scripts/             start-crm.ps1 (Docker+БД+PM2), install/remove-autostart.ps1
 ```
-#   s h o p _ m r c t  
- 

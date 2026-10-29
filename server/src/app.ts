@@ -20,7 +20,8 @@ import { authRouter } from './routes/auth';
 import { storeRouter } from './routes/store';
 import { eventsRouter } from './routes/events';
 import { hooksRouter } from './routes/hooks';
-import { requireAuth, requireOffice } from './services/auth';
+import { settingsRouter } from './routes/settings';
+import { requireAdmin, requireAuth, requireOffice } from './services/auth';
 
 export function createApp(): express.Express {
   const app = express();
@@ -53,6 +54,8 @@ export function createApp(): express.Express {
   app.use('/api/points', requireOffice, pointsRouter);
   // журнал действий: кто, что и когда сделал
   app.use('/api/audit', requireOffice, auditRouter);
+  // настройки CRM (транспорт GPT и т.п.) — только администратор
+  app.use('/api/settings', requireAdmin, settingsRouter);
   // живой канал «сервер -> браузер» (SSE): плашка «в таблице изменения»
   app.use('/api/events', eventsRouter);
 

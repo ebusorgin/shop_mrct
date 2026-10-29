@@ -80,6 +80,7 @@ export class AppComponent {
     { path: 'points', icon: '🏪', label: 'Точки продаж', admin: false },
     { path: 'orders', icon: '🧾', label: 'Заказы магазинов', admin: false },
     { path: 'users', icon: '👤', label: 'Пользователи', admin: true },
+    { path: 'settings', icon: '⚙️', label: 'Настройки', admin: true },
     { path: 'audit', icon: '📜', label: 'Журнал действий', admin: false },
   ];
 

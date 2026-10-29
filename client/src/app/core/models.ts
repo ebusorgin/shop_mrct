@@ -583,7 +583,7 @@ export type AuditAction =
 /** Раздел системы, к которому относится запись. */
 export type AuditEntity =
   | 'product' | 'waybill' | 'semi' | 'tech_card' | 'batch'
-  | 'order' | 'store' | 'user' | 'stock' | 'sheet';
+  | 'order' | 'store' | 'user' | 'stock' | 'sheet' | 'setting';
 
 /** Одна запись журнала: кто, что, когда и с какими деталями. */
 export interface AuditEntry {
@@ -611,4 +611,29 @@ export interface AuditPage {
     entities: { entity: string; cnt: number }[];
     actions: { action: string; cnt: number }[];
   };
+}
+
+// ================= НАСТРОЙКИ (админ) =================
+
+/** Транспорт запросов к OpenAI: напрямую или через SOCKS/HTTP-прокси (Tor). */
+export interface GptSettings {
+  viaProxy: boolean;
+  proxyUrl: string;
+}
+
+/** Всё, что показывает страница «Настройки». */
+export interface AppSettings {
+  gpt: GptSettings;
+  defaults: GptSettings;
+  openai: { keyConfigured: boolean; model: string };
+  proxy: { scheme: string; host: string; port: number; reachable: boolean };
+}
+
+/** Результат кнопки «Проверить связь»: настоящий запрос к модели текущим транспортом. */
+export interface GptTestResult {
+  ok: boolean;
+  ms: number;
+  transport: string;
+  reply?: string;
+  error?: string;
 }

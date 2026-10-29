@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import sharp from 'sharp';
 import { config } from '../config';
 import { ApiError } from '../http';
+import { createGptClient } from './gpt-transport';
 
 /** Позиция каталога, которую видит модель. */
 export interface CatalogProduct {
@@ -545,7 +546,8 @@ export async function parseWaybillDoc(opts: {
   if (!config.openaiKey) {
     throw new ApiError(501, 'OPENAI_API_KEY не задан в server/.env — импорт из файлов недоступен');
   }
-  const oa = new OpenAI({ apiKey: config.openaiKey });
+  // транспорт выбирается настройкой «GPT через Tor» (страница «Настройки», только админ)
+  const oa = await createGptClient();
 
   const files = opts.files ?? [];
   if (!files.length) throw new ApiError(400, 'Не передано ни одного файла');

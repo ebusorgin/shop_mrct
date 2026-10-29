@@ -39,7 +39,8 @@ export type AuditEntity =
   | 'store'
   | 'user'
   | 'stock'
-  | 'sheet';
+  | 'sheet'
+  | 'setting';
 
 export interface AuditEntry {
   action: AuditAction;

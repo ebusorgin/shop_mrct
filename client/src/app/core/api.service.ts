@@ -163,4 +163,11 @@ export class ApiService {
     });
     return this.http.get<M.AuditPage>(`${this.base}/audit`, { params: hp });
   }
+
+  // ---- настройки CRM (только админ) ----
+  settings$(): Observable<M.AppSettings> { return this.http.get<M.AppSettings>(`${this.base}/settings`); }
+  saveGptSettings$(body: M.GptSettings): Observable<{ ok: boolean; gpt: M.GptSettings }> {
+    return this.http.patch<{ ok: boolean; gpt: M.GptSettings }>(`${this.base}/settings/gpt`, body);
+  }
+  testGpt$(): Observable<M.GptTestResult> { return this.http.post<M.GptTestResult>(`${this.base}/settings/gpt/test`, {}); }
 }

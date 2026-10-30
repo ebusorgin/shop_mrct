@@ -227,7 +227,9 @@ input[type='number']::-webkit-inner-spin-button { opacity: 1; }
   border-radius: 6px; font: inherit; font-size: 12px; padding: 5px 8px; cursor: pointer;
 }
 .side-btn:hover { background: #1b3357; color: #fff; }
-.scrim { position: fixed; inset: 0; background: rgba(10, 18, 32, .5); z-index: 50; }
+.scrim { position: fixed; inset: 0; background: rgba(10, 18, 32, .5); z-index: 50; touch-action: none; }
+/* открытое мобильное меню: морозим прокрутку документа, чтобы страница не ездила под drawer */
+html.menu-lock, html.menu-lock body { overflow: hidden; }
 @media (max-width: 640px) {
   body { font-size: 15px; } /* на телефоне читаем с большего; ниже вернём плотность для форм */
   .shell { flex-direction: column; }
@@ -236,6 +238,8 @@ input[type='number']::-webkit-inner-spin-button { opacity: 1; }
     position: fixed; inset: 0 auto 0 0; width: 250px; height: 100dvh; z-index: 55;
     transform: translateX(-105%); transition: transform .2s ease; box-shadow: 4px 0 18px rgba(10, 18, 32, .35);
     padding-top: 44px;
+    /* сам drawer скроллится внутри, а не отдаёт жест странице (устраняет «заедание» меню) */
+    overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
   }
   .sidebar.open { transform: none; }
   .sidebar .logo, .sidebar a span { display: block; } /* снова полный текст, как на десктопе */

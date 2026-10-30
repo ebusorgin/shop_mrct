@@ -72,6 +72,11 @@ export class AppComponent {
       if (this.auth.user()) this.live.connect();
       else this.live.disconnect();
     });
+    // мобильное меню — drawer поверх страницы: пока открыто, блокируем прокрутку
+    // документа, иначе свайп по фону/меню скроллит страницу под ним, а drawer «дёргается»
+    effect(() => {
+      document.documentElement.classList.toggle('menu-lock', this.menu());
+    });
     // подсветка пункта меню: у «Остатков» и «сроков годности» один путь, различаются ?tab=,
     // поэтому активный пункт считаем сами из текущего URL
     this.router.events

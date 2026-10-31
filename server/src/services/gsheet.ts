@@ -172,15 +172,24 @@ function storeToken(s: string): { store: number; plus: boolean } | null {
   return null;
 }
 
-/** Все магазинные колонки строки-заголовка; строка не годится, если токенов < 5. */
-function headerStores(r: CellVal[]): { store: number; col: number; plus: boolean }[] {
+/**
+ * Номера магазинов из строки (без порога количества). Строка-заголовок может подписывать
+ * лишь часть колонок (105..110 при пустых 103..107) — остальное достроит fillMissingStores.
+ */
+function storeTokensOfRow(r: CellVal[]): { store: number; col: number; plus: boolean }[] {
   const found: { store: number; col: number; plus: boolean }[] = [];
   r.forEach((c, i) => {
     if (typeof c !== 'string') return;
     const t = storeToken(c);
     if (t) found.push({ ...t, col: i });
   });
-  return found.length >= 5 ? found : [];
+  return found;
+}
+
+/** Строка похожа на шапку листа по подписям служебных полей (не по номерам магазинов). */
+const HEADER_HINT = /(наименование|\bplu\b|ед[^a-za-я]{0,3}ца|сумма|\bmin\b)/i;
+function isHeaderRow(r: CellVal[]): boolean {
+  return r.some((c) => typeof c === 'string' && HEADER_HINT.test(c.trim()));
 }
 
 interface ProductCols {
@@ -224,23 +233,91 @@ function findProductCols(rows: CellVal[][]): ProductCols | null {
 }
 
 /**
+ * Колонка для пропущенного магазина по найденным якорям (магазин -> колонка).
+ * Внутри диапазона якорей — линейная интерполяция по соседям; снаружи — экстраполяция
+ * по ближнему интервалу (в блоке 103..110 наклон ≈ 1 колонка на магазин).
+ */
+function interpolateCol(anchors: { store: number; col: number }[], store: number): number {
+  const sorted = [...anchors].sort((a, b) => a.store - b.store);
+  const before = sorted.filter((a) => a.store <= store);
+  const after = sorted.filter((a) => a.store >= store);
+  if (before.length && after.length) {
+    const lo = before[before.length - 1];
+    const hi = after[0];
+    if (lo.store === hi.store) return lo.col;
+    const t = (store - lo.store) / (hi.store - lo.store);
+    return Math.round(lo.col + t * (hi.col - lo.col));
+  }
+  if (before.length >= 2) {
+    const a = before[before.length - 2];
+    const b = before[before.length - 1];
+    const slope = (b.col - a.col) / (b.store - a.store);
+    return Math.round(b.col + slope * (store - b.store));
+  }
+  if (after.length >= 2) {
+    const a = after[0];
+    const b = after[1];
+    const slope = (b.col - a.col) / (b.store - a.store);
+    return Math.round(a.col + slope * (store - a.store));
+  }
+  return -1;
+}
+
+/**
+ * Добор магазинов с пустой подписью колонки. Берем найденные не-plus якоря,
+ * для каждого wantStore без колонки вычисляем позицию и добавляем, если колонка
+ * свободна и реально существует в теле листа. Всё уже покрыто — ничего не меняем.
+ */
+function fillMissingStores(
+  detected: { store: number; col: number; plus: boolean }[],
+  wantStores: number[],
+  grid: CellVal[][]
+): { store: number; col: number; plus: boolean }[] {
+  const anchors = detected.filter((d) => !d.plus);
+  if (anchors.length < 2) return detected; // не на на что опираться — оставляем как есть
+  const covered = new Set(anchors.map((a) => a.store));
+  if (wantStores.every((s) => covered.has(s))) return detected;
+  const used = new Set(detected.map((d) => d.col));
+  const out = [...detected];
+  for (const s of wantStores) {
+    if (covered.has(s)) continue;
+    const col = interpolateCol(anchors, s);
+    if (col < 0 || used.has(col)) continue;
+    // колонка должна существовать хотя бы в одной строке данных (иначе это заглушка за краем)
+    if (!grid.some((r) => r.length > col)) continue;
+    out.push({ store: s, col, plus: false });
+    used.add(col);
+  }
+  return out.sort((a, b) => a.col - b.col);
+}
+
+/**
  * Разбор листа. store_id = последние 3 цифры «Mix 381NN»; нас интересуют 103..110 (см. stores).
  * Магазинные колонки, не входящие в wantStores (102, 111 и т.п.), отбрасываем, НО «Min»/«Сумма»
  * считаем от САМОЙ ЛЕВОЙ магазинной колонки (часто это 102), иначе сдвинемся на колонку заказа.
  */
 export function parseSheet(rows: CellVal[][], wantStores: number[]): ParsedSheet {
   const grid = rows;
-  // 1) подписи магазинов в любой строке-заголовке
+  // 1) строка-заголовок магазинов: строка с подписями полей, в которой стоят номера магазинов.
+  //    Достаточно >=2 якорей — недостающие колонки (103..107 с пустой подписью) достроит fillMissingStores.
   let storeCols: { store: number; col: number; plus: boolean }[] = [];
+  let headerRow: CellVal[] | null = null;
   for (const r of grid) {
-    const h = headerStores(r);
-    if (h.length > storeCols.length) storeCols = h;
+    if (!isHeaderRow(r)) continue;
+    const h = storeTokensOfRow(r);
+    if (h.length > storeCols.length) {
+      storeCols = h;
+      headerRow = r;
+    }
   }
   const pc = findProductCols(grid);
   if (!pc) return { rows: [], storeCols: [], layout: 'none', hash: hashRows([]) };
 
   let layout: ParsedSheet['layout'] = 'header';
-  if (!storeCols.length) {
+  if (storeCols.length < 2) {
+    // якорей нет/один — позиционный фолбэк по контрольной сумме (старые листы без подписей)
+    storeCols = [];
+    headerRow = null;
     const cols = assignPositional(grid, pc, wantStores);
     if (cols.length) {
       layout = 'sumcheck';
@@ -251,6 +328,12 @@ export function parseSheet(rows: CellVal[][], wantStores: number[]): ParsedSheet
     }
   }
   if (!storeCols.length) return { rows: [], storeCols: [], layout: 'none', hash: hashRows([]) };
+
+  // заголовки магазинов бывают неполными: часть ячеек-подписей (103/104/107) пуста,
+  // хотя колонки данных под ними есть. Без добора эти колонки не картаются на магазин,
+  // и строки с заказом только в них молча выпадают (пустой qty). Достраиваем позицию
+  // пропущенных магазинов интерполяцией по найденным якорям.
+  storeCols = fillMissingStores(storeCols, wantStores, grid);
 
   // 2) «Min» — колонка сразу лерее первой магазинной, «Сумма» — ещё левее (если числовые)
   const firstStoreCol = Math.min(...storeCols.map((s) => s.col));
@@ -268,7 +351,7 @@ export function parseSheet(rows: CellVal[][], wantStores: number[]): ParsedSheet
   let category = '';
   for (const r of grid) {
     if (r.some((c) => typeof c === 'string' && /общее количество/i.test(c))) break;
-    if (headerStores(r).length) continue; // строка-заголовок магазинов
+    if (headerRow !== null && r === headerRow) continue; // строка-заголовок магазинов
     const name = str(r[pc.nameCol]);
     const unit = str(r[pc.unitCol]).toLowerCase();
     if (!name) continue;

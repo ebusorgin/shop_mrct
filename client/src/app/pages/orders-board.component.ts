@@ -69,45 +69,66 @@ import { OrdersNavComponent } from './orders-nav.component';
       </div>
     }
 
-    <!-- таблица заказов всех магазинов за выбранный лист -->
+    <!-- таблица заказов всех магазинов за выбранный лист — вид «как в Excel» -->
     <div class="panel">
       @if (loading()) { <p class="muted">Загрузка…</p> }
       @else {
-        <table class="tbl stack">
-          <tr class="th-row"><th>Магазин</th><th>Товар</th><th class="num">Кол-во</th><th class="num">Мин.</th><th>Статус</th></tr>
-          @for (it of items(); track it.id) {
-            <tr>
-              <td>
-                <a class="store-link" [routerLink]="['/orders', it.storeId]">{{ it.storeName }}</a>
-              </td>
-              <td>
-                <b>{{ it.name }}</b>
-                @if (it.category) { <div class="muted" style="font-size:11px">{{ it.category }}@if (it.plu) { · {{ it.plu }} }</div> }
-              </td>
-              <td class="num" data-l="Кол-во">{{ fmtQty(it.qty, unitOf(it)) }}</td>
-              <td class="num" data-l="Мин.">
-                @if (it.minQty !== null) {
-                  <span [class.red]="belowMin(it)">{{ fmtQty(it.minQty, unitOf(it)) }}</span>
-                } @else { <span class="muted">—</span> }
-              </td>
-              <td data-l="Статус">
-                <span class="badge" [class]="badgeCls(it.status)">{{ statusLabel(it.status) }}</span>
-                @if (it.source === 'g_sheet') { <span class="badge gray" title="из Google Таблицы">G</span> }
-                @if (it.statusByLogin) {
-                  <div class="who" [title]="'статус сменил: ' + it.statusByLogin + ' · ' + fmtWhen(it.statusAt)">
-                    {{ it.statusByName || it.statusByLogin }} · {{ fmtWhen(it.statusAt) }}
-                  </div>
-                }
-              </td>
+        <div class="xlsx-wrap">
+          <table class="tbl xlsx">
+            <tr class="th-row">
+              <th class="rowno">№</th><th>Магазин</th><th>Товар</th><th>Категория</th><th>Артикул</th>
+              <th class="num">Кол-во</th><th class="num">Мин.</th><th>Статус</th>
             </tr>
-          } @empty {
-            <tr class="empty"><td colspan="5">На этот лист заказов нет</td></tr>
-          }
-        </table>
+            @for (it of items(); track it.id; let i = $index) {
+              <tr>
+                <td class="rowno">{{ i + 1 }}</td>
+                <td><a class="store-link" [routerLink]="['/orders', it.storeId]">{{ it.storeName }}</a></td>
+                <td>{{ it.name }}</td>
+                <td>{{ it.category || '—' }}</td>
+                <td>{{ it.plu || '—' }}</td>
+                <td class="num">{{ fmtQty(it.qty, unitOf(it)) }}</td>
+                <td class="num">
+                  @if (it.minQty !== null) {
+                    <span [class.red]="belowMin(it)">{{ fmtQty(it.minQty, unitOf(it)) }}</span>
+                  } @else { <span class="muted">—</span> }
+                </td>
+                <td>
+                  <span class="badge" [class]="badgeCls(it.status)">{{ statusLabel(it.status) }}</span>
+                  @if (it.source === 'g_sheet') { <span class="badge gray" title="из Google Таблицы">G</span> }
+                  @if (it.statusByLogin) {
+                    <span class="who" [title]="'статус сменил: ' + it.statusByLogin + ' · ' + fmtWhen(it.statusAt)">
+                      {{ it.statusByName || it.statusByLogin }} · {{ fmtWhen(it.statusAt) }}
+                    </span>
+                  }
+                </td>
+              </tr>
+            } @empty {
+              <tr class="empty"><td colspan="8">На этот лист заказов нет</td></tr>
+            }
+          </table>
+        </div>
       }
     </div>
   `,
-  styles: [`.red { color: var(--red); } .who { font-size: 11px; color: var(--muted); white-space: nowrap; } .store-link { font-weight: 600; }`],
+  styles: [`
+    .xlsx-wrap { overflow: auto; max-height: 72vh; background: #fff; border: 1px solid #c9c9c9; border-radius: 6px; }
+    .tbl.xlsx { border-collapse: collapse; width: 100%; background: #fff; color: #212121; font-family: 'Calibri', 'Segoe UI', system-ui, sans-serif; font-size: 14px; }
+    .tbl.xlsx th, .tbl.xlsx td { border: 1px solid #dcdcdc; padding: 5px 10px; text-align: left; vertical-align: middle; white-space: nowrap; }
+    /* шапка как в Excel: серая полоса, прилипает сверху (замороженные панели) */
+    .tbl.xlsx th { position: sticky; top: 0; z-index: 2; background: #f3f2f1; color: #242424; font-weight: 600; font-size: 12px; letter-spacing: 0; text-transform: none; box-shadow: inset 0 -2px 0 #b7b3af; }
+    .tbl.xlsx td.num, .tbl.xlsx th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    /* столбец номеров строк — как заголовки строк в Excel, прилипает слева */
+    .tbl.xlsx td.rowno, .tbl.xlsx th.rowno { position: sticky; left: 0; z-index: 1; background: #f3f2f1; color: #6a6a6a; text-align: center; font-weight: 600; width: 34px; box-shadow: inset -2px 0 0 #b7b3af; }
+    .tbl.xlsx th.rowno { z-index: 3; }
+    /* подсветка строки + «активная ячейка» с зелёной рамкой как в Excel */
+    .tbl.xlsx tbody tr:hover td:not(.rowno) { background: #f6faf7; }
+    .tbl.xlsx td:not(.rowno):hover { box-shadow: inset 0 0 0 2px #107c41; }
+    .tbl.xlsx .store-link { font-weight: 600; color: var(--accent); text-decoration: none; }
+    .tbl.xlsx .store-link:hover { text-decoration: underline; }
+    .tbl.xlsx .empty td { position: static; box-shadow: none; background: #fff; text-align: center; color: var(--muted); padding: 24px; }
+    .red { color: var(--red); }
+    .who { font-size: 11px; color: var(--muted); }
+  `],
 })
 export class OrdersBoardComponent implements OnInit {
   private api = inject(ApiService);

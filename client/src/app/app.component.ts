@@ -30,7 +30,7 @@ import { ToastComponent } from './shared/toast.component';
               @if (g.title) { <div class="side-group">{{ g.title }}</div> }
               @for (r of g.items; track r.label) {
                 @if (!r.admin || auth.isAdmin()) {
-                  <a href="#" class="nav-link" [class.active]="isActive(r.path, r.qp)"
+                  <a href="#" class="nav-link" [class.active]="isActive(r.path, r.qp, r.also)"
                      (click)="go($event, r.path, r.qp)">{{ r.icon }} <span>{{ r.label }}</span></a>
                 }
               }
@@ -77,7 +77,7 @@ export class AppComponent {
     effect(() => {
       document.documentElement.classList.toggle('menu-lock', this.menu());
     });
-    // подсветка пункта меню: у «Остатков» и «сроков годности» один путь, различаются ?tab=,
+    // подсветка пункта меню: у страницы вкладки меняются без смены URL (?tab=),
     // поэтому активный пункт считаем сами из текущего URL
     this.router.events
       .pipe(takeUntilDestroyed(this.destroyRef))
@@ -95,7 +95,7 @@ export class AppComponent {
    * Меню сгруппировано по частоте работы: ежедневные операции, склад-справочники,
    * заказы и точки, редкое — вниз. Ссылки с queryParams открывают нужную вкладку страницы.
    */
-  navGroups: { title: string; items: { path: string; qp?: Record<string, string>; icon: string; label: string; admin?: boolean }[] }[] = [
+  navGroups: { title: string; items: { path: string; qp?: Record<string, string>; icon: string; label: string; admin?: boolean; also?: string[] }[] }[] = [
     { title: '', items: [{ path: '', icon: '📊', label: 'Панель' }] },
     {
       title: 'Операции',
@@ -104,19 +104,15 @@ export class AppComponent {
     {
       title: 'Склад',
       items: [
-        { path: 'stock', icon: '🏬', label: 'Остатки' },
-        { path: 'stock', qp: { tab: 'catalog' }, icon: '🏷️', label: 'Номенклатура' },
+
+        { path: 'stock', icon: '🏬', label: 'Склад' },
         { path: 'semis', icon: '🔪', label: 'Полуфабрикаты' },
         { path: 'cards', icon: '📐', label: 'Техкарты' },
-        { path: 'stock', qp: { tab: 'shelf' }, icon: '⏳', label: 'Сроки годности' },
       ],
     },
     {
       title: 'Заказы и продажи',
-      items: [
-        { path: 'orders', icon: '🧾', label: 'Заказы магазинов' },
-        { path: 'points', icon: '🏪', label: 'Точки продаж' },
-      ],
+      items: [{ path: 'orders', icon: '🧾', label: 'Заказы и продажи', also: ['points'] }],
     },
     {
       title: 'Ещё',
@@ -135,15 +131,15 @@ export class AppComponent {
     });
   }
 
-  /** Пункт активен, если совпадают путь и ?tab= (у нескольких пунктов он общий). */
-  isActive(path: string, qp?: Record<string, string>): boolean {
-    const url = this.currentUrl();
-    const [p, qs] = url.split('?');
-    const want = '/' + path;
-    if (p !== want) return false;
-    const tab = qp?.['tab'];
-    if (!tab) return !qs || !qs.includes('tab=');
-    return new URLSearchParams(qs ?? '').get('tab') === tab;
+  /**
+   * Пункт активен на любом адресе своей страницы и её дочерних маршрутов.
+   * also — дополнительные пути того же раздела: «Заказы и продажи» подсвечивается
+   * и на /orders (с вкладками), и на /points (с карточкой точки).
+   */
+  isActive(path: string, qp?: Record<string, string>, also?: string[]): boolean {
+    const [p] = this.currentUrl().split('?');
+    const wants = ['/' + path, ...(also ?? []).map((a) => '/' + a)];
+    return wants.some((want) => p === want || p.startsWith(want + '/'));
   }
 
   go(ev: Event, path: string, qp?: Record<string, string>): void {

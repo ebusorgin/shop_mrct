@@ -3,10 +3,12 @@ import { CommonModule } from '@angular/common';
 import { RouterLink, RouterLinkActive } from '@angular/router';
 
 /**
- * Общая панель перехода по разделам «Заказов магазинов».
- * Ставится в шапку каждой страницы раздела, чтобы из любой точки можно было
- * перепрыгнуть в доску, магазины, синхронизацию или журнал. Активный раздел
- * подсвечивается (для доски — точное совпадение пути, иначе он «активен» везде).
+ * Общая панель перехода по разделу «Заказы и продажи».
+ * Ставится в шапку каждой страницы раздела (доска, синхронизация, журнал,
+ * магазины-точки), чтобы из любой точки можно было перепрыгнуть между ними.
+ * Активный раздел подсвечивается (для доски — точное совпадение пути, иначе он
+ * «активен» везде). Витрины-магазины живут в одном месте — на «Магазинах и точках»
+ * (бывш. «Точки продаж»), отдельная страница «Магазины» упразднена как дубль.
  */
 @Component({
   selector: 'app-orders-nav',
@@ -14,15 +16,26 @@ import { RouterLink, RouterLinkActive } from '@angular/router';
   imports: [CommonModule, RouterLink, RouterLinkActive],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <nav class="row onav">
-      <a class="btn sm" routerLink="/orders" routerLinkActive="primary" [routerLinkActiveOptions]="{ exact: true }">
-        📋 Доска заказов
-      </a>
-      <a class="btn sm" routerLink="/orders/stores" routerLinkActive="primary">🏪 Магазины</a>
-      <a class="btn sm" routerLink="/orders/sync" routerLinkActive="primary">🔄 Синхронизация</a>
-      <a class="btn sm" routerLink="/orders/journal" routerLinkActive="primary">📜 Журнал изменений</a>
+    <nav class="ontabs">
+      <a class="ontab" routerLink="/orders" routerLinkActive="on" [routerLinkActiveOptions]="{ exact: true }">📋 Доска</a>
+      <a class="ontab" routerLink="/orders/sync" routerLinkActive="on">🔄 Синхронизация</a>
+      <a class="ontab" routerLink="/orders/journal" routerLinkActive="on">📜 Журнал</a>
+      <a class="ontab" routerLink="/points" routerLinkActive="on">🏬 Магазины и точки</a>
     </nav>
   `,
-  styles: [`.onav { gap: 8px; flex-wrap: wrap; margin: 4px 0 14px; }`],
+  styles: [`
+    .ontabs { display: flex; gap: 4px; flex-wrap: wrap; margin: 0 0 16px; padding: 4px;
+      background: #fff; border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);
+      width: fit-content; max-width: 100%; }
+    .ontab { display: inline-flex; align-items: center; gap: 7px; padding: 7px 14px; border-radius: 9px;
+      font-size: 13px; font-weight: 600; color: var(--muted); text-decoration: none; white-space: nowrap;
+      transition: background .12s, color .12s; }
+    .ontab:hover { background: #f2f5fa; color: var(--text); }
+    .ontab.on { background: var(--accent); color: #fff; }
+    @media (max-width: 640px) {
+      .ontabs { width: 100%; }
+      .ontab { flex: 1 1 auto; justify-content: center; }
+    }
+  `],
 })
 export class OrdersNavComponent {}

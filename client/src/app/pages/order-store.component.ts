@@ -23,7 +23,10 @@ interface CartLine {
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="row" style="align-items:center; margin-bottom:6px">
-      @if (!storeView) { <a class="btn sm" routerLink="/orders">← Заказы</a> }
+      @if (!storeView) {
+        <a class="btn sm" routerLink="/orders">← Заказы</a>
+        @if (storeId) { <a class="btn sm" [routerLink]="['/points', storeId]" title="Аналитика точки продаж">📈 Точка</a> }
+      }
       <h1 class="page-title" style="margin:0">🛒 {{ title() }}</h1>
     </div>
     @if (err()) { <div class="err">{{ err() }}</div> }

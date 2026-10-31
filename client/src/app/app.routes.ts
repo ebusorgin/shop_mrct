@@ -26,8 +26,7 @@ export const routes: Routes = [
           { path: 'points', loadComponent: () => import('./pages/points.component').then((m) => m.PointsComponent) },
           { path: 'points/:id', loadComponent: () => import('./pages/point-detail.component').then((m) => m.PointDetailComponent) },
           { path: 'orders', loadComponent: () => import('./pages/orders-board.component').then((m) => m.OrdersBoardComponent) },
-          // литеральные разделы — до :storeId, иначе :storeId перехватит 'sync'/'journal'/'stores'
-          { path: 'orders/stores', loadComponent: () => import('./pages/orders-stores.component').then((m) => m.OrdersStoresComponent) },
+          // литеральные разделы — до :storeId, иначе :storeId перехватит 'sync'/'journal'
           { path: 'orders/sync', loadComponent: () => import('./pages/orders-sync.component').then((m) => m.OrdersSyncComponent) },
           { path: 'orders/journal', loadComponent: () => import('./pages/orders-journal.component').then((m) => m.OrdersJournalComponent) },
           { path: 'orders/:storeId', loadComponent: () => import('./pages/order-store.component').then((m) => m.OrderStoreComponent) },

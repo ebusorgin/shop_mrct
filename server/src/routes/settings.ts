@@ -1,12 +1,11 @@
 /**
  * Настройки CRM (только администратор).
  *
- * Сейчас здесь один блок — транспорт запросов к OpenAI: напрямую или через
- * SOCKS/HTTP-прокси (Tor). Нужно, потому что из ряда стран api.openai.com
- * отвечает 403 unsupported_country_region_territory.
+ * Блоки: транспорт GPT + категории товаров (CRUD, привязка/отвязка tech_cards).
  */
 import { Router } from 'express';
-import { wrap } from '../http';
+import { pool, tx } from '../db';
+import { wrap, reqStr, ApiError } from '../http';
 import { config } from '../config';
 import { audit } from '../services/audit';
 import {
@@ -72,8 +71,6 @@ settingsRouter.post(
     const transport = gpt.viaProxy ? gpt.proxyUrl : 'напрямую';
     try {
       const oa = await createGptClient();
-      // 8 токенов рабочая модель не вывозит (у неё их съедает размышление) — берём запас,
-      // иначе тест вернёт пустой content и «связь есть» будет выглядеть как поломка.
       const r = await oa.chat.completions.create({
         model: config.openaiModel,
         max_completion_tokens: 300,
@@ -87,7 +84,6 @@ settingsRouter.post(
         reply: (reply || `связь есть, текст пустой (${r.choices[0]?.finish_reason ?? 'без choice'})`).slice(0, 80),
       });
     } catch (e) {
-      // SDK прячет причину за «Connection error.» — достаём её из cause и подсказываем, что смотреть
       const msg = e instanceof Error ? e.message : String(e);
       const cause = (e as { cause?: { message?: string } }).cause?.message;
       const detail = [msg, cause].filter(Boolean).join(' · ');
@@ -97,5 +93,252 @@ settingsRouter.post(
           : '';
       res.json({ ok: false, ms: Date.now() - started, transport, error: (detail + hint).slice(0, 400) });
     }
+  })
+);
+
+// ============ КАТЕГОРИИ ТОВАРОВ ============
+
+/** Список категорий с количеством привязанных tech_cards. */
+settingsRouter.get(
+  '/categories',
+  wrap(async (_req, res) => {
+    const { rows } = await pool.query(
+      `select oc.id, oc.name, count(tc.id)::int as "cardCount"
+         from order_categories oc
+         left join tech_cards tc on tc.category_id = oc.id
+        group by oc.id, oc.name
+        order by oc.name`
+    );
+    res.json(rows);
+  })
+);
+
+/** Создать категорию. */
+settingsRouter.post(
+  '/categories',
+  wrap(async (req, res) => {
+    const name = reqStr(req.body, 'name').toLowerCase().trim();
+    if (!name) return res.status(400).json({ error: 'Пустое имя' });
+    const { rows } = await pool.query(
+      `insert into order_categories (name) values ($1) on conflict (name) do nothing returning id, name`,
+      [name]
+    );
+    if (!rows.length) return res.status(409).json({ error: 'Уже существует' });
+    await audit(req.user, { action: 'create', entity: 'setting', entityId: `cat:${rows[0].id}`, title: `Категория «${name}»` });
+    res.status(201).json(rows[0]);
+  })
+);
+
+/** Переименовать. */
+settingsRouter.patch(
+  '/categories/:id',
+  wrap(async (req, res) => {
+    const id = Number(req.params.id);
+    const name = reqStr(req.body, 'name').toLowerCase().trim();
+    if (!name) return res.status(400).json({ error: 'Пустое имя' });
+    await pool.query('update order_categories set name = $2 where id = $1', [id, name]);
+    await audit(req.user, { action: 'update', entity: 'setting', entityId: `cat:${id}`, title: `Категория → «${name}»` });
+    res.json({ ok: true });
+  })
+);
+
+/** Удалить (tech_cards.category_id и orders.category_id обнуляются ON DELETE SET NULL). */
+settingsRouter.delete(
+  '/categories/:id',
+  wrap(async (req, res) => {
+    const id = Number(req.params.id);
+    const { rows } = await pool.query('select name from order_categories where id = $1', [id]);
+    if (!rows.length) return res.status(404).json({ error: 'Не найдена' });
+    await pool.query('delete from order_categories where id = $1', [id]);
+    await audit(req.user, { action: 'delete', entity: 'setting', entityId: `cat:${id}`, title: `Категория «${rows[0].name}»` });
+    res.json({ ok: true });
+  })
+);
+
+/** Товары в категории (для редактирования привязок). */
+settingsRouter.get(
+  '/categories/:id/cards',
+  wrap(async (req, res) => {
+    const { rows } = await pool.query(
+      `select tc.id, tc.name, tc.plu from tech_cards tc where tc.category_id = $1 order by tc.name`,
+      [Number(req.params.id)]
+    );
+    res.json(rows);
+  })
+);
+
+/** Привязать товары к категории (массовая замена). */
+settingsRouter.put(
+  '/categories/:id/cards',
+  wrap(async (req, res) => {
+    const catId = Number(req.params.id);
+    const raw = Array.isArray(req.body?.cardIds) ? req.body.cardIds : [];
+    const ids = (raw as unknown[]).map(Number).filter((n) => Number.isFinite(n));
+    await tx(async (client) => {
+      // отвязать все, кто был в категории, но не в новом списке
+      await client.query(
+        `update tech_cards set category_id = null where category_id = $1 and not (id = any($2::int[]))`,
+        [catId, ids]
+      );
+      // привязать указанных
+      for (const id of ids) {
+        await client.query('update tech_cards set category_id = $1 where id = $2', [catId, id]);
+      }
+    });
+    await audit(req.user, { action: 'update', entity: 'setting', entityId: `cat:${catId}`, title: `Привязка товаров (${ids.length})` });
+    res.json({ ok: true });
+  })
+);
+
+/** Не привязанные к категории tech_cards (для пикера). */
+settingsRouter.get(
+  '/cards-unassigned',
+  wrap(async (_req, res) => {
+    const { rows } = await pool.query(
+      `select tc.id, tc.name, tc.plu from tech_cards tc where tc.category_id is null order by tc.name`
+    );
+    res.json(rows);
+  })
+);
+
+/** Все tech_cards (в т.ч. с категорией) для выбора. */
+settingsRouter.get(
+  '/all-cards',
+  wrap(async (_req, res) => {
+    const { rows } = await pool.query(
+      `select tc.id, tc.name, tc.plu, tc.category_id as "categoryId"
+         from tech_cards tc order by tc.name`
+    );
+    res.json(rows);
+  })
+);
+
+// ============ КАТЕГОРИИ СЫРЬЯ (номенклатура склада, products) ============
+// Словарь product_categories задаёт набор имён; products.category — текст-носитель.
+// «прочее» — корзина нераспределённого (не заносится в словарь). Matching — без регистра.
+
+/** Список категорий сырья с количеством активных позиций. */
+settingsRouter.get(
+  '/raw-categories',
+  wrap(async (_req, res) => {
+    const { rows } = await pool.query(
+      `select pc.id, pc.name,
+              count(p.id) filter (where p.active)::int as "productCount"
+         from product_categories pc
+         left join products p on lower(btrim(p.category)) = pc.name
+        group by pc.id, pc.name
+        order by pc.name`
+    );
+    res.json(rows);
+  })
+);
+
+/** Создать категорию сырья. */
+settingsRouter.post(
+  '/raw-categories',
+  wrap(async (req, res) => {
+    const name = reqStr(req.body, 'name').toLowerCase().trim();
+    if (!name || name === 'прочее') return res.status(400).json({ error: 'Некорректное имя' });
+    const { rows } = await pool.query(
+      `insert into product_categories (name) values ($1) on conflict (name) do nothing returning id, name`,
+      [name]
+    );
+    if (!rows.length) return res.status(409).json({ error: 'Уже существует' });
+    await audit(req.user, { action: 'create', entity: 'setting', entityId: `rawcat:${rows[0].id}`, title: `Категория сырья «${name}»` });
+    res.status(201).json(rows[0]);
+  })
+);
+
+/** Переименовать категорию сырья (каскадно правит products.category). */
+settingsRouter.patch(
+  '/raw-categories/:id',
+  wrap(async (req, res) => {
+    const id = Number(req.params.id);
+    const name = reqStr(req.body, 'name').toLowerCase().trim();
+    if (!name || name === 'прочее') return res.status(400).json({ error: 'Некорректное имя' });
+    await tx(async (client) => {
+      const { rows: cur } = await client.query('select name from product_categories where id = $1', [id]);
+      if (!cur.length) throw new ApiError(404, 'Категория не найдена');
+      const old = cur[0].name as string;
+      if (old === name) return;
+      const { rows: clash } = await client.query('select 1 from product_categories where name = $2 and id <> $1', [id, name]);
+      if (clash.length) throw new ApiError(409, 'Такая категория уже есть');
+      await client.query('update product_categories set name = $2 where id = $1', [id, name]);
+      await client.query('update products set category = $2 where lower(btrim(category)) = $1', [old, name]);
+    });
+    await audit(req.user, { action: 'update', entity: 'setting', entityId: `rawcat:${id}`, title: `Категория сырья → «${name}»` });
+    res.json({ ok: true });
+  })
+);
+
+/** Удалить категорию сырья (позиции уходят в «прочее»). */
+settingsRouter.delete(
+  '/raw-categories/:id',
+  wrap(async (req, res) => {
+    const id = Number(req.params.id);
+    await tx(async (client) => {
+      const { rows: cur } = await client.query('select name from product_categories where id = $1', [id]);
+      if (!cur.length) return;
+      await client.query("update products set category = 'прочее' where lower(btrim(category)) = $1", [cur[0].name]);
+      await client.query('delete from product_categories where id = $1', [id]);
+    });
+    await audit(req.user, { action: 'delete', entity: 'setting', entityId: `rawcat:${id}`, title: 'Категория сырья удалена' });
+    res.json({ ok: true });
+  })
+);
+
+/** Позиции сырья в категории (активные) — для дерева. */
+settingsRouter.get(
+  '/raw-categories/:id/products',
+  wrap(async (req, res) => {
+    const { rows } = await pool.query(
+      `select p.id, p.name
+         from products p
+         join product_categories pc on pc.id = $1 and lower(btrim(p.category)) = pc.name
+        where p.active
+        order by p.name`,
+      [Number(req.params.id)]
+    );
+    res.json(rows);
+  })
+);
+
+/** Замена набора позиций категории: перечисленные → в категорию, прочие активные из неё → «прочее». */
+settingsRouter.put(
+  '/raw-categories/:id/products',
+  wrap(async (req, res) => {
+    const catId = Number(req.params.id);
+    const raw = Array.isArray(req.body?.productIds) ? req.body.productIds : [];
+    const ids = (raw as unknown[]).map(Number).filter((n) => Number.isFinite(n));
+    await tx(async (client) => {
+      const { rows: cur } = await client.query('select name from product_categories where id = $1', [catId]);
+      if (!cur.length) throw new ApiError(404, 'Категория не найдена');
+      const name = cur[0].name as string;
+      await client.query(
+        `update products set category = 'прочее'
+          where active and lower(btrim(category)) = $1 and not (id = any($2::int[]))`,
+        [name, ids]
+      );
+      if (ids.length) {
+        await client.query('update products set category = $1 where id = any($2::int[]) and active', [name, ids]);
+      }
+    });
+    await audit(req.user, { action: 'update', entity: 'setting', entityId: `rawcat:${catId}`, title: `Привязка сырья (${ids.length})` });
+    res.json({ ok: true });
+  })
+);
+
+/** Все активные позиции сырья с категорией (null — «прочее»/вне словаря) для дерева и пикера. */
+settingsRouter.get(
+  '/raw-products-all',
+  wrap(async (_req, res) => {
+    const { rows } = await pool.query(
+      `select p.id, p.name, pc.id as "categoryId"
+         from products p
+         left join product_categories pc on pc.name = lower(btrim(p.category))
+        where p.active
+        order by p.name`
+    );
+    res.json(rows);
   })
 );

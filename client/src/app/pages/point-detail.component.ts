@@ -209,7 +209,7 @@ function buildStats(p: PointCard): Stats {
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="bar">
-      <a class="btn sm" routerLink="/points">← Точки продаж</a>
+      <a class="btn sm" routerLink="/points">← Магазины и точки</a>
       <span class="spacer"></span>
       @if (point(); as p) {
         <button class="btn sm" (click)="editOpen.set(true)" title="Изменить">✎ Изменить</button>

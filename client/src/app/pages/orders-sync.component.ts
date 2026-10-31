@@ -17,7 +17,7 @@ import { OrdersNavComponent } from './orders-nav.component';
   imports: [CommonModule, OrdersNavComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <h1 class="page-title">🧾 Заказы магазинов · Синхронизация</h1>
+    <h1 class="page-title">🔄 Синхронизация</h1>
     <app-orders-nav></app-orders-nav>
 
     @if (err()) { <div class="err">{{ err() }}</div> }
@@ -26,9 +26,9 @@ import { OrdersNavComponent } from './orders-nav.component';
       <div class="row" style="align-items:center; flex-wrap:wrap">
         <h3 style="margin:0">Синхронизация с Google Таблицей</h3>
         <span class="spacer"></span>
-        <button class="btn sm" (click)="refreshSync()">⟳</button>
+        <button class="btn sm" (click)="refreshSync()" title="Обновить статус">⟳</button>
         <button class="btn sm" [disabled]="busy()" (click)="runSync(false)">Обновить свежие</button>
-        <button class="btn sm primary" [disabled]="busy()" (click)="runSync(true)">Полный прогон</button>
+        <button class="btn sm primary" [disabled]="busy()" (click)="runSync(true)">▶ Полный прогон</button>
       </div>
 
       @if (sync(); as st) {

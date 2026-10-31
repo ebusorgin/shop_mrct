@@ -34,7 +34,8 @@ function ownStore(req: Request): number | null {
 const ORDER_SELECT = `
   select o.id, o.store_id as "storeId", st.name as "storeName", o.card_id as "cardId",
          coalesce(tc.name, o.source_name) as name, o.source_name as "sourceName",
-         o.plu, oc.name as category, o.min_qty::float8 as "minQty",
+         o.plu, oc.name as category, tcc.name as "cardCategory",
+         o.min_qty::float8 as "minQty",
          o.quantity::float8 as qty, o.unit_code as "unitCode",
          u.code as "cardUnit", coalesce(tc.portion_qty::float8, 0) as "portionQty",
          o.ek_price::float8 as ek, o.vk_price::float8 as vk,
@@ -50,6 +51,7 @@ const ORDER_SELECT = `
     left join tech_cards tc on tc.id = o.card_id
     left join units u on u.id = tc.portion_unit_id
     left join order_categories oc on oc.id = o.category_id
+    left join order_categories tcc on tcc.id = tc.category_id
     left join users cu on cu.id = o.created_by
     left join users su on su.id = o.status_by`;
 
@@ -62,6 +64,8 @@ interface OrderItem {
   sourceName: string;
   plu: string | null;
   category: string | null;
+  /** категория техкарты (задана в Настройках) — приоритетнее листовой для доски */
+  cardCategory: string | null;
   minQty: number | null;
   qty: number;
   unitCode: string | null;
@@ -259,12 +263,12 @@ ordersRouter.get(
     const conds: string[] = ['st.active'];
     const params: unknown[] = [];
     if (date) { params.push(date); conds.push(`o.date_tab = $${params.length}::date`); }
-    if (cat) { params.push(cat); conds.push(`oc.name = $${params.length}`); }
+    if (cat) { params.push(cat); conds.push(`coalesce(tcc.name, oc.name) = $${params.length}`); }
     if (q) { params.push(`%${q}%`); conds.push(`lower(coalesce(tc.name, o.source_name)) like $${params.length}`); }
 
     const { rows } = await pool.query(
       `${ORDER_SELECT} where ${conds.join(' and ')}
-        order by st.name, oc.name nulls last, coalesce(tc.name, o.source_name)`,
+        order by st.name, coalesce(tcc.name, oc.name) nulls last, coalesce(tc.name, o.source_name)`,
       params
     );
 
@@ -280,7 +284,7 @@ ordersRouter.get(
       let row = map.get(key);
       if (!row) {
         row = {
-          key, name: it.name, category: it.category, plu: it.plu,
+          key, name: it.name, category: it.cardCategory ?? it.category, plu: it.plu,
           unit: it.unitCode ?? (base === 'шт' ? 'шт' : base),
           totalQty: 0, pricePer: null, fullPrice: 0, byStore: {},
         };
@@ -302,7 +306,15 @@ ordersRouter.get(
       for (const k of Object.keys(r.byStore)) r.byStore[Number(k)] = round3(r.byStore[Number(k)]);
     }
     for (const k of Object.keys(byStoreTotal)) byStoreTotal[Number(k)] = round3(byStoreTotal[Number(k)]);
-    pivotRows.sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+    // группировка на доске: сначала категория (без неё — в конце), внутри — по товару
+    pivotRows.sort((a, b) => {
+      if (a.category !== b.category) {
+        if (!a.category) return 1;
+        if (!b.category) return -1;
+        return a.category.localeCompare(b.category, 'ru');
+      }
+      return a.name.localeCompare(b.name, 'ru');
+    });
 
     res.json({
       date,

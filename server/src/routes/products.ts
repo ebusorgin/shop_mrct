@@ -68,6 +68,13 @@ productsRouter.get(
   })
 );
 
+/** Занести категорию в словарь product_categories (кроме корзины «прочее»). */
+async function ensureCategory(client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }> }, category: string): Promise<void> {
+  const name = category.toLowerCase().trim();
+  if (!name || name === 'прочее') return;
+  await client.query('insert into product_categories (name) values ($1) on conflict (name) do nothing', [name]);
+}
+
 productsRouter.post(
   '/',
   wrap(async (req, res) => {
@@ -86,6 +93,7 @@ productsRouter.post(
         [name, category || 'прочее', unitId, minStock, shelfLifeDays, gPerPcs, mlPerPcs, gPerMl, req.user?.id ?? null]
       );
       await client.query('insert into stock (product_id, qty, avg_cost) values ($1, 0, 0)', [rows[0].id]);
+      await ensureCategory(client, category || 'прочее');
       await auditTx(client, req.user, {
         action: 'create',
         entity: 'product',
@@ -134,6 +142,7 @@ productsRouter.patch(
       fields.push(`updated_by = $${params.length}`);
       params.push(id);
       await client.query(`update products set ${fields.join(', ')} where id = $${params.length}`, params);
+      if (req.body.category !== undefined) await ensureCategory(client, String(req.body.category).trim() || 'прочее');
       const { rows: after } = await client.query(`select ${snapCols} from products where id = $1`, [id]);
       const changes = diff(before[0], after[0]);
       // число мог подсказать GPT (кнопка «Спросить у ИИ») — в журнале это должно отличаться

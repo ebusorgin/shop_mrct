@@ -659,6 +659,35 @@ export interface GptTestResult {
   error?: string;
 }
 
+/** Категория товаров (order_categories) для управления в Настройках. */
+export interface CardCategory {
+  id: number;
+  name: string;
+  cardCount: number;
+}
+
+/** Ссылка на техкарту (товар) для привязки к категории. */
+export interface CardRef {
+  id: number;
+  name: string;
+  plu: string | null;
+  categoryId?: number | null;
+}
+
+/** Категория сырья (product_categories) для управления в Настройках. */
+export interface RawCategory {
+  id: number;
+  name: string;
+  productCount: number;
+}
+
+/** Ссылка на позицию номенклатуры (products) для привязки к категории сырья. */
+export interface RawProductRef {
+  id: number;
+  name: string;
+  categoryId?: number | null;
+}
+
 /**
  * Результат кнопки «Спросить у ИИ»: число для поля-коэффициента и объяснение.
  * Ничего не сохраняет — значение подставляется в поле, сохраняет человек.

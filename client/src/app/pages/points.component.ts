@@ -5,33 +5,36 @@ import { ApiService } from '../core/api.service';
 import { PointCard, PointHealth } from '../core/models';
 import { httpErr } from '../core/format';
 import { PointFormComponent } from '../shared/point-form.component';
+import { OrdersNavComponent } from './orders-nav.component';
 
 @Component({
   selector: 'app-points',
   standalone: true,
-  imports: [CommonModule, RouterLink, PointFormComponent],
+  imports: [CommonModule, RouterLink, PointFormComponent, OrdersNavComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="bar">
-      <h1 class="page-title" style="margin:0">🏪 Точки продаж</h1>
+      <h1 class="page-title" style="margin:0">🏬 Магазины и точки продаж</h1>
       <span class="spacer"></span>
-      <button class="btn sm" (click)="load()">⟳</button>
+      <button class="btn sm" (click)="load()" title="Обновить">⟳</button>
       <button class="btn sm primary" (click)="createOpen.set(true)">+ Точка продаж</button>
     </div>
+
+    <app-orders-nav />
     @if (err()) { <div class="err">{{ err() }}</div> }
     @if (msg()) { <div class="ok-msg">{{ msg() }}</div> }
 
     <div class="grid">
       @for (p of points(); track p.id) {
-        <a class="card panel" [routerLink]="['/points', p.id]" [class.off]="!p.active">
-          <div class="head">
+        <div class="card panel" [class.off]="!p.active">
+          <a class="head" [routerLink]="['/points', p.id]" title="Аналитика точки">
             <div class="ttl">
               <span class="dot" [class.on]="p.active" [title]="p.active ? 'активна' : 'не активна'"></span>
               <strong>{{ p.name }}</strong>
               <span class="badge blue">{{ p.code }}</span>
             </div>
             <span class="go" aria-hidden="true">→</span>
-          </div>
+          </a>
 
           <div class="profile">
             @if (p.address) { <div class="pf"><span class="k">Адрес</span><span class="v">{{ p.address }}</span></div> }
@@ -57,7 +60,7 @@ import { PointFormComponent } from '../shared/point-form.component';
             </div>
           }
 
-          <div class="trend">
+          <a class="trend" [routerLink]="['/points', p.id]" title="Аналитика точки">
             <div class="trend-cap"><span class="muted small">Объём заказа по доставкам</span></div>
             @if (p.trend.length) {
               <div class="bars">
@@ -71,10 +74,17 @@ import { PointFormComponent } from '../shared/point-form.component';
             } @else {
               <div class="muted small">Нет заказов в зеркале</div>
             }
+          </a>
+
+          <div class="acts">
+            @if (p.active) {
+              <a class="btn sm" [routerLink]="['/orders', p.id]" title="Заказ магазина: подтвердить, собрать, отменить">🧾 Заказ</a>
+            }
+            <a class="btn sm" [routerLink]="['/points', p.id]">📈 Аналитика</a>
           </div>
-        </a>
+        </div>
       } @empty {
-        <div class="panel empty-msg">Точек пока нет — создайте первую.</div>
+        <div class="panel empty-msg">Магазинов пока нет — создайте первую точку.</div>
       }
     </div>
 
@@ -86,11 +96,14 @@ import { PointFormComponent } from '../shared/point-form.component';
     `
     .bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
     .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
-    a.card { display: flex; flex-direction: column; gap: 12px; min-width: 0; text-decoration: none; color: inherit; cursor: pointer; transition: border-color .15s, box-shadow .15s, transform .15s; }
-    a.card:hover { border-color: var(--accent); box-shadow: 0 8px 24px rgba(10,18,32,.10); transform: translateY(-1px); }
-    a.card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .card { display: flex; flex-direction: column; gap: 12px; min-width: 0; transition: border-color .15s, box-shadow .15s, transform .15s; }
+    .card:hover { border-color: var(--accent); box-shadow: 0 8px 24px rgba(10,18,32,.10); transform: translateY(-1px); }
     .card.off { opacity: 0.62; }
-    .head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+    .head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+      text-decoration: none; color: inherit; }
+    .head:focus-visible, .trend:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+    .head:hover .go { color: var(--accent); }
+    .acts { display: flex; gap: 8px; flex-wrap: wrap; }
     .ttl { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; min-width: 0; }
     .ttl strong { font-size: 15px; overflow-wrap: anywhere; }
     .go { color: var(--muted); font-size: 15px; flex: 0 0 auto; }
@@ -102,7 +115,7 @@ import { PointFormComponent } from '../shared/point-form.component';
     .pf .v { overflow-wrap: anywhere; }
     .health { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .small { font-size: 12px; }
-    .trend { display: flex; flex-direction: column; gap: 6px; }
+    .trend { display: flex; flex-direction: column; gap: 6px; text-decoration: none; color: inherit; }
     .trend-cap { display: flex; justify-content: space-between; }
     .bars { display: flex; align-items: flex-end; gap: 4px; height: 54px; }
     .bcol { flex: 1 1 0; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; height: 100%; min-width: 0; }

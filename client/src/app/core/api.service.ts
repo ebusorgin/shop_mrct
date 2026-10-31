@@ -21,6 +21,10 @@ export class ApiService {
   createProduct(body: unknown): Observable<{ id: number }> {
     return this.http.post<{ id: number }>(`${this.base}/products`, body);
   }
+  /** Одна позиция номенклатуры целиком (для модалки редактирования из других страниц). */
+  product$(id: number): Observable<M.Product> {
+    return this.http.get<M.Product>(`${this.base}/products/${id}`);
+  }
   patchProduct(id: number, body: unknown): Observable<{ ok: boolean }> {
     return this.http.patch<{ ok: boolean }>(`${this.base}/products/${id}`, body);
   }
@@ -169,6 +173,48 @@ export class ApiService {
     return this.http.patch<{ ok: boolean; gpt: M.GptSettings }>(`${this.base}/settings/gpt`, body);
   }
   testGpt$(): Observable<M.GptTestResult> { return this.http.post<M.GptTestResult>(`${this.base}/settings/gpt/test`, {}); }
+
+  // ---- категории товаров (в настройках, только админ) ----
+  cardCategories$(): Observable<M.CardCategory[]> { return this.http.get<M.CardCategory[]>(`${this.base}/settings/categories`); }
+  createCategory$(name: string): Observable<{ id: number; name: string }> {
+    return this.http.post<{ id: number; name: string }>(`${this.base}/settings/categories`, { name });
+  }
+  renameCategory$(id: number, name: string): Observable<{ ok: boolean }> {
+    return this.http.patch<{ ok: boolean }>(`${this.base}/settings/categories/${id}`, { name });
+  }
+  deleteCategory$(id: number): Observable<{ ok: boolean }> {
+    return this.http.delete<{ ok: boolean }>(`${this.base}/settings/categories/${id}`);
+  }
+  categoryCards$(id: number): Observable<M.CardRef[]> {
+    return this.http.get<M.CardRef[]>(`${this.base}/settings/categories/${id}/cards`);
+  }
+  assignCards$(catId: number, cardIds: number[]): Observable<{ ok: boolean }> {
+    return this.http.put<{ ok: boolean }>(`${this.base}/settings/categories/${catId}/cards`, { cardIds });
+  }
+  allCards$(): Observable<M.CardRef[]> {
+    return this.http.get<M.CardRef[]>(`${this.base}/settings/all-cards`);
+  }
+
+  // ---- категории сырья (в настройках, только админ) ----
+  rawCategories$(): Observable<M.RawCategory[]> { return this.http.get<M.RawCategory[]>(`${this.base}/settings/raw-categories`); }
+  createRawCategory$(name: string): Observable<{ id: number; name: string }> {
+    return this.http.post<{ id: number; name: string }>(`${this.base}/settings/raw-categories`, { name });
+  }
+  renameRawCategory$(id: number, name: string): Observable<{ ok: boolean }> {
+    return this.http.patch<{ ok: boolean }>(`${this.base}/settings/raw-categories/${id}`, { name });
+  }
+  deleteRawCategory$(id: number): Observable<{ ok: boolean }> {
+    return this.http.delete<{ ok: boolean }>(`${this.base}/settings/raw-categories/${id}`);
+  }
+  rawCategoryProducts$(id: number): Observable<M.RawProductRef[]> {
+    return this.http.get<M.RawProductRef[]>(`${this.base}/settings/raw-categories/${id}/products`);
+  }
+  assignRawProducts$(catId: number, productIds: number[]): Observable<{ ok: boolean }> {
+    return this.http.put<{ ok: boolean }>(`${this.base}/settings/raw-categories/${catId}/products`, { productIds });
+  }
+  allRawProducts$(): Observable<M.RawProductRef[]> {
+    return this.http.get<M.RawProductRef[]>(`${this.base}/settings/raw-products-all`);
+  }
 
   // ---- подсказки ИИ: спросить значение, подставить в поле (сохраняет человек) ----
   askCoefficient$(body: {

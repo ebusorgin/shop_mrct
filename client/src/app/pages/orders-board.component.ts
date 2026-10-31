@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, OnInit, effect, inject, signal, untracked } from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnInit, computed, effect, inject, signal, untracked } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ApiService } from '../core/api.service';
@@ -22,11 +22,17 @@ import { OrdersNavComponent } from './orders-nav.component';
   styles: [
     `
       .board-select { min-width: 170px; }
+      .board-toolbar { padding: 12px 14px; }
+      .bt-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+      .tb-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .tb-group.right { margin-left: auto; }
+      .tb-group .grow { flex: 1; min-width: 180px; max-width: 300px; }
       .fresh-btn { white-space: nowrap; }
       .fresh-btn.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+      .nav-arrow { min-width: 30px; text-align: center; padding: 4px 6px; }
 
       /* сетка «как в Excel»: скролл-контейнер + залипающая шапка и колонка товара */
-      .xlsx-wrap { overflow: auto; max-height: 72vh; background: #fff; border: 1px solid #c9c9c9; border-radius: 6px; }
+      .xlsx-wrap { overflow-x: auto; background: #fff; border: 1px solid #c9c9c9; border-radius: 6px; }
       .tbl.xlsx { border-collapse: collapse; width: 100%; background: #fff; color: #212121;
         font-family: 'Calibri','Segoe UI',system-ui,sans-serif; font-size: 14px; }
       .tbl.xlsx th, .tbl.xlsx td { border: 1px solid #dcdcdc; padding: 5px 10px;
@@ -48,6 +54,11 @@ import { OrdersNavComponent } from './orders-nav.component';
       /* «активная ячейка» при наведении (не трогаем закрепления и итог) */
       .tbl.xlsx tr:not(.th-row):not(.tfoot):hover td:not(.cname) { background: #f6faf7; }
       .tbl.xlsx tr:not(.tfoot) td:not(.cname):hover { box-shadow: inset 0 0 0 2px #107c41; }
+      /* строка-заголовок категории: зелёная полоса на всю ширину */
+      .tbl.xlsx tr.cat-row td { background: #e5efe6; color: #1d5c2e; font-weight: 700;
+        text-transform: capitalize; letter-spacing: .2px; padding: 6px 10px; }
+      .tbl.xlsx tr.cat-row td.cname { box-shadow: inset -2px 0 0 #b7b3af; }
+      .tbl.xlsx tr.cat-row .cnt { font-weight: 400; color: #5c7a63; font-size: 11px; margin-left: 6px; }
       /* итоговая строка — прижата снизу */
       .tbl.xlsx tr.tfoot td { position: sticky; bottom: 0; z-index: 2; background: #eef2ee; font-weight: 700; }
       .tbl.xlsx tr.tfoot td.cname { z-index: 4; background: #e7ece7; }
@@ -55,49 +66,37 @@ import { OrdersNavComponent } from './orders-nav.component';
     `,
   ],
   template: `
+    <h1 class="page-title">📋 Доска производства</h1>
     <app-orders-nav />
 
-    <div class="row spread board-top">
-      <h2>Доска производства</h2>
-      <div class="row">
-        @if (!isFresh() && date()) {
-          <button class="btn sm fresh-btn" (click)="goFresh()">К свежему листу</button>
-        }
-        <select class="board-select" [ngModel]="date()" (ngModelChange)="selectDate($event)">
-          @if (!date()) { <option [ngValue]="null">Лист не выбран</option> }
-          @for (d of dates(); track d.date) {
-            <option [ngValue]="d.date">{{ pretty(d.date) }} · {{ d.cnt }} поз.</option>
+    <div class="panel board-toolbar">
+      <div class="bt-row">
+        <div class="tb-group">
+          <button class="btn sm nav-arrow" [disabled]="!canOlder()" (click)="stepDate(-1)" title="Старше">&#9664;</button>
+          <select class="board-select" [ngModel]="date()" (ngModelChange)="selectDate($event)">
+            @if (!date()) { <option [ngValue]="null">Лист не выбран</option> }
+            @for (d of dates(); track d.date) {
+              <option [ngValue]="d.date">{{ pretty(d.date) }} · {{ d.cnt }} поз.</option>
+            }
+          </select>
+          <button class="btn sm nav-arrow" [disabled]="!canNewer()" (click)="stepDate(1)" title="Новее">&#9654;</button>
+          @if (!isFresh() && date()) {
+            <button class="btn sm fresh-btn" (click)="goFresh()">К свежему</button>
           }
-        </select>
+        </div>
+        <div class="tb-group right">
+          <select class="minw0" [ngModel]="category()" (ngModelChange)="category.set($event)">
+            <option [ngValue]="null">Все категории</option>
+            @for (c of ordersSvc.categories(); track c) {
+              <option [ngValue]="c">{{ c }}</option>
+            }
+          </select>
+          <input type="search" class="grow" placeholder="🔍 Поиск по товару" [ngModel]="q()" (ngModelChange)="q.set($event)" />
+        </div>
       </div>
     </div>
 
-    <div class="row wrap filters">
-      <select class="minw0" [ngModel]="category()" (ngModelChange)="category.set($event)">
-        <option [ngValue]="null">Все категории</option>
-        @for (c of ordersSvc.categories(); track c) {
-          <option [ngValue]="c">{{ c }}</option>
-        }
-      </select>
-      <input type="search" class="grow" placeholder="Поиск по товару" [ngModel]="q()" (ngModelChange)="q.set($event)" />
-    </div>
-
-    <div class="grid kpi">
-      <div class="panel kpi">
-        <div class="k-label">Позиций (товаров)</div>
-        <div class="k-val">{{ totals()?.positions ?? '—' }}</div>
-      </div>
-      <div class="panel kpi">
-        <div class="k-label">Магазинов в листе</div>
-        <div class="k-val">{{ totals()?.stores ?? '—' }}</div>
-      </div>
-      <div class="panel kpi">
-        <div class="k-label">Полная цена (VK)</div>
-        <div class="k-val">{{ totals() ? fmtMoney(totals()!.full) : '—' }}</div>
-      </div>
-    </div>
-
-    @if (err()) { <div class="error banner">{{ err() }}</div> }
+    @if (err()) { <div class="err">{{ err() }}</div> }
 
     <div class="panel">
       @if (loading()) {
@@ -115,20 +114,26 @@ import { OrdersNavComponent } from './orders-nav.component';
               }
             </tr>
 
-            @for (r of rows(); track r.key) {
-              <tr>
-                <td class="cname">
-                  {{ r.name }}
-                  @if (r.plu) { <div class="sub">{{ r.category ? r.category + ' · ' : '' }}{{ r.plu }}</div> }
-                  @else if (r.category) { <div class="sub">{{ r.category }}</div> }
+            @for (g of groups(); track g.key) {
+              <tr class="cat-row">
+                <td class="cname" [attr.colspan]="4 + stores().length">
+                  {{ g.category ?? 'Без категории' }}<span class="cnt">· {{ g.rows.length }} поз.</span>
                 </td>
-                <td class="num">{{ trim(r.totalQty) }} <span class="sub">{{ r.unit }}</span></td>
-                <td class="num">{{ r.pricePer === null ? '—' : fmtMoney(r.pricePer) }}</td>
-                <td class="num">{{ fmtMoney(r.fullPrice) }}</td>
-                @for (s of stores(); track s.id) {
-                  <td class="num c">{{ cell(r.byStore[s.id]) }}</td>
-                }
               </tr>
+              @for (r of g.rows; track r.key) {
+                <tr>
+                  <td class="cname">
+                    {{ r.name }}
+                    @if (r.plu) { <div class="sub">{{ r.plu }}</div> }
+                  </td>
+                  <td class="num">{{ trim(r.totalQty) }} <span class="sub">{{ r.unit }}</span></td>
+                  <td class="num">{{ r.pricePer === null ? '—' : fmtMoney(r.pricePer) }}</td>
+                  <td class="num">{{ fmtMoney(r.fullPrice) }}</td>
+                  @for (s of stores(); track s.id) {
+                    <td class="num c">{{ cell(r.byStore[s.id]) }}</td>
+                  }
+                </tr>
+              }
             } @empty {
               <tr class="empty"><td [attr.colspan]="4 + stores().length">На этот лист заказов нет</td></tr>
             }
@@ -176,6 +181,27 @@ export class OrdersBoardComponent implements OnInit {
 
   fmtMoney = new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format;
 
+  /** Строки пивота, сгруппированные по категории: секции идут по алфавиту, «без категории» — в конце. */
+  protected groups = computed(() => {
+    const map = new Map<string | null, BoardRow[]>();
+    for (const r of this.rows()) {
+      const arr = map.get(r.category);
+      if (arr) arr.push(r);
+      else map.set(r.category, [r]);
+    }
+    const out = [...map.entries()].map(([category, rows]) => ({
+      key: category ?? '__none__',
+      category,
+      rows: rows.sort((a, b) => a.name.localeCompare(b.name, 'ru')),
+    }));
+    out.sort((a, b) => {
+      if (a.category === null) return b.category === null ? 0 : 1;
+      if (b.category === null) return -1;
+      return a.category.localeCompare(b.category, 'ru');
+    });
+    return out;
+  });
+
   constructor() {
     // живой канал: изменения листа перезагружают доску (если дата не закреплена вручную)
     effect(() => {
@@ -220,6 +246,25 @@ export class OrdersBoardComponent implements OnInit {
     this.pinned = true;
     this.date.set(d);
     this.load();
+  }
+
+  /** Перейти на delta позиций: +1 = новее, -1 = старше. */
+  protected stepDate(delta: 1 | -1): void {
+    const arr = this.dates();
+    const cur = arr.findIndex((x) => x.date === this.date());
+    if (cur < 0) return;
+    // dates[] отсортированы DESC: [0]=самая свежая. delta=+1 → индекс--, delta=-1 → индекс++
+    const next = cur - delta;
+    if (next >= 0 && next < arr.length) this.selectDate(arr[next].date);
+  }
+
+  protected canNewer(): boolean {
+    return this.dates().findIndex((x) => x.date === this.date()) > 0;
+  }
+
+  protected canOlder(): boolean {
+    const i = this.dates().findIndex((x) => x.date === this.date());
+    return i >= 0 && i < this.dates().length - 1;
   }
 
   /** Вернуться на самый свежий лист и снова следить за live-обновлениями. */

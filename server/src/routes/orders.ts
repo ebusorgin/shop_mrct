@@ -3,6 +3,7 @@
  *  GET  /api/orders/stores               — витрины 103..110
  *  GET  /api/orders/dates?store=103      — даты-листы (для переключения истории)
  *  GET  /api/orders?store=103&date=…     — заказы магазина за дату (+сводка)
+ *  GET  /api/orders/board?date=…         — доска производства: все магазины за лист
  *  GET  /api/orders/categories           — категории строк (фильтр UI)
  *  GET  /api/orders/catalog              — каталог для оформления (техкарты)
  *  POST /api/orders/place?store=103      — оформление заказа (транзакция, проверка min)
@@ -185,6 +186,88 @@ ordersRouter.get(
       items,
       summary: {
         lines: items.length,
+        totalQty: Object.values(qtyByUnit).reduce((s, n) => s + n, 0),
+        qtyByUnit: Object.fromEntries(
+          Object.entries(qtyByUnit).map(([u, n]) => [u, Math.round(n * 1000) / 1000])
+        ),
+        baseUnit: items[0]?.cardUnit ?? items[0]?.unitCode ?? 'г',
+        totalCost: costLines ? Math.round(totalCost * 100) / 100 : null,
+        costLines,
+        minOkLines: minOk,
+        minBadLines: items.length - minOk,
+      },
+    });
+  })
+);
+
+/**
+ * Доска производства: заказы всех активных магазинов за один лист-дату (только просмотр).
+ * date пустой — самый свежий лист, где есть позиции в работе (synced/placed).
+ * Возвращает items (с storeName), dates (переключатель листов) и сводку по всем строкам.
+ */
+ordersRouter.get(
+  '/board',
+  requireOffice,
+  wrap(async (req, res) => {
+    const qDate = typeof req.query.date === 'string' && req.query.date ? req.query.date : null;
+    const cat = typeof req.query.category === 'string' && req.query.category ? req.query.category.toLowerCase() : null;
+    const q = typeof req.query.q === 'string' ? req.query.q.trim().toLowerCase() : null;
+
+    // список листов-дат с заказами у активных магазинов — для переключателя
+    const { rows: dateRows } = await pool.query(
+      `select o.date_tab::text as date, count(*)::int as cnt,
+              coalesce(max(o.tab_id), 0) as "tabId",
+              bool_or(o.source = 'g_sheet') as synced,
+              bool_or(o.source = 'manual') as manual
+         from orders o join stores st on st.id = o.store_id and st.active
+        group by 1 order by 1 desc limit 200`
+    );
+    const dates = dateRows as { date: string; cnt: number; tabId: number; synced: boolean; manual: boolean }[];
+
+    // дата по умолчанию: самый свежий лист с позициями в работе, иначе просто самый свежий
+    let date = qDate;
+    if (!date) {
+      const { rows: fresh } = await pool.query(
+        `select max(o.date_tab)::text as d
+           from orders o join stores st on st.id = o.store_id and st.active
+          where o.status in ('synced','placed')`
+      );
+      date = fresh[0]?.d ?? dates[0]?.date ?? null;
+    }
+
+    const conds: string[] = ['st.active'];
+    const params: unknown[] = [];
+    if (date) { params.push(date); conds.push(`o.date_tab = $${params.length}::date`); }
+    if (cat) { params.push(cat); conds.push(`oc.name = $${params.length}`); }
+    if (q) { params.push(`%${q}%`); conds.push(`lower(coalesce(tc.name, o.source_name)) like $${params.length}`); }
+
+    const { rows } = await pool.query(
+      `${ORDER_SELECT} where ${conds.join(' and ')}
+        order by st.name, oc.name nulls last, coalesce(tc.name, o.source_name)`,
+      params
+    );
+    const items = rows.map(dec);
+
+    let totalCost = 0;
+    let costLines = 0;
+    let minOk = 0;
+    const qtyByUnit: Record<string, number> = {};
+    const storesSeen = new Set<number>();
+    for (const it of items) {
+      storesSeen.add(it.storeId);
+      const printed = printedQty(it);
+      if (it.vk !== null) { totalCost += it.vk * printed; costLines += 1; }
+      if (it.minQty === null || it.qty >= it.minQty - 1e-6) minOk += 1;
+      const base = it.cardUnit ?? it.unitCode ?? 'г';
+      qtyByUnit[base] = (qtyByUnit[base] ?? 0) + it.qty;
+    }
+    res.json({
+      date,
+      dates,
+      items,
+      summary: {
+        lines: items.length,
+        stores: storesSeen.size,
         totalQty: Object.values(qtyByUnit).reduce((s, n) => s + n, 0),
         qtyByUnit: Object.fromEntries(
           Object.entries(qtyByUnit).map(([u, n]) => [u, Math.round(n * 1000) / 1000])

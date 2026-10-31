@@ -417,6 +417,17 @@ export interface OrdersResult {
   summary: OrdersSummary;
 }
 
+/**
+ * Доска производства: заказы всех активных магазинов за один лист-дату (только просмотр).
+ * items уже несут storeName; dates — переключатель листов; summary.stores — сколько магазинов в листе.
+ */
+export interface OrdersBoard {
+  date: string | null;
+  dates: OrderDate[];
+  items: OrderItem[];
+  summary: OrdersSummary & { stores: number };
+}
+
 /** Дата-лист, за который у магазина есть заказы. */
 export interface OrderDate {
   date: string;

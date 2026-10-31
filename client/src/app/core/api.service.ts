@@ -101,6 +101,12 @@ export class ApiService {
     Object.entries(params).forEach(([k, v]) => (hp = hp.set(k, v)));
     return this.http.get<M.OrdersResult>(`${this.base}/orders`, { params: hp });
   }
+  /** Доска производства: все активные магазины за один лист-дату (только просмотр). */
+  ordersBoard$(params: Record<string, string> = {}): Observable<M.OrdersBoard> {
+    let hp = new HttpParams();
+    Object.entries(params).forEach(([k, v]) => (hp = hp.set(k, v)));
+    return this.http.get<M.OrdersBoard>(`${this.base}/orders/board`, { params: hp });
+  }
   placeOrder$(store: number, body: unknown): Observable<M.PlaceOrderResult> {
     return this.http.post<M.PlaceOrderResult>(
       `${this.base}/orders/place`, body, { params: new HttpParams().set('store', String(store)) });

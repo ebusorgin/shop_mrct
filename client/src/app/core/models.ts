@@ -259,32 +259,6 @@ export interface ExpansionRow {
   deficit?: boolean;
 }
 
-export interface Batch {
-  id: number;
-  cardId: number;
-  cardName: string;
-  portions: number;
-  batchDate: string;
-  costTotal: number;
-  status: 'posted' | 'reversed';
-  note: string;
-  portionQty: number;
-  portionUnitCode: string;
-  /** Кто отгрузил партию и когда. */
-  createdLogin?: string | null;
-  createdName?: string | null;
-  createdAt?: string | null;
-}
-
-export interface BatchItem {
-  productId: number;
-  name: string;
-  unitCode: string;
-  qty: number;
-  unitCost: number;
-  cost: number;
-}
-
 /** Партия (приход) с истекающим сроком: остаток раскладывается по приходам FIFO. */
 export interface NearExpiryRow {
   productId: number;

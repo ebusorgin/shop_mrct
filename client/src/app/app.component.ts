@@ -99,10 +99,7 @@ export class AppComponent {
     { title: '', items: [{ path: '', icon: '📊', label: 'Панель' }] },
     {
       title: 'Операции',
-      items: [
-        { path: 'waybills', icon: '📥', label: 'Приход товара' },
-        { path: 'batches', icon: '🚚', label: 'Производство и отгрузки' },
-      ],
+      items: [{ path: 'waybills', icon: '📥', label: 'Приход товара' }],
     },
     {
       title: 'Склад',

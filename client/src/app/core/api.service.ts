@@ -81,18 +81,6 @@ export class ApiService {
     });
   }
 
-  // ---- batches ----
-  batches$(): Observable<M.Batch[]> { return this.http.get<M.Batch[]>(`${this.base}/batches`); }
-  batchItems$(id: number): Observable<M.BatchItem[]> {
-    return this.http.get<M.BatchItem[]>(`${this.base}/batches/${id}`);
-  }
-  createBatch(body: unknown): Observable<{ id: number; costTotal: number }> {
-    return this.http.post<{ id: number; costTotal: number }>(`${this.base}/batches`, body);
-  }
-  reverseBatch(id: number): Observable<unknown> {
-    return this.http.post(`${this.base}/batches/${id}/reverse`, {});
-  }
-
   // ---- dashboard ----
   /** Панель и список сроков годности (expiryLimit — сколько строк nearExpiry вернуть). */
   dashboard$(params: Record<string, string> = {}): Observable<M.Dashboard> {

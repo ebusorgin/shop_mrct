@@ -32,9 +32,6 @@ import { fmtCost, fmtDateTime, fmtMoney, fmtQty, httpErr, trim } from '../core/f
           <a class="quick-btn primary" routerLink="/waybills" [queryParams]="{ panel: 'new' }">
             <span class="qi">📥</span><span class="qt">Принять товар<small>входящая накладная</small></span>
           </a>
-          <a class="quick-btn" routerLink="/batches">
-            <span class="qi">🍲</span><span class="qt">Начать производство<small>отгрузка с техники</small></span>
-          </a>
           <a class="quick-btn" routerLink="/stock" [queryParams]="{ tab: 'journal', type: 'writeoff' }">
             <span class="qi">📉</span><span class="qt">Списать продукты<small>расход и корректировки</small></span>
           </a>
@@ -126,8 +123,6 @@ import { fmtCost, fmtDateTime, fmtMoney, fmtQty, httpErr, trim } from '../core/f
         <div class="panel">
           <div class="row" style="align-items:center">
             <h3 style="margin:0">🚚 Последние отгрузки</h3>
-            <span class="spacer"></span>
-            <a class="btn sm" routerLink="/batches">Все отгрузки</a>
           </div>
           <table class="tbl stack">
             <tr class="th-row"><th>Продукция</th><th>Дата</th><th class="num">Себест.</th><th>Статус</th></tr>

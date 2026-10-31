@@ -545,6 +545,10 @@ export interface OrderSyncState {
     intervalSec: number;
     clients: number;
   } | null;
+  /** Ссылка на Google Таблицу-источник, из которой идёт парсинг заказов. */
+  sheetUrl?: string | null;
+  /** Настроено ли копирование прод-таблицы в тестовую (кнопка на «Синхронизации»). */
+  copyConfigured?: boolean;
 }
 
 /** Вошедший пользователь CRM. */

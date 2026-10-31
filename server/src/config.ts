@@ -16,13 +16,17 @@ export const config = {
   uploadsDir: path.resolve(__dirname, '..', 'uploads', 'waybills'),
   // прод-режим: сервер раздаёт собранный Angular-клиент (client/dist/crm/browser)
   clientDir: process.env.CLIENT_DIR ?? path.resolve(__dirname, '..', '..', 'client', 'dist', 'crm', 'browser'),
-  // Google Таблица заказов магазинов (общедоступная; id из ссылки /spreadsheets/d/<id>)
-  gsheetId: process.env.GSHEET_ORDERS_ID ?? '1tmtmBRcpDDRM5KaONo5wXo51RFcbm92nQ9GibFlHAzA',
+  // Google Таблица заказов магазинов (общедоступная; id из ссылки /spreadsheets/d/<id>).
+  // '||' вместо '??': пустая строка в .env не должна перемывать боевой id.
+  gsheetId: process.env.GSHEET_ORDERS_ID || '1tmtmBRcpDDRM5KaONo5wXo51RFcbm92nQ9GibFlHAzA',
   gsheetSyncMin: Number(process.env.GSHEET_SYNC_MIN ?? 10), // период синхронизации, мин
   gsheetRecentTabs: Number(process.env.GSHEET_RECENT_TABS ?? 10), // сколько свежих листов правим каждый цикл
   // уведомления об изменениях таблицы: вебхук Apps Script и страховочный вотчер листа
   sheetHookToken: process.env.GSHEET_HOOK_TOKEN ?? '', // пусто — вебхук выключен (503)
   sheetWatchSec: Number(process.env.GSHEET_WATCH_SEC ?? 5), // 0 — вотчер выключен
+  // URL веб-приложения Apps Script, привязанного к ПРОД-таблице: кнопка «Прод → тест»
+  // копированием листов прод-таблицы в тестовую (id теста — в CFG.TEST_SPREADSHEET_ID)
+  sheetCopyUrl: process.env.GSHEET_COPY_WEBAPP_URL ?? '', // пусто — кнопка не показывается
   // вход в CRM: срок сессии и первый администратор (создаётся, только пока таблица users пуста)
   sessionDays: Number(process.env.AUTH_SESSION_DAYS ?? 7),
   authAdminLogin: process.env.AUTH_ADMIN_LOGIN ?? 'admin',

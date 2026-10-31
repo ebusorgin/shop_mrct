@@ -14,6 +14,7 @@
  */
 import { Router, Request } from 'express';
 import { pool, tx } from '../db';
+import { config } from '../config';
 import { ApiError, reqArr, reqNum, wrap } from '../http';
 import { runOrderSync, lastSyncSummary, SyncSummary } from '../services/order-sync';
 import { watchState } from '../services/sheet-watch';
@@ -566,7 +567,60 @@ ordersRouter.get(
               last_sync_at as "lastSyncAt", last_error as "lastError"
          from order_tabs order by extract_date desc nulls last limit 30`
     );
-    res.json({ state: rows[0] ?? null, summary: lastSyncSummary(), tabs, watch: watchState() });
+    // ссылка на документ-источник, из которого идёт парсинг (показываем на «Синхронизации»)
+    res.json({
+      state: rows[0] ?? null,
+      summary: lastSyncSummary(),
+      tabs,
+      watch: watchState(),
+      sheetUrl: `https://docs.google.com/spreadsheets/d/${config.gsheetId}/edit`,
+      // кнопка «Прод → тест» имеет смысл только когда настроено веб-приложение-копир и есть секрет
+      copyConfigured: !!(config.sheetCopyUrl && config.sheetHookToken),
+    });
+  })
+);
+
+/**
+ * POST в Apps Script Web App с ручным проходом редиректа: веб-приложение
+ * отвечает 302 на script.googleusercontent.com, а fetch по спецификации
+ * превращает за ним POST в GET — doPost тогда не вызовется.
+ */
+async function postToWebApp(url: string, payload: unknown): Promise<Response> {
+  const opts: RequestInit = {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    redirect: 'manual',
+    signal: AbortSignal.timeout(300_000), // копирование всех листов может идти минуты
+  };
+  let r = await fetch(url, opts);
+  const loc = r.headers.get('location');
+  if (r.status >= 300 && r.status < 400 && loc) r = await fetch(loc, opts);
+  return r;
+}
+
+// копирование прод-таблицы в тестовую (кнопка на «Синхронизации»; прод не трогаем)
+ordersRouter.post(
+  '/sheet-copy',
+  requireOffice,
+  wrap(async (req, res) => {
+    if (!config.sheetCopyUrl || !config.sheetHookToken) {
+      throw new ApiError(400, 'Копирование не настроено: задайте GSHEET_COPY_WEBAPP_URL в server/.env');
+    }
+    void audit(req.user, { action: 'sync', entity: 'sheet', title: 'Копирование прод-таблицы в тестовую' });
+    let r: Response;
+    try {
+      r = await postToWebApp(config.sheetCopyUrl, { action: 'copy_to_test', token: config.sheetHookToken });
+    } catch (e) {
+      throw new ApiError(502, `Веб-приложение недоступно: ${(e as Error).message || e}`);
+    }
+    const text = await r.text();
+    let out: { ok?: boolean; error?: string; tabsCopied?: number; tabsCreated?: number; tabsRemoved?: number };
+    try { out = JSON.parse(text); } catch { out = { ok: false, error: text.slice(0, 200) || `HTTP ${r.status}` }; }
+    if (!r.ok || !out.ok) throw new ApiError(502, `Копирование не удалось: ${out.error || `HTTP ${r.status}`}`);
+    // копию засчитаем сразу, не дожидаясь очередного цикла
+    void runOrderSync().catch(() => undefined);
+    res.json({ ok: true, tabsCopied: out.tabsCopied ?? 0, tabsCreated: out.tabsCreated ?? 0, tabsRemoved: out.tabsRemoved ?? 0 });
   })
 );
 

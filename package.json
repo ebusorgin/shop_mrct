@@ -17,5 +17,8 @@
   },
   "dependencies": {
     "ssh2": "^1.17.0"
+  },
+  "devDependencies": {
+    "googleapis": "^178.0.0"
   }
 }

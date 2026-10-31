@@ -129,6 +129,12 @@ export class ApiService {
       params: full ? new HttpParams().set('full', '1') : new HttpParams(),
     });
   }
+  /** скопировать листы прод-таблицы в тестовую (долго: все вкладки, до минут) */
+  copySheetToTest$(): Observable<{ ok: boolean; tabsCopied: number; tabsCreated: number; tabsRemoved: number }> {
+    return this.http.post<{ ok: boolean; tabsCopied: number; tabsCreated: number; tabsRemoved: number }>(
+      `${this.base}/orders/sheet-copy`, {}, {}
+    );
+  }
 
   // ---- точки продаж (управление магазинами + карточки) ----
   points$(): Observable<M.PointCard[]> { return this.http.get<M.PointCard[]>(`${this.base}/points`); }

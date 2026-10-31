@@ -72,6 +72,9 @@ function onOpen() {
     .addItem('Проверить вебхук', 'testHook')
     .addItem('Статус', 'showStatus')
     .addSeparator()
+    // пункт из copy-prod-to-test.gs: зеркалит листы этой таблицы в тестовую копию
+    .addItem('Копировать прод → тест', 'copyProdToTestMenu')
+    .addSeparator()
     .addItem('Удалить триггеры', 'removeTriggers')
     .addToUi();
 }

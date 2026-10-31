@@ -417,15 +417,37 @@ export interface OrdersResult {
   summary: OrdersSummary;
 }
 
+/** Колонка-магазин на доске производства. */
+export interface BoardStore {
+  id: number;
+  code: string;
+  name: string;
+}
+
+/** Строка доски-пивота: товар × количество по магазинам + деньги. */
+export interface BoardRow {
+  key: string;
+  name: string;
+  category: string | null;
+  plu: string | null;
+  /** печатная единица: 'порц' | 'шт' | 'кг' | 'л' | базовая */
+  unit: string;
+  totalQty: number;
+  pricePer: number | null;
+  fullPrice: number;
+  byStore: Record<number, number>;
+}
+
 /**
- * Доска производства: заказы всех активных магазинов за один лист-дату (только просмотр).
- * items уже несут storeName; dates — переключатель листов; summary.stores — сколько магазинов в листе.
+ * Доска производства (пивот «как в Excel»): строки = товары, колонки = магазины 103..110.
+ * rows уже содержат byStore; stores — порядок колонок; totals — итоги по колонкам и полная сумма.
  */
 export interface OrdersBoard {
   date: string | null;
   dates: OrderDate[];
-  items: OrderItem[];
-  summary: OrdersSummary & { stores: number };
+  stores: BoardStore[];
+  rows: BoardRow[];
+  totals: { positions: number; full: number; stores: number; byStore: Record<number, number> };
 }
 
 /** Дата-лист, за который у магазина есть заказы. */

@@ -1,186 +1,208 @@
 import { ChangeDetectionStrategy, Component, OnInit, effect, inject, signal, untracked } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { RouterLink } from '@angular/router';
 import { ApiService } from '../core/api.service';
 import { OrdersService } from '../core/orders.service';
-import { OrdersBoard, OrderDate, OrderItem } from '../core/models';
-import { fmtMoney, fmtQty, httpErr } from '../core/format';
 import { LiveService } from '../core/live.service';
+import type { BoardRow, OrderDate } from '../core/models';
 import { OrdersNavComponent } from './orders-nav.component';
 
 /**
- * Доска производства — главная страница раздела «Заказы магазинов».
- * Показывает ЗАКАЗЫ ТОВАРОВ всех активных магазинов за один лист-дату (по умолчанию —
- * самый свежий лист). Только просмотр: подтверждение/сборка/отмена живут в карточке
- * магазина. Синхронизация и журнал вынесены на отдельные страницы (навигация вверху).
+ * Доска производства («как в Excel»): строки = позиции-товары, колонки = магазины 103..110
+ * с печатным количеством (порции/шт/кг), плюс Кол-во / Цена порции / Полная цена и итоговая
+ * строка по магазинам. Только просмотр — действия в карточке магазина.
+ * По умолчанию — самый свежий лист; переключатель дат сверху. Живой канал (SSE) перезагружает
+ * доску на изменения листа, если пользователь не выбрал дату вручную.
  */
 @Component({
   selector: 'app-orders-board',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink, OrdersNavComponent],
+  imports: [CommonModule, FormsModule, OrdersNavComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
+  styles: [
+    `
+      .board-select { min-width: 170px; }
+      .fresh-btn { white-space: nowrap; }
+      .fresh-btn.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+      /* сетка «как в Excel»: скролл-контейнер + залипающая шапка и колонка товара */
+      .xlsx-wrap { overflow: auto; max-height: 72vh; background: #fff; border: 1px solid #c9c9c9; border-radius: 6px; }
+      .tbl.xlsx { border-collapse: collapse; width: 100%; background: #fff; color: #212121;
+        font-family: 'Calibri','Segoe UI',system-ui,sans-serif; font-size: 14px; }
+      .tbl.xlsx th, .tbl.xlsx td { border: 1px solid #dcdcdc; padding: 5px 10px;
+        text-align: left; vertical-align: middle; white-space: nowrap; }
+      .tbl.xlsx th { position: sticky; top: 0; z-index: 2; background: #f3f2f1; color: #242424;
+        font-weight: 600; font-size: 12px; letter-spacing: 0; text-transform: none;
+        box-shadow: inset 0 -2px 0 #b7b3af; }
+      .tbl.xlsx td.num, .tbl.xlsx th.num { text-align: right; font-variant-numeric: tabular-nums; }
+      .tbl.xlsx td.c, .tbl.xlsx th.c { text-align: center; }
+      /* залипающая левая колонка наименований (вместо нумерации строк) */
+      .tbl.xlsx th.cname, .tbl.xlsx td.cname {
+        position: sticky; left: 0; z-index: 1; background: #f3f2f1;
+        min-width: 220px; max-width: 360px; white-space: normal;
+        box-shadow: inset -2px 0 0 #b7b3af;
+      }
+      .tbl.xlsx td.cname { background: #fff; font-weight: 600; color: #202124; }
+      .tbl.xlsx th.cname { z-index: 3; }
+      .tbl.xlsx .sub { font-weight: 400; color: var(--muted); font-size: 11px; }
+      /* «активная ячейка» при наведении (не трогаем закрепления и итог) */
+      .tbl.xlsx tr:not(.th-row):not(.tfoot):hover td:not(.cname) { background: #f6faf7; }
+      .tbl.xlsx tr:not(.tfoot) td:not(.cname):hover { box-shadow: inset 0 0 0 2px #107c41; }
+      /* итоговая строка — прижата снизу */
+      .tbl.xlsx tr.tfoot td { position: sticky; bottom: 0; z-index: 2; background: #eef2ee; font-weight: 700; }
+      .tbl.xlsx tr.tfoot td.cname { z-index: 4; background: #e7ece7; }
+      .tbl.xlsx .empty td { position: static; box-shadow: none; background: #fff; text-align: center; color: var(--muted); padding: 24px; }
+    `,
+  ],
   template: `
-    <h1 class="page-title">🧾 Заказы магазинов</h1>
-    <app-orders-nav></app-orders-nav>
+    <app-orders-nav />
 
-    @if (err()) { <div class="err">{{ err() }}</div> }
-
-    <!-- переключатель листа-даты + фильтры -->
-    <div class="panel">
-      <div class="row" style="align-items:flex-end; flex-wrap:wrap">
-        <label class="f" style="flex:1; min-width:200px">Лист (дата)
-          <select [ngModel]="date()" (ngModelChange)="selectDate($event)">
-            @for (d of dates(); track d.date) {
-              <option [ngValue]="d.date">{{ pretty(d.date) }} · {{ d.cnt }} поз.{{ d.synced ? '' : ' · ручной' }}</option>
-            }
-            @if (!dates().length) { <option [ngValue]="null">нет данных</option> }
-          </select>
-        </label>
-        @if (isFresh()) { <span class="badge green">актуальный лист</span> }
-        <span class="spacer"></span>
-        <button class="btn sm" (click)="goFresh()" title="Перейти на самый свежий лист">⤓ Актуальный</button>
-        <button class="btn sm" (click)="load()">⟳ Обновить</button>
-      </div>
-
-      <div class="row" style="margin-top:10px; flex-wrap:wrap">
-        <label class="f" style="flex:1; min-width:180px">Категория
-          <select [ngModel]="category()" (ngModelChange)="category.set($event); load()">
-            <option [ngValue]="''">— все —</option>
-            @for (c of ordersSvc.categories(); track c) { <option [ngValue]="c">{{ c }}</option> }
-          </select>
-        </label>
-        <label class="f" style="flex:2; min-width:220px">Поиск по названию
-          <input [ngModel]="q()" (ngModelChange)="q.set($event); load()" placeholder="напр. оливье" />
-        </label>
+    <div class="row spread board-top">
+      <h2>Доска производства</h2>
+      <div class="row">
+        @if (!isFresh() && date()) {
+          <button class="btn sm fresh-btn" (click)="goFresh()">К свежему листу</button>
+        }
+        <select class="board-select" [ngModel]="date()" (ngModelChange)="selectDate($event)">
+          @if (!date()) { <option [ngValue]="null">Лист не выбран</option> }
+          @for (d of dates(); track d.date) {
+            <option [ngValue]="d.date">{{ pretty(d.date) }} · {{ d.cnt }} поз.</option>
+          }
+        </select>
       </div>
     </div>
 
-    <!-- сводка (только просмотр) -->
-    @if (summary(); as s) {
-      <div class="kpis">
-        <div class="kpi"><div class="v">{{ s.lines }}</div><div class="l">позиций в листе</div></div>
-        <div class="kpi"><div class="v">{{ s.stores }}</div><div class="l">магазинов заказали</div></div>
-        <div class="kpi"><div class="v">{{ s.totalCost === null ? '—' : fmtMoney(s.totalCost) }}</div><div class="l">стоимость (по VK)</div></div>
-        <div class="kpi">
-          <div class="v" [class.red]="s.minBadLines > 0">{{ s.minOkLines }} / {{ s.lines }}</div>
-          <div class="l">соответствие минимуму @if (s.minBadLines > 0) { · ⚠️ {{ s.minBadLines }} ниже }</div>
-        </div>
-      </div>
-    }
+    <div class="row wrap filters">
+      <select class="minw0" [ngModel]="category()" (ngModelChange)="category.set($event)">
+        <option [ngValue]="null">Все категории</option>
+        @for (c of ordersSvc.categories(); track c) {
+          <option [ngValue]="c">{{ c }}</option>
+        }
+      </select>
+      <input type="search" class="grow" placeholder="Поиск по товару" [ngModel]="q()" (ngModelChange)="q.set($event)" />
+    </div>
 
-    <!-- таблица заказов всех магазинов за выбранный лист — вид «как в Excel» -->
+    <div class="grid kpi">
+      <div class="panel kpi">
+        <div class="k-label">Позиций (товаров)</div>
+        <div class="k-val">{{ totals()?.positions ?? '—' }}</div>
+      </div>
+      <div class="panel kpi">
+        <div class="k-label">Магазинов в листе</div>
+        <div class="k-val">{{ totals()?.stores ?? '—' }}</div>
+      </div>
+      <div class="panel kpi">
+        <div class="k-label">Полная цена (VK)</div>
+        <div class="k-val">{{ totals() ? fmtMoney(totals()!.full) : '—' }}</div>
+      </div>
+    </div>
+
+    @if (err()) { <div class="error banner">{{ err() }}</div> }
+
     <div class="panel">
-      @if (loading()) { <p class="muted">Загрузка…</p> }
-      @else {
+      @if (loading()) {
+        <p class="muted">Загрузка…</p>
+      } @else {
         <div class="xlsx-wrap">
           <table class="tbl xlsx">
             <tr class="th-row">
-              <th class="rowno">№</th><th>Магазин</th><th>Товар</th><th>Категория</th><th>Артикул</th>
-              <th class="num">Кол-во</th><th class="num">Мин.</th><th>Статус</th>
+              <th class="cname">Наименование товара</th>
+              <th class="num">Кол-во</th>
+              <th class="num">Цена порции</th>
+              <th class="num">Полная цена</th>
+              @for (s of stores(); track s.id) {
+                <th class="c" [title]="s.name">{{ s.code }}</th>
+              }
             </tr>
-            @for (it of items(); track it.id; let i = $index) {
+
+            @for (r of rows(); track r.key) {
               <tr>
-                <td class="rowno">{{ i + 1 }}</td>
-                <td><a class="store-link" [routerLink]="['/orders', it.storeId]">{{ it.storeName }}</a></td>
-                <td>{{ it.name }}</td>
-                <td>{{ it.category || '—' }}</td>
-                <td>{{ it.plu || '—' }}</td>
-                <td class="num">{{ fmtQty(it.qty, unitOf(it)) }}</td>
-                <td class="num">
-                  @if (it.minQty !== null) {
-                    <span [class.red]="belowMin(it)">{{ fmtQty(it.minQty, unitOf(it)) }}</span>
-                  } @else { <span class="muted">—</span> }
+                <td class="cname">
+                  {{ r.name }}
+                  @if (r.plu) { <div class="sub">{{ r.category ? r.category + ' · ' : '' }}{{ r.plu }}</div> }
+                  @else if (r.category) { <div class="sub">{{ r.category }}</div> }
                 </td>
-                <td>
-                  <span class="badge" [class]="badgeCls(it.status)">{{ statusLabel(it.status) }}</span>
-                  @if (it.source === 'g_sheet') { <span class="badge gray" title="из Google Таблицы">G</span> }
-                  @if (it.statusByLogin) {
-                    <span class="who" [title]="'статус сменил: ' + it.statusByLogin + ' · ' + fmtWhen(it.statusAt)">
-                      {{ it.statusByName || it.statusByLogin }} · {{ fmtWhen(it.statusAt) }}
-                    </span>
-                  }
-                </td>
+                <td class="num">{{ trim(r.totalQty) }} <span class="sub">{{ r.unit }}</span></td>
+                <td class="num">{{ r.pricePer === null ? '—' : fmtMoney(r.pricePer) }}</td>
+                <td class="num">{{ fmtMoney(r.fullPrice) }}</td>
+                @for (s of stores(); track s.id) {
+                  <td class="num c">{{ cell(r.byStore[s.id]) }}</td>
+                }
               </tr>
             } @empty {
-              <tr class="empty"><td colspan="8">На этот лист заказов нет</td></tr>
+              <tr class="empty"><td [attr.colspan]="4 + stores().length">На этот лист заказов нет</td></tr>
+            }
+
+            @if (rows().length) {
+              <tr class="tfoot">
+                <td class="cname">Итого · {{ rows().length }} поз.</td>
+                <td class="num"></td>
+                <td class="num"></td>
+                <td class="num">{{ fmtMoney(totals()?.full ?? 0) }}</td>
+                @for (s of stores(); track s.id) {
+                  <td class="num c">{{ cell(totals()?.byStore?.[s.id]) }}</td>
+                }
+              </tr>
             }
           </table>
         </div>
+
+        @if (dates().length > 1) {
+          <button class="btn sm block mt" (click)="loadMore()">Показать больше дат</button>
+        }
       }
     </div>
   `,
-  styles: [`
-    .xlsx-wrap { overflow: auto; max-height: 72vh; background: #fff; border: 1px solid #c9c9c9; border-radius: 6px; }
-    .tbl.xlsx { border-collapse: collapse; width: 100%; background: #fff; color: #212121; font-family: 'Calibri', 'Segoe UI', system-ui, sans-serif; font-size: 14px; }
-    .tbl.xlsx th, .tbl.xlsx td { border: 1px solid #dcdcdc; padding: 5px 10px; text-align: left; vertical-align: middle; white-space: nowrap; }
-    /* шапка как в Excel: серая полоса, прилипает сверху (замороженные панели) */
-    .tbl.xlsx th { position: sticky; top: 0; z-index: 2; background: #f3f2f1; color: #242424; font-weight: 600; font-size: 12px; letter-spacing: 0; text-transform: none; box-shadow: inset 0 -2px 0 #b7b3af; }
-    .tbl.xlsx td.num, .tbl.xlsx th.num { text-align: right; font-variant-numeric: tabular-nums; }
-    /* столбец номеров строк — как заголовки строк в Excel, прилипает слева */
-    .tbl.xlsx td.rowno, .tbl.xlsx th.rowno { position: sticky; left: 0; z-index: 1; background: #f3f2f1; color: #6a6a6a; text-align: center; font-weight: 600; width: 34px; box-shadow: inset -2px 0 0 #b7b3af; }
-    .tbl.xlsx th.rowno { z-index: 3; }
-    /* подсветка строки + «активная ячейка» с зелёной рамкой как в Excel */
-    .tbl.xlsx tbody tr:hover td:not(.rowno) { background: #f6faf7; }
-    .tbl.xlsx td:not(.rowno):hover { box-shadow: inset 0 0 0 2px #107c41; }
-    .tbl.xlsx .store-link { font-weight: 600; color: var(--accent); text-decoration: none; }
-    .tbl.xlsx .store-link:hover { text-decoration: underline; }
-    .tbl.xlsx .empty td { position: static; box-shadow: none; background: #fff; text-align: center; color: var(--muted); padding: 24px; }
-    .red { color: var(--red); }
-    .who { font-size: 11px; color: var(--muted); }
-  `],
 })
 export class OrdersBoardComponent implements OnInit {
   private api = inject(ApiService);
-  readonly ordersSvc = inject(OrdersService);
-  readonly live = inject(LiveService);
+  protected ordersSvc = inject(OrdersService);
+  private live = inject(LiveService);
 
-  dates = signal<OrderDate[]>([]);
-  date = signal<string | null>(null);
-  items = signal<OrderItem[]>([]);
-  summary = signal<OrdersBoard['summary'] | null>(null);
-  category = signal('');
-  q = signal('');
-  loading = signal(false);
-  err = signal('');
-  /** самый свежий лист, который разрешил сервер (для бейджа «актуальный») */
+  protected dates = signal<OrderDate[]>([]);
+  protected date = signal<string | null>(null);
+  protected stores = signal<{ id: number; code: string; name: string }[]>([]);
+  protected rows = signal<BoardRow[]>([]);
+  protected totals = signal<{ positions: number; full: number; stores: number; byStore: Record<number, number> } | null>(null);
+  protected category = signal<string | null>(null);
+  protected q = signal('');
+  protected loading = signal(true);
+  protected err = signal('');
+
+  /** Самый свежий лист (как его видит сервер по умолчанию) — для подсветки кнопки «К свежему». */
   private freshDate = signal<string | null>(null);
-  /** дату выбрал руками — тогда живые события не переключают на самый свежий лист */
+  /** Пользователь выбрал дату вручную — не переключать на свежий при live-событиях. */
   private pinned = false;
 
-  fmtMoney = fmtMoney;
-  fmtQty = fmtQty;
+  fmtMoney = new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format;
 
   constructor() {
-    // таблица изменилась и сервер перечитал её — обновляем доску
+    // живой канал: изменения листа перезагружают доску (если дата не закреплена вручную)
     effect(() => {
-      if (this.live.sheetVersion() > 0) {
-        untracked(() => {
-          if (!this.pinned) this.date.set(null); // офис не выбирал лист — следим за самым свежим
-          this.load();
-        });
-      }
+      this.live.sheetVersion();
+      if (!this.pinned) this.date.set(untracked(() => this.freshDate()));
+      this.load();
     });
   }
 
   ngOnInit(): void {
-    void this.ordersSvc.ensureCategories();
+    this.ordersSvc.ensureCategories();
     this.load();
   }
 
-  load(): void {
-    const p: Record<string, string> = {};
-    if (this.date()) p['date'] = this.date()!;
-    if (this.category()) p['category'] = this.category();
-    if (this.q().trim()) p['q'] = this.q().trim();
+  private load(): void {
     this.loading.set(true);
-    this.err.set('');
-    this.api.ordersBoard$(p).subscribe({
+    const params: Record<string, string> = {};
+    if (this.date()) params['date'] = this.date()!;
+    if (this.category()) params['category'] = this.category()!;
+    if (this.q().trim()) params['q'] = this.q().trim();
+    this.api.ordersBoard$(params).subscribe({
       next: (r) => {
-        this.items.set(r.items);
         this.dates.set(r.dates);
-        this.summary.set(r.summary);
-        // офис не выбирал лист руками — сервер вернул самый свежий, запоминаем его как эталон
+        this.stores.set(r.stores);
+        this.rows.set(r.rows);
+        this.totals.set(r.totals);
+        if (!this.date()) this.date.set(r.date);
         if (!this.pinned) {
           this.date.set(r.date);
           this.freshDate.set(r.date);
@@ -188,57 +210,48 @@ export class OrdersBoardComponent implements OnInit {
         this.loading.set(false);
       },
       error: (e) => {
-        this.err.set(httpErr(e));
+        this.err.set(e?.error?.message ?? 'Не удалось загрузить доску заказов');
         this.loading.set(false);
       },
     });
   }
 
-  selectDate(d: string | null): void {
+  protected selectDate(d: string): void {
     this.pinned = true;
     this.date.set(d);
     this.load();
   }
 
-  goFresh(): void {
+  /** Вернуться на самый свежий лист и снова следить за live-обновлениями. */
+  protected goFresh(): void {
     this.pinned = false;
     this.date.set(null);
     this.load();
   }
 
-  /** выбранный лист совпадает с самым свежим, который разрешил сервер? */
-  isFresh(): boolean {
+  /** Сейчас открыт самый свежий лист? */
+  protected isFresh(): boolean {
     const d = this.date();
     return !!d && d === this.freshDate();
   }
 
-  // ---- отображение ----
-  unitOf(it: OrderItem): string {
-    return it.cardUnit ?? it.unitCode ?? 'г';
+  protected loadMore(): void {
+    this.dates.set(this.dates().slice(0, this.dates().length + 30));
   }
-  belowMin(it: OrderItem): boolean {
-    return it.minQty !== null && it.qty < it.minQty - 1e-6;
+
+  /** Число печатной единицы: пусто при 0/отсутствии, иначе с разделителями (до 3 знаков). */
+  protected cell(v: number | undefined | null): string {
+    if (v === undefined || v === null || Math.abs(v) < 1e-9) return '';
+    return this.trim(v);
   }
-  statusLabel(s: string): string {
-    return { synced: 'синхрон.', placed: 'оформлен', confirmed: 'подтверждён', collected: 'собрали', cancelled: 'отменён' }[s] ?? s;
+
+  protected trim(n: number): string {
+    if (!Number.isFinite(n)) return '';
+    return (Math.round(n * 1000) / 1000).toLocaleString('ru-RU', { maximumFractionDigits: 3 });
   }
-  badgeCls(s: string): string {
-    if (s === 'cancelled') return 'gray';
-    if (s === 'collected') return 'green';
-    if (s === 'confirmed') return 'blue';
-    if (s === 'placed') return 'amber';
-    return 'gray';
-  }
-  pretty(d: string | null): string {
-    if (!d) return '—';
-    const [y, m, day] = d.split('-');
-    return `${day}.${m}.${y}`;
-  }
-  fmtWhen(iso: string | null | undefined): string {
+
+  protected pretty(iso: string | null): string {
     if (!iso) return '—';
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return iso.slice(0, 16).replace('T', ' ');
-    const p = (x: number) => String(x).padStart(2, '0');
-    return `${p(d.getDate())}.${p(d.getMonth() + 1)} ${p(d.getHours())}:${p(d.getMinutes())}`;
+    return new Date(iso).toLocaleDateString('ru-RU', { day: '2-digit', month: 'long', year: 'numeric' });
   }
 }

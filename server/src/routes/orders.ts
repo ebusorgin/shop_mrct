@@ -92,6 +92,22 @@ const dec = (r: Record<string, unknown>): OrderItem =>
     vk: r.vk === null ? null : Number(r.vk),
   }) as OrderItem;
 
+/** Строка доски-пивота: товар × количество по магазинам + деньги. */
+interface BoardPivotRow {
+  key: string;
+  name: string;
+  category: string | null;
+  plu: string | null;
+  /** печатная единица строки: 'порц' | 'шт' | 'кг' | 'л' | базовая */
+  unit: string;
+  totalQty: number;
+  pricePer: number | null;
+  fullPrice: number;
+  byStore: Record<number, number>;
+}
+
+const round3 = (n: number): number => Math.round(n * 1000) / 1000;
+
 ordersRouter.get(
   '/stores',
   requireOffice,
@@ -201,9 +217,10 @@ ordersRouter.get(
 );
 
 /**
- * Доска производства: заказы всех активных магазинов за один лист-дату (только просмотр).
- * date пустой — самый свежий лист, где есть позиции в работе (synced/placed).
- * Возвращает items (с storeName), dates (переключатель листов) и сводку по всем строкам.
+ * Доска производства (вид «как в Excel»): позиции-товары по всем активным магазинам за
+ * один лист-дату. Строки = товар; колонки = магазины (печатное кол-во: порции/шт/кг),
+ * плюс итого количество, цена за единицу (VK) и полная цена (Σ VK×кол-во). Отменённые строки исключаем.
+ * date пустой — самый свежий лист с позициями в работе (synced/placed).
  */
 ordersRouter.get(
   '/board',
@@ -212,6 +229,10 @@ ordersRouter.get(
     const qDate = typeof req.query.date === 'string' && req.query.date ? req.query.date : null;
     const cat = typeof req.query.category === 'string' && req.query.category ? req.query.category.toLowerCase() : null;
     const q = typeof req.query.q === 'string' ? req.query.q.trim().toLowerCase() : null;
+
+    // активные витрины — фиксированные колонки доски (103..110 и т.д.)
+    const { rows: storeRows } = await pool.query('select id, code, name from stores where active order by position, id');
+    const stores = storeRows as { id: number; code: string; name: string }[];
 
     // список листов-дат с заказами у активных магазинов — для переключателя
     const { rows: dateRows } = await pool.query(
@@ -246,37 +267,53 @@ ordersRouter.get(
         order by st.name, oc.name nulls last, coalesce(tc.name, o.source_name)`,
       params
     );
-    const items = rows.map(dec);
 
-    let totalCost = 0;
-    let costLines = 0;
-    let minOk = 0;
-    const qtyByUnit: Record<string, number> = {};
-    const storesSeen = new Set<number>();
-    for (const it of items) {
-      storesSeen.add(it.storeId);
+    // пивот: товар × магазин (кол-во в печатной единице); отмены не считаем
+    const map = new Map<string, BoardPivotRow>();
+    const byStoreTotal: Record<number, number> = {};
+    for (const raw of rows) {
+      const it = dec(raw);
+      if (it.status === 'cancelled') continue;
       const printed = printedQty(it);
-      if (it.vk !== null) { totalCost += it.vk * printed; costLines += 1; }
-      if (it.minQty === null || it.qty >= it.minQty - 1e-6) minOk += 1;
       const base = it.cardUnit ?? it.unitCode ?? 'г';
-      qtyByUnit[base] = (qtyByUnit[base] ?? 0) + it.qty;
+      const key = it.cardId != null ? `c${it.cardId}` : `n${(it.sourceName || it.name).toLowerCase().trim()}`;
+      let row = map.get(key);
+      if (!row) {
+        row = {
+          key, name: it.name, category: it.category, plu: it.plu,
+          unit: it.unitCode ?? (base === 'шт' ? 'шт' : base),
+          totalQty: 0, pricePer: null, fullPrice: 0, byStore: {},
+        };
+        map.set(key, row);
+      }
+      row.totalQty += printed;
+      row.fullPrice += (it.vk ?? 0) * printed;
+      if (row.pricePer === null && it.vk !== null) row.pricePer = it.vk;
+      row.byStore[it.storeId] = (row.byStore[it.storeId] ?? 0) + printed;
+      byStoreTotal[it.storeId] = (byStoreTotal[it.storeId] ?? 0) + printed;
     }
+
+    // округление «в месте»: порции до тысячных, деньги до копеек
+    const pivotRows = [...map.values()];
+    for (const r of pivotRows) {
+      r.totalQty = round3(r.totalQty);
+      if (r.pricePer !== null) r.pricePer = Math.round(r.pricePer * 100) / 100;
+      r.fullPrice = Math.round(r.fullPrice * 100) / 100;
+      for (const k of Object.keys(r.byStore)) r.byStore[Number(k)] = round3(r.byStore[Number(k)]);
+    }
+    for (const k of Object.keys(byStoreTotal)) byStoreTotal[Number(k)] = round3(byStoreTotal[Number(k)]);
+    pivotRows.sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+
     res.json({
       date,
       dates,
-      items,
-      summary: {
-        lines: items.length,
-        stores: storesSeen.size,
-        totalQty: Object.values(qtyByUnit).reduce((s, n) => s + n, 0),
-        qtyByUnit: Object.fromEntries(
-          Object.entries(qtyByUnit).map(([u, n]) => [u, Math.round(n * 1000) / 1000])
-        ),
-        baseUnit: items[0]?.cardUnit ?? items[0]?.unitCode ?? 'г',
-        totalCost: costLines ? Math.round(totalCost * 100) / 100 : null,
-        costLines,
-        minOkLines: minOk,
-        minBadLines: items.length - minOk,
+      stores,
+      rows: pivotRows,
+      totals: {
+        positions: pivotRows.length,
+        full: Math.round(pivotRows.reduce((s, r) => s + r.fullPrice, 0) * 100) / 100,
+        stores: Object.keys(byStoreTotal).length,
+        byStore: byStoreTotal,
       },
     });
   })

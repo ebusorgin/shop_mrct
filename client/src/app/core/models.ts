@@ -202,14 +202,19 @@ export interface Waybill extends WaybillShort {
   items?: WaybillItem[];
 }
 
+/**
+ * Вход состава заготовки. Ролей больше нет: у каждого входа своё количество
+ * НА ПАРТИЮ (в базовых единицах самого входа) и свой необязательный выход после обработки.
+ */
 export interface SemiInput {
   id?: number;
   sourceType: 'raw' | 'semi';
   refId: number;
   name?: string;
-  role: 'base' | 'additive';
+  /** количество входа на партию, в базовых единицах входа */
+  qty: number;
+  /** выход после обработки этого входа, % (null = без потерь) */
   yieldPct?: number | null;
-  qtyPerOutput?: number | null;
   unitCode?: string;
   unitId?: number;
 }
@@ -220,6 +225,8 @@ export interface Semi {
   note: string;
   unitId: number;
   unitCode: string;
+  /** размер партии: сколько заготовки (в базовых единицах выхода) даёт состав */
+  outQty: number;
   /** Срок годности в днях (null = не задан). */
   shelfLifeDays: number | null;
   /** Парные коэффициенты пересчёта размерностей выхода (null = связь не задана). */
@@ -227,6 +234,10 @@ export interface Semi {
   mlPerPcs: number | null;
   gPerMl: number | null;
   inputs: SemiInput[];
+  /** стол конструктора (блоки + связи) этой же заготовки; null — заготовка не собиралась на столе */
+  board?: DiagramData | null;
+  /** есть ли сохранённый стол (список отдаёт только признак, сам jsonb тяжёлый) */
+  hasBoard?: boolean;
 }
 
 export interface CardItem {
@@ -260,6 +271,38 @@ export interface ExpansionRow {
   unitCode: string;
   stockQty: number;
   deficit?: boolean;
+}
+
+// ================= СТОЛ КОНСТРУКТОРА (он же «блок-схема» заготовки) =================
+// Отдельной сущности больше нет: сохранённая схема — это и есть полуфабрикат,
+// расположение блоков живёт в semi_products.board.
+
+/** Один блок на столе (снимок для хранения) — совпадает с PlateItem компонента. */
+export interface DiagramBlock {
+  uid: number;
+  /** ingredient — сброшен с левого меню; note — свободный блок (сборка) */
+  kind: 'ingredient' | 'note';
+  sourceType: 'raw' | 'semi';
+  refId: number;
+  name: string;
+  title: string;
+  x: number;
+  y: number;
+  qty: string;
+  unitCode: string;
+}
+
+/** Связь между блоками: from → to, yieldPct — «выход после обработки» (текст поля). */
+export interface DiagramLink {
+  id: number;
+  from: number;
+  to: number;
+  yieldPct: string;
+}
+
+export interface DiagramData {
+  blocks: DiagramBlock[];
+  links: DiagramLink[];
 }
 
 /** Партия (приход) с истекающим сроком: остаток раскладывается по приходам FIFO. */

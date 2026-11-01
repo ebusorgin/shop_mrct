@@ -1,6 +1,5 @@
-import { Product, Semi } from './models';
+import { Semi } from './models';
 import { edgesOfSemi, expandComposition, SemiCtx, SourceKind } from './semi-calc';
-import { Conv, toBaseClient } from './units';
 
 /**
  * Прямой расчёт по «столу» конструктора блюд. В отличие от редактора полуфабрикатов
@@ -94,8 +93,6 @@ const yieldOf = (s: string): number => {
   return Number.isFinite(n) && n > 0 ? Math.min(n, 100) : 100;
 };
 
-const convOf = (o: Product | Semi): Conv => ({ gPerPcs: o.gPerPcs, mlPerPcs: o.mlPerPcs, gPerMl: o.gPerMl });
-
 /**
  * Себестоимость производства `qty` базовых единиц заготовки: раскрываем её состав до сырья
  * (это же ядро, что на странице «Полуфабрикаты») и суммируем сырьё по avgCost. Нулевой/не
@@ -108,12 +105,10 @@ function semiCost(ctx: SemiCtx, semi: Semi, qty: number): number {
     ctx,
     edgesOfSemi(semi),
     qty,
-    semi.unitId,
+    Number(semi.outQty) || 1,
     new Set([semi.id]),
     [],
     0,
-    convOf(semi),
-    { sourceType: 'semi', refId: semi.id, name: semi.name },
   );
   return exp.raw.reduce((s, r) => s + r.qty * (price.get(r.productId) ?? 0), 0);
 }
@@ -284,6 +279,8 @@ export function resolveConstructor(
 export interface SemiCreateBody {
   name: string;
   unitId: number;
+  /** размер партии: сколько заготовки (в баз. ед. выхода) даёт состав */
+  outQty: number;
   note: string;
   shelfLifeDays: number | null;
   gPerPcs: number | null;
@@ -292,10 +289,12 @@ export interface SemiCreateBody {
   inputs: {
     sourceType: SourceKind;
     refId: number;
-    role: 'base' | 'additive';
+    /** количество входа НА ПАРТИЮ, в базовых единицах самого входа */
+    qty: number;
     yieldPct: number | null;
-    qtyPerOutput: number | null;
   }[];
+  /** стол (блоки + связи) той же заготовки — прикладывается компонентом при сохранении */
+  board?: unknown;
 }
 
 export type SemiBuildResult = { ok: true; body: SemiCreateBody } | { ok: false; error: string };
@@ -305,12 +304,12 @@ const round6 = (n: number): number => Math.round(n * 1e6) / 1e6;
 /**
  * Превратить сборку (свободный блок со входящими связями) в рецепт заготовки.
  *
- * Конструктор хранит АБСОЛЮТНЫЕ количества, каталог полуфабрикатов — НОРМЫ относительно
- * выхода: один базовый вход (его выход задаёт количество выхода) и добавки `qtyPerOutput`
- * (сколько уходит на 1 баз. ед. выхода, в размерности выхода). Поэтому:
- *   выход O = кол-во_базы × выход_базы %;  для каждой добавки
- *   qtyPerOutput = (её кол-во, приведённое к единице выхода) ÷ O.
- * Базу берём самый «жирный» поток (наибольший выход) — он задаёт единицу выхода заготовки.
+ * Ролей больше нет: каждый вход — равный ингредиент с АБСОЛЮТНЫМ количеством на партию
+ * (в базовой единице самого входа) и своим необязательным выходом после обработки.
+ * Каталог хранит qty = ЧИСТОЕ количество, вошедшее в продукт (после потерь), поэтому при
+ * раскрытии need = qty ÷ (выход/100) точно воспроизводит грубое количество блока Q.
+ * Единица выхода и размер партии out_qty = самый крупный по физическому выхода узел;
+ * outQty = сумма чистых выходов входов в этой единице.
  *
  * Сохранить можно только сборку из типизированных блоков каталога: вложенная сборка (note)
  * не имеет refId и не может стать входом — её надо сохранить отдельно первой.
@@ -325,8 +324,7 @@ export function buildSemiBody(plate: CalcBlock[], links: CalcLink[], ctx: SemiCt
   if (!inLinks.length) return { ok: false, error: 'Нет входящих связей — соедините сырьё с блоком' };
 
   const byUid = new Map(plate.map((b) => [b.uid, b]));
-  // каталожная сущность входа: unitId + коэффициенты + имя (для ошибок)
-  interface Entry { sourceType: SourceKind; refId: number; qty: number; unitId: number; unitCode: string; conv: Conv; yieldPct: number; name: string; }
+  interface Entry { sourceType: SourceKind; refId: number; qty: number; unitId: number; unitCode: string; yieldPct: number; name: string; }
   const entries: Entry[] = [];
   for (const l of inLinks) {
     const src = byUid.get(l.from);
@@ -339,45 +337,45 @@ export function buildSemiBody(plate: CalcBlock[], links: CalcLink[], ctx: SemiCt
     if (src.sourceType === 'semi') {
       const semi = ctx.semis.find((s) => s.id === src.refId);
       if (!semi || semi.unitId == null) return { ok: false, error: `Заготовка «${src.name}» не найдена в каталоге` };
-      entries.push({ sourceType: 'semi', refId: semi.id, qty, unitId: semi.unitId, unitCode: semi.unitCode, conv: convOf(semi), yieldPct: yieldOf(l.yieldPct), name: semi.name });
+      entries.push({ sourceType: 'semi', refId: semi.id, qty, unitId: semi.unitId, unitCode: semi.unitCode, yieldPct: yieldOf(l.yieldPct), name: semi.name });
     } else {
       const p = ctx.products.find((x) => x.id === src.refId);
       if (!p || p.unitId == null) return { ok: false, error: `Сырьё «${src.name}» не найдено в номенклатуре` };
-      entries.push({ sourceType: 'raw', refId: p.id, qty, unitId: p.unitId, unitCode: p.unitCode, conv: convOf(p), yieldPct: yieldOf(l.yieldPct), name: p.name });
+      entries.push({ sourceType: 'raw', refId: p.id, qty, unitId: p.unitId, unitCode: p.unitCode, yieldPct: yieldOf(l.yieldPct), name: p.name });
     }
   }
   if (!entries.length) return { ok: false, error: 'Нет подходящих входов для сохранения' };
 
-  // база = поток с наибольшим физическим выходом; его единица — единица выхода заготовки
-  const base = entries.reduce((m, e) => ((e.qty * e.yieldPct) / 100 > (m.qty * m.yieldPct) / 100 ? e : m), entries[0]);
-  const outUnitId = base.unitId;
-  const O = (base.qty * base.yieldPct) / 100;
-  if (!(O > 0)) return { ok: false, error: 'Выход базового входа нулевой — проверьте количество и %' };
+  // сервер отвергает дубли sourceType:refId — склеиваем их, сохраняя и сумму сырья (rawQ),
+  // и сумму чистого выхода (net); эффективный выход = net/rawQ восстановит Q при раскрытии
+  interface Agg { sourceType: SourceKind; refId: number; unitId: number; unitCode: string; name: string; rawQ: number; net: number; }
+  const agg = new Map<string, Agg>();
+  for (const e of entries) {
+    const key = `${e.sourceType}:${e.refId}`;
+    const a = agg.get(key) ?? { sourceType: e.sourceType, refId: e.refId, unitId: e.unitId, unitCode: e.unitCode, name: e.name, rawQ: 0, net: 0 };
+    a.rawQ += e.qty;
+    a.net += (e.qty * e.yieldPct) / 100;
+    agg.set(key, a);
+  }
+
+  // узел выхода = единица с наибольшим суммарным физическим выходом
+  const outByUnit = new Map<number, number>();
+  for (const a of agg.values()) outByUnit.set(a.unitId, (outByUnit.get(a.unitId) ?? 0) + a.net);
+  let unitId = entries[0].unitId;
+  let bestOut = -1;
+  for (const [u, val] of outByUnit) if (val > bestOut) { bestOut = val; unitId = u; }
+  if (!(bestOut > 0)) return { ok: false, error: 'Выход нулевой — проверьте количества и %' };
 
   const inputs: SemiCreateBody['inputs'] = [];
-  for (const e of entries) {
-    if (e === base) {
-      inputs.push({ sourceType: e.sourceType, refId: e.refId, role: 'base', yieldPct: e.yieldPct, qtyPerOutput: null });
-      continue;
-    }
-    // сколько добавки в размерности ВЫХОДА, делённое на выход → норма на 1 баз. ед. выхода
-    const asOut = toBaseClient(ctx.units, e.qty, e.unitId, outUnitId, e.conv);
-    if (asOut == null || !(asOut > 0)) {
-      return { ok: false, error: `«${e.name}» (${e.unitCode}) нельзя перевести в единицу выхода — задайте коэффициент пересчёта у этого входа` };
-    }
-    const qpo = round6(asOut / O);
-    if (!(qpo > 0)) return { ok: false, error: `Расход добавки «${e.name}» получился нулевым` };
-    inputs.push({
-      sourceType: e.sourceType,
-      refId: e.refId,
-      role: 'additive',
-      qtyPerOutput: qpo,
-      yieldPct: e.yieldPct < 100 ? e.yieldPct : null,
-    });
+  for (const a of agg.values()) {
+    const qty = round6(a.net);
+    if (!(qty > 0)) return { ok: false, error: `Количество входа «${a.name}» получилось нулевым` };
+    const eff = a.rawQ > 0 ? (a.net / a.rawQ) * 100 : 100;
+    inputs.push({ sourceType: a.sourceType, refId: a.refId, qty, yieldPct: eff < 99.999 ? round6(eff) : null });
   }
 
   return {
     ok: true,
-    body: { name, unitId: outUnitId, note: '', shelfLifeDays: null, gPerPcs: null, mlPerPcs: null, gPerMl: null, inputs },
+    body: { name, unitId, outQty: round6(bestOut), note: '', shelfLifeDays: null, gPerPcs: null, mlPerPcs: null, gPerMl: null, inputs },
   };
 }

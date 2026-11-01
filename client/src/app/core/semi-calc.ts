@@ -5,27 +5,34 @@ import { Conv, Dim, toBaseClient } from './units';
  * Чистая (без Angular) логика раздела «Полуфабрикаты»: модель состава, раскрытие
  * потребности в сырье, валидация, поиск/фильтрация каталога.
  *
- * Формулы — точное зеркало серверного server/src/services/expansion.ts (resolveSemi):
- *   base:     нужно входа = количество выхода ÷ (yield_pct / 100)
- *   additive: нужно входа = количество выхода × qty_per_output ÷ (yield_pct / 100)
- * Выход после обработки — отношение МАСС, а не штук: при выходе заготовки в штуках потери считаются
- * через «грамм в 1 шт» самой заготовки (applyYield), иначе «÷ 90 %» делил бы яйца.
+ * Формулы — точное зеркало серверного server/src/services/expansion.ts (resolveSemi).
+ * Привязки к «базовому продукту» больше нет: все входы равны, у каждого своё количество
+ * на партию (в базовых единицах самого входа) и свой необязательный выход после обработки:
+ *   нужно входа = qty × (желаемый выход ÷ out_qty), дополнительно ÷ (yield_pct / 100), если выход задан
+ * Выход после обработки — отношение МАСС, а не штук: для штучного входа потери считаются
+ * через «грамм в 1 шт» самого входа, иначе «÷ 90 %» делил бы яйца.
  * Никаких своих домыслов: выход НЕ равняется сумме входящих, размерности переводятся
  * только по заданным коэффициентам (g_per_pcs / ml_per_pcs / g_per_ml).
- *
- * Шкала добавок: БД хранит долю на 1 базовую единицу выхода; в UI — на 1000 (кг/л/1000 шт).
- * Здесь SemiEdge.qtyPerOutput — именно UI-шкала (×1000), как и в черновике компонента.
  */
 
 export type SourceKind = 'raw' | 'semi';
 
-/** Ребро состава в шкале редактора (qtyPerOutput — на 1000 баз. ед. выхода). */
+/** Ребро состава: количество входа на партию — в базовых единицах самого входа. */
 export interface SemiEdge {
   sourceType: SourceKind;
   refId: number | null;
-  role: 'base' | 'additive';
+  /** количество на партию, в базовой единице входа */
+  qty: number | null;
+  /** выход после обработки этого входа, % (null = без потерь) */
   yieldPct: number | null;
-  qtyPerOutput: number | null;
+}
+
+/** Один ингредиент состава в редакторе. */
+export interface SemiDraftInput {
+  sourceType: SourceKind;
+  refId: number | null;
+  qty: number | null;
+  yieldPct: number | null;
 }
 
 /** Черновик заготовки в редакторе (id = null — новая). */
@@ -34,12 +41,14 @@ export interface SemiDraft {
   name: string;
   note: string;
   unitId: number | null;
+  /** размер партии: сколько заготовки даёт состав (в базовых единицах выхода) */
+  outQty: number | null;
   shelfLifeDays: number | null;
   gPerPcs: number | null;
   mlPerPcs: number | null;
   gPerMl: number | null;
-  base: { sourceType: SourceKind; refId: number | null; yieldPct: number | null };
-  additives: { sourceType: SourceKind; refId: number | null; qtyPerOutput: number | null; yieldPct: number | null }[];
+  /** все входы равноправны — никакого «основного продукта» */
+  inputs: SemiDraftInput[];
 }
 
 /** Справочники, достаточные для расчёта на клиенте (загружаются один раз). */
@@ -71,31 +80,22 @@ export function refInfo(ctx: SemiCtx, sourceType: SourceKind, refId: number | nu
 
 const convOf = (o: Product | Semi): Conv => ({ gPerPcs: o.gPerPcs, mlPerPcs: o.mlPerPcs, gPerMl: o.gPerMl });
 
-/** Состав из БД → рёбра в UI-шкале (×1000 для qty_per_output). */
+/** Состав из БД → рёбра (количества уже абсолютные, на партию). */
 export function edgesOfSemi(s: Semi): SemiEdge[] {
   return s.inputs.map((i) => ({
     sourceType: i.sourceType,
     refId: i.refId,
-    role: i.role,
+    qty: i.qty != null ? Number(i.qty) : null,
     yieldPct: i.yieldPct != null ? Number(i.yieldPct) : null,
-    qtyPerOutput: i.qtyPerOutput != null ? Number(i.qtyPerOutput) * 1000 : null,
   }));
 }
 
-/** Черновик → рёбра (пустые строки добавок в расчёт не входят). */
+/** Черновик → рёбра (строки без выбранного компонента в расчёт не входят). */
 export function edgesOfDraft(d: SemiDraft): SemiEdge[] {
-  const edges: SemiEdge[] = [
-    { sourceType: d.base.sourceType, refId: d.base.refId, role: 'base', yieldPct: d.base.yieldPct, qtyPerOutput: null },
-  ];
-  for (const a of d.additives) {
-    if (a.refId == null) continue;
-    edges.push({ sourceType: a.sourceType, refId: a.refId, role: 'additive', yieldPct: a.yieldPct, qtyPerOutput: a.qtyPerOutput });
-  }
-  return edges;
+  return d.inputs
+    .filter((i) => i.refId != null)
+    .map((i) => ({ sourceType: i.sourceType, refId: i.refId, qty: i.qty, yieldPct: i.yieldPct }));
 }
-
-export const baseEdge = (edges: SemiEdge[]): SemiEdge | undefined => edges.find((e) => e.role === 'base' && e.refId != null);
-export const additiveEdges = (edges: SemiEdge[]): SemiEdge[] => edges.filter((e) => e.role === 'additive' && e.refId != null);
 
 /* ================= единицы / предупреждения о пересчёте ================= */
 
@@ -120,11 +120,11 @@ export const CONV_FIELD_HINT: Record<ConvField, { eq: string; example: string }>
 /**
  * Предупреждение раскрытия — не текст, а ссылка на место, где его лечат:
  * kind=conv ⇒ у `sourceType:refId` не хватает коэффициента `field`.
- * kind=yieldPcs ⇒ выход после обработки повис в штуках: не хватает «грамм в 1 шт» самой заготовки,
- * у которой выход в штуках (лечится в блоке A того же редактора, не в номенклатуре).
+ * kind=yieldPcs ⇒ свой выход после обработки штучного входа повис в штуках: не хватает
+ * «грамм в 1 шт» самого входа (лечится в номенклатуре/редакторе заготовки этого входа).
  */
 export interface ExpWarn {
-  kind: 'conv' | 'cycle' | 'noBase' | 'noYield' | 'noQty' | 'depth' | 'yieldPcs' | 'yieldMass';
+  kind: 'conv' | 'cycle' | 'noQty' | 'depth' | 'yieldPcs';
   /** Что не так (без имени сущности). */
   text: string;
   /** Чей это расход/заготовка. */
@@ -192,29 +192,29 @@ function missingConvHint(from: Dim, to: Dim): { text: string; field: ConvField }
 }
 
 /**
- * Перевести количество из размерности выхода заготовки в каноничную единицу входа.
+ * Перевести количество ВХОДА в каноничную единицу этого входа.
  * Возвращает { qty, warn } — warn ставится, когда пути пересчёта нет (число остаётся
- * в размерности выхода, как это делал старый превью; молча подменять коэффициент не будем).
+ * в исходной размерности; молча подменять коэффициент не будем).
  */
 export function toInputQty(
   ctx: SemiCtx,
-  qtyOutDim: number,
-  semiUnitId: number | null,
+  qty: number,
+  fromUnitId: number | null,
   ref: RefInfo,
   inGrams = false
 ): { qty: number; warn: { text: string; field: ConvField | null } | null } {
   // выход после обработки по массе: число уже в граммах, поэтому переводим из размерности mass,
-  // а не из единицы выхода (иначе граммы читались бы как штуки).
-  const fromUnitId = inGrams ? massUnitId(ctx) ?? semiUnitId : semiUnitId;
-  const converted = toBaseClient(ctx.units, qtyOutDim, fromUnitId, ref.unitId, ref.conv);
+  // а не из единицы входа (иначе граммы читались бы как штуки).
+  const from = inGrams ? massUnitId(ctx) ?? fromUnitId : fromUnitId;
+  const converted = toBaseClient(ctx.units, qty, from, ref.unitId, ref.conv);
   if (converted != null) return { qty: converted, warn: null };
-  const from = (inGrams ? 'mass' : ctx.units.find((u) => u.id === semiUnitId)?.dimension) as Dim | undefined;
-  const to = ctx.units.find((u) => u.id === ref.unitId)?.dimension as Dim | undefined;
-  if (from && to && from !== to) {
-    const hint = missingConvHint(from, to);
-    return { qty: qtyOutDim, warn: { text: hint.text, field: hint.field } };
+  const dFrom = (inGrams ? 'mass' : ctx.units.find((u) => u.id === from)?.dimension) as Dim | undefined;
+  const dTo = ctx.units.find((u) => u.id === ref.unitId)?.dimension as Dim | undefined;
+  if (dFrom && dTo && dFrom !== dTo) {
+    const hint = missingConvHint(dFrom, dTo);
+    return { qty, warn: { text: hint.text, field: hint.field } };
   }
-  return { qty: qtyOutDim, warn: { text: 'единица входа не задана', field: null } };
+  return { qty, warn: { text: 'единица входа не задана', field: null } };
 }
 
 /** id базовой единицы массы (г) — стартовая точка для перевода граммов входа. */
@@ -223,22 +223,23 @@ function massUnitId(ctx: SemiCtx): number | null {
 }
 
 /**
- * Выход после обработки к количеству в размерности выхода — зеркало серверного applyYield.
- * Пока выход в г/мл, «÷ выход после обработки» честный. Если выход в штуках, делить штуки нельзя
- * (это значит «10 % яиц истаяло»), поэтому потери вешаются на МАССУ выхода:
- * штуки × «грамм в 1 шт» заготовки ÷ выход после обработки = граммы входа, и ЭТА масса дальше
- * переводится в единицу входа (её собственный «грамм в 1 шт»). Возвращаем и то,
- * в какой размерности число, чтобы toInputQty не пытался читать граммы как штуки.
+ * Потери при обработке штучного входа: штуки делить на «÷ 90 %» нельзя («10 % яиц истаяло»),
+ * поэтому потеря вешается на МАССУ входа: штуки × «грамм в 1 шт» входа ÷ выход = граммы входа.
+ * Возвращаем и то, в какой размерности число, чтобы toInputQty не читал граммы как штуки.
  */
-export function applyYield(
+export function inputYield(
   ctx: SemiCtx,
   qty: number,
   yieldPct: number,
-  semiUnitId: number | null
+  inUnitId: number | null,
+  inConv: Conv | null
 ): { qty: number; inGrams: boolean; needed: boolean } {
   const y = yieldPct / 100;
-  const dim = semiUnitId == null ? undefined : ctx.units.find((u) => u.id === semiUnitId)?.dimension;
-  return { qty: qty / y, inGrams: false, needed: dim === 'count' && y > 0 && y < 1 };
+  const dim = inUnitId == null ? undefined : ctx.units.find((u) => u.id === inUnitId)?.dimension;
+  const needed = dim === 'count' && y > 0 && y < 1;
+  const g = inConv?.gPerPcs != null && Number(inConv.gPerPcs) > 0 ? Number(inConv.gPerPcs) : null;
+  if (needed && g != null) return { qty: (qty * g) / y, inGrams: true, needed };
+  return { qty: qty / y, inGrams: false, needed };
 }
 
 /* ================= раскрытие состава ================= */
@@ -249,7 +250,6 @@ export interface ExpNode {
   sourceType: SourceKind;
   refId: number | null;
   name: string;
-  role: 'base' | 'additive';
   unitCode: string;
   /** Количество в каноничной единице входа (или в размерности выхода, если пересчёта нет). */
   qty: number;
@@ -258,7 +258,7 @@ export interface ExpNode {
   /** Цепочка вложенных заготовок, через которые встал этот расход. */
   via: string[];
   children: ExpNode[];
-  /** Предупреждение по узлу: цикл, нет пересчёта размерности, нет base-входа. */
+  /** Предупреждение по узлу: цикл, нет пересчёта размерности, не задано количество. */
   warns: string[];
   /**
    * То же самое структурированно: узел умеет открывать правку поля
@@ -290,21 +290,22 @@ export interface Expansion {
 const MAX_DEPTH = 12;
 
 /**
- * Полное раскрытие состава на `outQty` баз. ед. ВЫХОДА заготовки `semiUnitId`.
+ * Полное раскрытие состава. Состав хранится АБСОЛЮТНЫМИ количествами на партию:
+ * вход `qty` — в базовой единице самого входа, партия даёт `batchOut` баз. ед. выхода.
+ * Чтобы получить `outQty` баз. ед. выхода, каждый вход умножаем на масштаб партии
+ * `k = outQty / batchOut`; если у входа задан свой выход после обработки — количество
+ * дополнительно делится на него (для штучного входа потери вешаем на массу через его
+ * «грамм в 1 шт»). Привязки к «основному продукту» нет — все входы равноправны.
  * `pathIds` — id заготовок на текущей ветке (защита от циклов), `via` — их названия.
- * `selfConv`/`selfRef` — коэффициенты и ссылка на САМУ заготовку: они нужны, чтобы выход после обработки
- * при выходе в штуках считать по массе (для черновика их в справочнике нет — передаём вручную).
  */
 export function expandComposition(
   ctx: SemiCtx,
   edges: SemiEdge[],
   outQty: number,
-  semiUnitId: number | null,
+  batchOut: number,
   pathIds: Set<number> = new Set(),
   via: string[] = [],
-  depth = 0,
-  selfConv: Conv | null = null,
-  selfRef: { sourceType: SourceKind; refId: number; name: string } | null = null
+  depth = 0
 ): Expansion {
   const nodes: ExpNode[] = [];
   const warnings: ExpWarn[] = [];
@@ -327,123 +328,65 @@ export function expandComposition(
     raw.set(pid, { productId: pid, name: p?.name ?? `#${pid}`, unitCode: p?.unitCode ?? '', qty: q, via: [...lineVia] });
   };
 
-  /**
-   * Предупреждение о том, что выход после обработки некуда повесить: у заготовки выход в штуках,
-   * а «грамм в 1 шт» самой заготовки нет. Число остаётся старым (деление штук),
-   * поэтому молчать нельзя.
-   */
-  const warnYieldInPcs = (fallback: RefInfo): void => {
-    const target = selfRef ?? { sourceType: 'semi' as SourceKind, refId: null, name: fallback.name };
-    const w: ExpWarn = {
-      kind: 'yieldPcs',
-      text: 'выход после обработки при выходе в штуках считается по массе — задайте «грамм в 1 шт» этой заготовки, иначе расход делит штуки',
-      where: target.name,
-      sourceType: target.sourceType,
-      refId: target.refId,
-      unitId: semiUnitId,
-      field: 'gPerPcs',
-    };
-    warnings.push(w);
-  };
-
-  /** Выход после обработки с переходом в массу, если выход — штуки (зеркало сервера). byMass — для текста базы. */
-  const yieldLoss = (qty: number, pct: number, fallback: RefInfo): { qty: number; byMass: boolean } => {
-    const y = applyYield(ctx, qty, pct, semiUnitId);
-    if (!y.needed) return { qty: y.qty, byMass: false };
-    const g = selfConv?.gPerPcs;
-    if (g == null || !(g > 0)) {
-      warnYieldInPcs(fallback);
-      return { qty: y.qty, byMass: false };
-    }
-    return { qty: (qty * g) / (pct / 100), byMass: true };
-  };
-
-  /**
-   * Проверка согласованности для «шт → шт»: выход после обработки и разница «грамм в 1 шт» описывают
-   * одну и ту же потерю. Если они противоречат друг другу (выход 90 %, а и сырьё, и
-   * заготовка весят одинаково), потери считаются дважды и расход вырастает без смысла.
-   */
-  const checkMassConsistency = (edge: SemiEdge, ref: RefInfo): void => {
-    if (edge.role !== 'base') return;
-    const dim = semiUnitId == null ? undefined : ctx.units.find((u) => u.id === semiUnitId)?.dimension;
-    if (dim !== 'count' || ref.unitId == null) return;
-    if (ctx.units.find((u) => u.id === ref.unitId)?.dimension !== 'count') return;
-    const semiG = selfConv?.gPerPcs;
-    const inG = ref.conv.gPerPcs;
-    if (!semiG || !inG) return;
-    const y = Number(edge.yieldPct);
-    // «грамм в 1 шт» входа и заготовки описывают одну и ту же массу. Если заготовка весит
-    // столько же, сколько сырьё, потери уже сидят в весе — и объявленный выход < 100 %
-    // считается второй раз. Это противоречие и показываем (число при этом остаётся верным).
-    const implied = (semiG / inG) * 100;
-    if (Math.abs(implied - y) <= 0.5) return;
-    const target = selfRef ?? { sourceType: 'semi' as SourceKind, refId: null, name: ref.name };
-    warnings.push({
-      kind: 'yieldMass',
-      text:
-        `выход после обработки ${trimNum(y)} % не согласуется с «грамм в 1 шт»: ${trimNum(inG)} г входа дают ${trimNum(semiG)} г выхода, `
-        + 'то есть потери уже учтены в весе. Либо задайте фактический вес заготовки, либо поставьте выход 100 %',
-      where: target.name,
-      sourceType: target.sourceType,
-      refId: target.refId,
-      unitId: semiUnitId,
-      field: null,
-    });
-  };
+  // масштаб партии: сколько «заготовочных партий» нужно, чтобы получить outQty выхода
+  const k = batchOut > 0 ? outQty / batchOut : 0;
 
   const walk = (edge: SemiEdge, key: string) => {
     const ref = refInfo(ctx, edge.sourceType, edge.refId);
     if (!ref) return;
-    let qOut: number;
-    let basis: string;
-    let byMass = false;
-    if (edge.role === 'base') {
-      const y = Number(edge.yieldPct);
-      if (!(y > 0)) {
-        // выход после обработки не задан → деление на ноль; показываем причину вместо «Infinity»
-        nodes.push({
-          key,
-          sourceType: edge.sourceType,
-          refId: edge.refId,
-          name: ref.name,
-          role: edge.role,
-          unitCode: ref.unitCode,
-          qty: 0,
-          basis: 'выход после обработки не задан — расход основного продукта неизвестен',
-          via,
-          children: [],
-          warns: ['укажите выход после обработки в блоке B'],
-          fixes: [],
-          depth,
-        });
-        push('noYield', ref, edge.sourceType, edge.refId, 'не задан выход после обработки базового входа — расход неизвестен');
-        return;
-      }
-      const yl = yieldLoss(outQty, y, ref);
-      qOut = yl.qty;
-      byMass = yl.byMass;
-      basis = `весь выход ${trimNum(outQty)} ${unitCodeOf(ctx, semiUnitId)} ÷ ${yl.byMass ? 'потери по массе (выход после обработки ' + trimNum(y) + '%)' : 'выход после обработки ' + trimNum(y) + '%'}`;
-    } else {
-      qOut = (outQty * Number(edge.qtyPerOutput ?? 0)) / 1000;
-      const own = Number(edge.yieldPct ?? 0);
-      if (own > 0 && own < 100) {
-        const yl = yieldLoss(qOut, own, ref);
-        qOut = yl.qty;
-        byMass = yl.byMass;
-      }
-      basis =
-        own > 0 && own < 100
-          ? `${trimNum(Number(edge.qtyPerOutput ?? 0))} на ${outDenom(ctx, semiUnitId)} × ${byMass ? 'потери по массе (' + trimNum(own) + '%)' : 'свой выход ' + trimNum(own) + '%'}`
-          : `${trimNum(Number(edge.qtyPerOutput ?? 0))} на ${outDenom(ctx, semiUnitId)} выхода`;
-      if (!(Number(edge.qtyPerOutput ?? 0) > 0)) {
-        basis = 'норма добавки не задана — расход неизвестен';
-        push('noQty', ref, edge.sourceType, edge.refId, 'не задан расход добавки');
+    const q0 = Number(edge.qty ?? 0);
+    if (!(q0 > 0)) {
+      nodes.push({
+        key,
+        sourceType: edge.sourceType,
+        refId: edge.refId,
+        name: ref.name,
+        unitCode: ref.unitCode,
+        qty: 0,
+        basis: 'количество входа не задано — расход неизвестен',
+        via,
+        children: [],
+        warns: ['укажите количество входа в составе'],
+        fixes: [],
+        depth,
+      });
+      push('noQty', ref, edge.sourceType, edge.refId, 'не задано количество входа — расход неизвестен');
+      return;
+    }
+    // количество входа в его собственной базовой единице
+    let q = q0 * k;
+    let inGrams = false;
+    let basis = `на партию ${trimNum(q0)} ${ref.unitCode} × (${trimNum(outQty)} ÷ партия ${trimNum(batchOut)})`;
+    const y = Number(edge.yieldPct ?? 0);
+    if (y > 0 && y < 100) {
+      const dim = ref.unitId == null ? undefined : ctx.units.find((u) => u.id === ref.unitId)?.dimension;
+      const g = ref.conv.gPerPcs != null && Number(ref.conv.gPerPcs) > 0 ? Number(ref.conv.gPerPcs) : null;
+      if (dim === 'count' && g != null) {
+        // потери при обработке штучного входа — отношение масс: штуки делить на «÷ 90 %» нельзя
+        q = (q * g) / (y / 100);
+        inGrams = true;
+        basis += ` ÷ свой выход ${trimNum(y)} % (потери по массе)`;
+      } else {
+        if (dim === 'count' && g == null) {
+          // вход штучный, «грамм в 1 шт» нет — честное деление штук, молчать нельзя
+          warnings.push({
+            kind: 'yieldPcs',
+            text: 'свой выход после обработки при штучном входе считается по массе — задайте «грамм в 1 шт» входа, иначе расход делит штуки',
+            where: ref.name,
+            sourceType: edge.sourceType,
+            refId: edge.refId,
+            unitId: ref.unitId,
+            field: 'gPerPcs',
+          });
+        }
+        q = q / (y / 100);
+        basis += ` ÷ свой выход ${trimNum(y)} %`;
       }
     }
-    const conv = toInputQty(ctx, qOut, semiUnitId, ref, byMass);
+    // число уже в базовой единице входа (или в граммах) → toInputQty сводит к канону входа
+    const conv = toInputQty(ctx, q, ref.unitId, ref, inGrams);
     const warns: string[] = [];
     const fixes: ExpWarn[] = [];
-    checkMassConsistency(edge, ref);
     if (conv.warn) {
       warns.push(conv.warn.text);
       fixes.push(push('conv', ref, edge.sourceType, edge.refId, conv.warn.text, conv.warn.field));
@@ -453,7 +396,6 @@ export function expandComposition(
       sourceType: edge.sourceType,
       refId: edge.refId,
       name: ref.name,
-      role: edge.role,
       unitCode: ref.unitCode,
       qty: conv.qty,
       basis,
@@ -486,21 +428,14 @@ export function expandComposition(
       return;
     }
     const subEdges = edgesOfSemi(sub);
-    if (!baseEdge(subEdges)) {
-      node.warns.push('у вложенной заготовки нет базового входа — расчёт невозможен');
-      push('noBase', { name: sub.name, unitId: sub.unitId, unitCode: sub.unitCode, conv: convOf(sub) }, 'semi', sub.id, 'нет базового входа — расчёт невозможен');
-      return;
-    }
     const child = expandComposition(
       ctx,
       subEdges,
       conv.qty,
-      sub.unitId,
+      Number(sub.outQty) || 1,
       new Set([...pathIds, edge.refId]),
       [...via, sub.name],
-      depth + 1,
-      convOf(sub),
-      { sourceType: 'semi', refId: sub.id, name: sub.name }
+      depth + 1
     );
     node.children = child.nodes;
     for (const [, line] of childRaw(child)) {
@@ -509,9 +444,7 @@ export function expandComposition(
     for (const w of child.warnings) warnings.push(w);
   };
 
-  const b = baseEdge(edges);
-  if (b) walk(b, 'base');
-  additiveEdges(edges).forEach((e, i) => walk(e, `a${i}`));
+  edges.forEach((e, i) => walk(e, `e${i}`));
 
   return {
     nodes,
@@ -541,15 +474,12 @@ export function norm(s: string): string {
     .trim();
 }
 
-export function semiBase(s: Semi): Semi['inputs'][number] | undefined {
-  return s.inputs.find((i) => i.role === 'base');
+/** Первый вход состава — только для показа в каталоге (ролей больше нет). */
+export function semiPrimary(s: Semi): Semi['inputs'][number] | undefined {
+  return s.inputs[0];
 }
 
-export function semiAdditives(s: Semi): Semi['inputs'] {
-  return s.inputs.filter((i) => i.role === 'additive');
-}
-
-/** Поиск по названию, базовому входу, компонентам состава и описанию. */
+/** Поиск по названию, компонентам состава и описанию. */
 export function semiMatches(s: Semi, q: string): boolean {
   const nq = norm(q);
   if (!nq) return true;
@@ -583,13 +513,12 @@ export function sortSemis(list: Semi[], mode: SortMode): Semi[] {
 
 /** Чем заготовка «неполна» — для бейджа в каталоге и фильтра. */
 export function incompleteOf(s: Semi): string | null {
-  const b = semiBase(s);
-  if (!b) return 'нет базового входа';
-  if (!b.name) return 'базовый вход удалён из номенклатуры';
-  const y = Number(b.yieldPct);
-  if (!(y > 0 && y <= 100)) return 'не задан корректный выход';
-  const bad = semiAdditives(s).find((a) => !(Number(a.qtyPerOutput) > 0));
-  if (bad) return `у добавки «${bad.name || '?'}» не задан расход`;
+  if (!s.inputs.length) return 'пустой состав';
+  if (!(Number(s.outQty) > 0)) return 'не задан размер партии';
+  const gone = s.inputs.find((i) => !i.name);
+  if (gone) return 'компонент удалён из номенклатуры';
+  const bad = s.inputs.find((i) => !(Number(i.qty) > 0));
+  if (bad) return `у входа «${bad.name || '?'}» не задано количество`;
   return null;
 }
 
@@ -633,15 +562,15 @@ export function usedBySemis(ctx: SemiCtx, semiId: number): Semi[] {
 /* ================= валидация ================= */
 
 export interface Issue {
-  /** Ключ поля: name | unitId | base | baseYield | add{i}:qty | add{i}:yield | add{i}:ref | add{i}:dup */
+  /** Ключ поля: name | unitId | outQty | in{i}:ref | in{i}:qty | in{i}:yield | in{i}:dup */
   field: string;
   message: string;
 }
 
 /**
- * Клиентские правила = серверным (routes/semis.ts parseInputs) + модели БД (check-констрейнты):
- * блокируем только то, что отверг бы сервер. Выход >100% моделью не поддержан — но это
- * подсказка, а не «запрет без объяснения».
+ * Клиентские правила = серверным (routes/semis.ts parseInputs) + модели БД: блокируем
+ * только то, что отверг бы сервер. Все входы равноправны — нет «основного продукта»,
+ * у каждого своё количество на партию и свой необязательный выход после обработки.
  */
 export function validateDraft(ctx: SemiCtx, d: SemiDraft): Issue[] {
   const out: Issue[] = [];
@@ -651,74 +580,50 @@ export function validateDraft(ctx: SemiCtx, d: SemiDraft): Issue[] {
     const u = ctx.units.find((x) => x.id === d.unitId);
     if (u && u.baseFactor !== 1) out.push({ field: 'unitId', message: 'Хранение только в базовых единицах (г/мл/шт)' });
   }
-  if (d.base.refId == null) {
-    out.push({ field: 'base', message: 'Выберите основной продукт' });
-  } else {
-    const y = Number(d.base.yieldPct);
-    if (!(y > 0)) out.push({ field: 'baseYield', message: 'Выход должен быть больше 0' });
-    else if (y > 100)
-      out.push({
-        field: 'baseYield',
-        message: 'Выход больше 100% моделью не поддерживается: добавочную влагу/массу показывайте отдельной добавкой',
-      });
-    if (!refInfo(ctx, d.base.sourceType, d.base.refId)) {
-      out.push({ field: 'base', message: 'Основной продукт не найден в справочнике — выберите заново' });
-    }
-  }
+  if (!(Number(d.outQty) > 0)) out.push({ field: 'outQty', message: 'Размер партии должен быть больше 0' });
 
   const seen = new Map<string, number>();
-  const baseKey = `${d.base.sourceType}:${d.base.refId}`;
-  if (d.base.refId != null) seen.set(baseKey, -1);
-
-  d.additives.forEach((a, i) => {
+  d.inputs.forEach((a, i) => {
     if (a.refId == null) {
-      if (Number(a.qtyPerOutput) > 0) out.push({ field: `add${i}:ref`, message: 'Укажите компонент для этой строки' });
+      if (Number(a.qty) > 0) out.push({ field: `in${i}:ref`, message: 'Укажите компонент для этой строки' });
       return;
     }
     if (!refInfo(ctx, a.sourceType, a.refId)) {
-      out.push({ field: `add${i}:ref`, message: 'Компонент не найден в справочнике — выберите заново' });
+      out.push({ field: `in${i}:ref`, message: 'Компонент не найден в справочнике — выберите заново' });
       return;
     }
     const key = `${a.sourceType}:${a.refId}`;
     if (seen.has(key)) {
-      out.push({
-        field: `add${i}:dup`,
-        message: seen.get(key) === -1 ? 'Совпадает с основным продуктом — уберите строку' : 'Такой компонент уже в составе',
-      });
+      out.push({ field: `in${i}:dup`, message: 'Такой компонент уже в составе — объедините строки' });
     } else seen.set(key, i);
 
-    const q = Number(a.qtyPerOutput);
-    if (!(q > 0)) out.push({ field: `add${i}:qty`, message: 'Расход должен быть больше 0' });
+    const q = Number(a.qty);
+    if (!(q > 0)) out.push({ field: `in${i}:qty`, message: 'Количество на партию должно быть больше 0' });
     if (a.yieldPct != null && Number(a.yieldPct) !== 0) {
       const y = Number(a.yieldPct);
-      if (y <= 0 || y > 100) out.push({ field: `add${i}:yield`, message: 'Свой выход после обработки — в (0, 100] или пусто' });
+      if (y <= 0 || y > 100) out.push({ field: `in${i}:yield`, message: 'Выход после обработки — в (0, 100] или пусто' });
     }
     if (a.sourceType === 'semi' && d.id != null && !pickableAsInput(ctx, d.id, a.refId)) {
-      out.push({ field: `add${i}:ref`, message: 'Цикл: эта заготовка уже входит в состав выбранной' });
+      out.push({ field: `in${i}:ref`, message: 'Цикл: эта заготовка уже входит в состав выбранной' });
     }
   });
-
-  if (d.base.refId != null && d.base.sourceType === 'semi' && d.id != null && !pickableAsInput(ctx, d.id, d.base.refId)) {
-    out.push({ field: 'base', message: 'Цикл: выбранная заготовка уже входит в состав этой' });
-  }
   return out;
 }
 
 /** Только предупреждения, не блокирующие сохранение (несовместимые размерности и т.п.). */
 export function draftWarnings(ctx: SemiCtx, d: SemiDraft): string[] {
-  if (!d.unitId || d.base.refId == null) return [];
+  if (!d.unitId || !(Number(d.outQty) > 0)) return [];
   const warns: string[] = [];
   const edges = edgesOfDraft(d);
+  const batchOut = Number(d.outQty) || 1;
   const exp = expandComposition(
     ctx,
     edges,
-    1000,
-    d.unitId,
+    batchOut,
+    batchOut,
     d.id != null ? new Set([d.id]) : new Set(),
     [],
-    0,
-    { gPerPcs: d.gPerPcs, mlPerPcs: d.mlPerPcs, gPerMl: d.gPerMl },
-    d.id != null ? { sourceType: 'semi', refId: d.id, name: d.name } : null
+    0
   );
   for (const w of exp.warnings) warns.push(warnText(w));
   return [...new Set(warns)];
@@ -726,7 +631,8 @@ export function draftWarnings(ctx: SemiCtx, d: SemiDraft): string[] {
 
 /**
  * Сохранённая заготовка → payload для PATCH /api/semis/:id с точечной правкой коэффициента.
- * Состав отдаётся как есть (шкала БД), чтобы правка плотности не могла изменить рецептуру.
+ * Состав отдаётся как есть (абсолютные количества на партию), чтобы правка плотности
+ * не могла изменить рецептуру.
  */
 export function semiBodyOf(
   s: Semi,
@@ -737,21 +643,17 @@ export function semiBodyOf(
     name: s.name,
     note: s.note,
     unitId: s.unitId,
+    outQty: Number(s.outQty) || 1,
     shelfLifeDays: s.shelfLifeDays ?? null,
     gPerPcs: patch.gPerPcs !== undefined ? patch.gPerPcs : s.gPerPcs ?? null,
     mlPerPcs: patch.mlPerPcs !== undefined ? patch.mlPerPcs : s.mlPerPcs ?? null,
     gPerMl: patch.gPerMl !== undefined ? patch.gPerMl : s.gPerMl ?? null,
-    inputs: s.inputs.map((i) =>
-      i.role === 'base'
-        ? { sourceType: i.sourceType, refId: i.refId, role: 'base', yieldPct: Number(i.yieldPct) }
-        : {
-            sourceType: i.sourceType,
-            refId: i.refId,
-            role: 'additive',
-            qtyPerOutput: Number(i.qtyPerOutput),
-            yieldPct: i.yieldPct != null && Number(i.yieldPct) > 0 && Number(i.yieldPct) < 100 ? Number(i.yieldPct) : null,
-          }
-    ),
+    inputs: s.inputs.map((i) => ({
+      sourceType: i.sourceType,
+      refId: i.refId,
+      qty: Number(i.qty),
+      yieldPct: i.yieldPct != null && Number(i.yieldPct) > 0 && Number(i.yieldPct) < 100 ? Number(i.yieldPct) : null,
+    })),
     ...(aiModel ? { aiModel } : {}),
   };
 }

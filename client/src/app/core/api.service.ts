@@ -69,7 +69,10 @@ export class ApiService {
   }
 
   // ---- semis ----
+  /** заготовки каталога — они же «мои схемы» конструктора (список отдаёт only hasBoard) */
   semis$(): Observable<M.Semi[]> { return this.http.get<M.Semi[]>(`${this.base}/semis`); }
+  /** одна заготовка со столом конструктора (board) */
+  semi$(id: number): Observable<M.Semi> { return this.http.get<M.Semi>(`${this.base}/semis/${id}`); }
   createSemi(body: unknown): Observable<{ id: number }> { return this.http.post<{ id: number }>(`${this.base}/semis`, body); }
   patchSemi(id: number, body: unknown): Observable<unknown> { return this.http.patch(`${this.base}/semis/${id}`, body); }
   deleteSemi(id: number): Observable<unknown> { return this.http.delete(`${this.base}/semis/${id}`); }

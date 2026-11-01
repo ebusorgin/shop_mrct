@@ -146,14 +146,15 @@ async function seed(): Promise<void> {
     const { rows: exists } = await pool.query('select 1 from semi_inputs where semi_id = $1 limit 1', [sid]);
     if (exists.length) continue;
     const b = await resolve(baseRef[0], baseRef[1]);
+    // партия = 1 баз. ед. выхода, поэтому количество ядрового входа = 1 ÷ выход после обработки
     await pool.query(
-      `insert into semi_inputs (semi_id, source_type, ref_id, role, yield_pct) values ($1,$2,$3,'base',$4)`,
-      [sid, b.st, b.id, yieldPct]
+      `insert into semi_inputs (semi_id, source_type, ref_id, qty_per_output, yield_pct) values ($1,$2,$3,$4,$5)`,
+      [sid, b.st, b.id, +(100 / yieldPct).toFixed(6), yieldPct]
     );
     for (const [kind, addName, qpo] of additives) {
       const a = await resolve(kind, addName);
       await pool.query(
-        `insert into semi_inputs (semi_id, source_type, ref_id, role, qty_per_output) values ($1,$2,$3,'additive',$4)`,
+        `insert into semi_inputs (semi_id, source_type, ref_id, qty_per_output) values ($1,$2,$3,$4)`,
         [sid, a.st, a.id, qpo]
       );
     }

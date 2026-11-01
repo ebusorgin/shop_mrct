@@ -329,15 +329,6 @@ export class CardsComponent implements OnInit {
     it.unitId = base?.id ?? allowed[0]?.id ?? null;
   }
 
-  /** Знаменатель удобной шкалы добавок на схеме: кг / л / 1000 шт — по размерности единицы выхода полуфабриката. */
-  outDenom(unitId: number): string {
-    const u = this.units().find((x) => x.id === unitId);
-    if (!u) return '1000 ед.';
-    if (u.dimension === 'mass') return 'кг';
-    if (u.dimension === 'volume') return 'л';
-    return '1000 шт';
-  }
-
   /**
    * Подсказка: Σ сырья на порцию по размерностям (масса/объём/штуки не смешиваем, объём ≈ масса 1:1 для воды)
    * и ожидаемый выход после обработки, если вход заметно больше порции. Для варки превышение — норма, поэтому только намёк.
@@ -552,11 +543,11 @@ export class CardsComponent implements OnInit {
       const lvl = levelOf(s.id, new Set());
       const row = perLevelCount.get(lvl) ?? 0;
       perLevelCount.set(lvl, row + 1);
-      const base = s.inputs.find((i) => i.role === 'base');
+      const first = s.inputs[0];
       const n: DNode = {
         id: `s${s.id}`, label: s.name,
-        sub: base
-          ? `выход ${trim(Number(base.yieldPct))}% · ${base.sourceType === 'semi' ? '🟨' : '🟦'} ${base.name ?? ''}`
+        sub: s.inputs.length
+          ? `партия ${trim(Number(s.outQty))} ${s.unitCode} · ${s.inputs.length} сост. · ${first?.sourceType === 'semi' ? '🟨' : '🟦'} ${first?.name ?? ''}`
           : 'без состава',
         cls: 'semi', x: X2 + lvl * (W2 + HCOL), y: y0 + row * (NODE_H + GAP), w: W2, h: NODE_H,
       };
@@ -569,15 +560,14 @@ export class CardsComponent implements OnInit {
       for (const inp of s.inputs) {
         const from = posOf.get(inp.sourceType === 'semi' ? `s${inp.refId}` : `r${inp.refId}`);
         if (!from) continue;
-        // добавки в UI показываем в шкале «на 1 кг/л (1000 ед.) выхода» — здесь так же (БД хранит долю на 1 ед.)
-        const addQty = trim(Number(inp.qtyPerOutput) * 1000);
+        // состав хранится абсолютными количествами на партию — на схеме показываем их как есть
+        const inQty = trim(Number(inp.qty) || 0);
+        const loss = inp.yieldPct != null && Number(inp.yieldPct) > 0 && Number(inp.yieldPct) < 100
+          ? ` · −${trim(100 - Number(inp.yieldPct))}%`
+          : '';
         edges.push({
           x1: from.x + from.w, y1: from.y + from.h / 2, x2: to.x, y2: to.y + to.h / 2,
-          label: inp.role === 'base'
-            ? `−${trim(100 - Number(inp.yieldPct))}%`
-            : inp.yieldPct != null
-              ? `+${addQty} ${inp.unitCode ?? ''}/${this.outDenom(s.unitId)} · −${trim(100 - Number(inp.yieldPct))}%`
-              : `+${addQty} ${inp.unitCode ?? ''}/${this.outDenom(s.unitId)}`,
+          label: `${inQty} ${inp.unitCode ?? ''} на партию${loss}`,
         });
       }
     }

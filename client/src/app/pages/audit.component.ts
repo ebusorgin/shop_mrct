@@ -264,6 +264,7 @@ export class AuditComponent implements OnInit {
     user: 'Пользователь',
     stock: 'Склад',
     sheet: 'Google Таблица',
+    diagram: 'Блок-схема',
   };
 
   private readonly KEYS: Record<string, string> = {
@@ -282,6 +283,8 @@ export class AuditComponent implements OnInit {
     note: 'заметка',
     shelfLifeDays: 'срок годности, дн',
     inputs: 'состав',
+    blocks: 'блоков',
+    links: 'связей',
     portionQty: 'выход порции',
     portionUnitId: 'единица порции',
     cardId: 'техкарта',

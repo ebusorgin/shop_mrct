@@ -129,35 +129,6 @@ export function toBase(qty: number, unitId: number, baseUnitId: number, units: U
   return toBaseCross(qty, unitId, baseUnitId, units);
 }
 
-/**
- * Применить выход после обработки (потери при обработке) к количеству ВЫХОДА.
- *
- * Выход после обработки — это отношение масс (или объёмов): при чистке и варке уходит масса, а не «штуки».
- * Пока выход в г/мл делить можно и нужно. Если же выход заготовки — штуки, то «÷ 90 %»
- * над штуками утверждает, что 10 % яиц истаяло, и даёт абсурд вида «1.111 яйца на 1 яйцо».
- * Поэтому для штук выход после обработки применяем в массе: штуки выхода × «грамм в 1 шт» заготовки ÷ выход после обработки
- * = граммы входа (inGrams=true), и ЭТУ массу переводим в единицу входа по её собственному
- * «грамм в 1 шт». Без коэффициента честного пути нет — тогда считаем по-старому (делим штуки),
- * но расчёт помечается как требующий коэффициент.
- */
-function applyYield(
-  outQtyBase: number,
-  yieldPct: number,
-  semiUnitId: number,
-  semiConv: ProdConv | undefined,
-  units: UnitsMap
-): { qty: number; inGrams: boolean } {
-  const y = yieldPct / 100;
-  const dim = units.get(semiUnitId)?.dimension;
-  const gPerPcs = semiConv?.gPerPcs != null && semiConv.gPerPcs > 0 ? Number(semiConv.gPerPcs) : null;
-  if (dim === 'count' && gPerPcs != null && y > 0 && y < 1) {
-    // штуки выхода → граммы выхода → граммы входа (÷ выход после обработки по массе); число остаётся в г,
-    // обратного деления на gPerPcs здесь нет — его делает перевод в единицу входа
-    return { qty: (outQtyBase * gPerPcs) / y, inGrams: true };
-  }
-  return { qty: outQtyBase / y, inGrams: false };
-}
-
 /** id базовой единицы массы (г) — стартовая точка для перевода граммов входа. */
 function massUnitId(units: UnitsMap): number | null {
   for (const [id, u] of units) if (u.dimension === 'mass') return id;
@@ -181,12 +152,9 @@ export async function assertBaseUnit(client: PoolClient, unitId: number, what: s
 /**
  * Раскрывает позиции техкарты (кол-во на порцию × порции) в ЧИСТОЕ сырьё со склада.
  * Рекурсия: полуфабрикат может состоять из других полуфабрикатов — разворачиваем цепочку
- * до листовых сырьевых продуктов с учётом выхода после обработки/очистки на каждом уровне.
- *   base-вход:    нужно входа = количество выхода / (yield_pct/100)
- *   additive-вход: нужно входа = количество выхода * qty_per_output
- *                  (если у добавки задан yield_pct — её собственный выход после обработки: делим на yield_pct/100)
- * Выход после обработки делит не штуки: если выход заготовки в штуках, потери считаются по массе
- * (см. applyYield). Для г/мл выхода формулы остаются ровно такими же, как были.
+ * до листовых сырьевых продуктов с учётом выхода после обработки на каждом уровне.
+ * Состав заготовки — АБСОЛЮТНЫЕ количества на партию: вход = количество × (нужный выход ÷ размер партии),
+ * а если у входа задан свой выход после обработки — количество делится на него (см. resolveSemi).
  */
 export async function expandCard(
   client: PoolClient,
@@ -221,7 +189,7 @@ export async function expandCard(
     if (it.source_type === 'raw') {
       add(it.ref_id, qtyBase);
     } else {
-      await resolveSemi(ctx, it.ref_id, qtyBase, it.ref_unit_id, add, new Set([it.ref_id]));
+      await resolveSemi(ctx, it.ref_id, qtyBase, it.ref_unit_id, (await semiUnit(client, it.ref_id)).batchOut, add, new Set([it.ref_id]));
     }
   }
 
@@ -232,16 +200,22 @@ export async function expandCard(
 interface SemiInputRow {
   source_type: 'raw' | 'semi';
   ref_id: number;
-  role: 'base' | 'additive';
+  qty: number; // количество входа НА ПАРТИЮ, в базовых единицах самого входа
   yield_pct: number | null;
-  qpo: number | null;
   in_unit_id: number; // каноничная единица входа (товара или дочернего полуфабриката)
+}
+
+/** Размер партии и единица выхода заготовки — нужны, чтобы переводить «хотим столько-то» в масштаб состава. */
+async function semiUnit(client: PoolClient, semiId: number): Promise<{ unitId: number; batchOut: number }> {
+  const { rows } = await client.query('select unit_id, out_qty::float8 as out_qty from semi_products where id = $1', [semiId]);
+  if (!rows.length) throw new ApiError(400, `Полуфабрикат #${semiId} не найден`);
+  return { unitId: rows[0].unit_id as number, batchOut: Number(rows[0].out_qty) || 1 };
 }
 
 async function loadSemiInputs(client: PoolClient, semiId: number): Promise<SemiInputRow[]> {
   const { rows } = await client.query(
-    `select si.source_type, si.ref_id, si.role,
-            si.yield_pct::float8 as yield_pct, si.qty_per_output::float8 as qpo,
+    `select si.source_type, si.ref_id, si.qty_per_output::float8 as qty,
+            si.yield_pct::float8 as yield_pct,
             coalesce(p.unit_id, sub.unit_id) as in_unit_id
        from semi_inputs si
        left join products p on si.source_type = 'raw'  and p.id = si.ref_id
@@ -255,8 +229,9 @@ async function loadSemiInputs(client: PoolClient, semiId: number): Promise<SemiI
 /**
  * Рекурсивно разворачивает полуфабрикат `semiId` (нужно `outQtyBase` баз. ед. его ВЫХОДА `semiUnitId`)
  * в листовые сырьевые продукты через колбэк `add`.
- * Рубеж 2: доля входа в размерности выхода переводится в каноничную единицу входа
- * (сырьё — conv продукта, вложенный semi — conv дочернего semi) через toBaseCross.
+ * Состав хранится абсолютными количествами на партию размером `batchOut` баз. ед. выхода,
+ * поэтому всё просто умножается на масштаб `outQtyBase / batchOut` — привязки к «основному
+ * продукту» нет, у каждого входа своё количество и свой (необязательный) выход после обработки.
  * `path` — множество semi_products на текущей ветке (защита от циклов).
  */
 async function resolveSemi(
@@ -264,23 +239,23 @@ async function resolveSemi(
   semiId: number,
   outQtyBase: number,
   semiUnitId: number,
+  batchOut: number,
   add: (productId: number, qty: number) => void,
   path: Set<number>
 ): Promise<void> {
   const inputs = await loadSemiInputs(ctx.client, semiId);
-  const base = inputs.find((x) => x.role === 'base');
-  if (!base) throw new ApiError(400, `У полуфабриката #${semiId} не задан базовый вход с выходом после обработки`);
-  // коэффициенты самой заготовки — они переводят «штуки выхода» в массу, на которую и вешается выход после обработки
-  const selfConv = ctx.semiConv.get(semiId);
+  if (!inputs.length) throw new ApiError(400, `У полуфабриката #${semiId} пустой состав`);
+  if (!(batchOut > 0)) throw new ApiError(400, `У полуфабриката #${semiId} не задан размер партии`);
+  const k = outQtyBase / batchOut; // масштаб партии: сколько «заготовочных партий» нам нужно
 
-  const feed = async (inp: SemiInputRow, qOutDim: number, inGrams = false) => {
+  const feed = async (inp: SemiInputRow, qInBase: number, inGrams = false) => {
     if (!inp.in_unit_id) {
       throw new ApiError(400, `У полуфабриката #${semiId}: вход #${inp.ref_id} не связан с единицей измерения`);
     }
     const tConv = inp.source_type === 'raw' ? ctx.prodConv.get(inp.ref_id) : ctx.semiConv.get(inp.ref_id);
-    // число в граммах (выход после обработки по массе) → переводим из размерности mass, а не из единицы выхода
-    const fromUnitId = inGrams ? massUnitId(ctx.units) ?? semiUnitId : semiUnitId;
-    const qTarget = toBaseCross(qOutDim, fromUnitId, inp.in_unit_id, ctx.units, tConv);
+    // число в граммах (выход после обработки штучного входа считаем по массе) → переводим из mass, а не из единицы входа
+    const fromUnitId = inGrams ? massUnitId(ctx.units) ?? semiUnitId : inp.in_unit_id;
+    const qTarget = toBaseCross(qInBase, fromUnitId, inp.in_unit_id, ctx.units, tConv);
     if (inp.source_type === 'raw') {
       add(inp.ref_id, qTarget);
       return;
@@ -288,19 +263,29 @@ async function resolveSemi(
     if (path.has(inp.ref_id)) {
       throw new ApiError(400, 'Обнаружен цикл в составе полуфабрикатов');
     }
-    await resolveSemi(ctx, inp.ref_id, qTarget, inp.in_unit_id, add, new Set([...path, inp.ref_id]));
+    const inSemi = await semiUnit(ctx.client, inp.ref_id);
+    await resolveSemi(ctx, inp.ref_id, qTarget, inSemi.unitId, inSemi.batchOut, add, new Set([...path, inp.ref_id]));
   };
 
-  const baseY = Number(base.yield_pct);
-  if (!(baseY > 0)) throw new ApiError(400, `У полуфабриката #${semiId}: не задан выход после обработки базового входа`);
-  const baseYield = applyYield(outQtyBase, baseY, semiUnitId, selfConv, ctx.units);
-  await feed(base, baseYield.qty, baseYield.inGrams);
-  for (const inp of inputs.filter((x) => x.role === 'additive')) {
-    const q = outQtyBase * Number(inp.qpo);
-    const own = Number(inp.yield_pct);
-    // свой выход добавки — тоже потери массы, считаем его в той же размерности выхода
-    const ay = own > 0 && own < 100 ? applyYield(q, own, semiUnitId, selfConv, ctx.units) : { qty: q, inGrams: false };
-    await feed(inp, ay.qty, ay.inGrams);
+  for (const inp of inputs) {
+    const q = inp.qty * k; // уже в базовой единице ВХОДА
+    const y = Number(inp.yield_pct);
+    if (!(y > 0 && y < 100)) {
+      await feed(inp, q);
+      continue;
+    }
+    // потери при обработке — отношение масс: штуки делить на «÷ 90 %» нельзя («10 % яиц истаяло»).
+    // если вход штучный и у него задан «грамм в 1 шт» — считаем потерю в граммах; без коэффициента
+    // остаётся честное деление штук (клиентский предпросмотр показывает это как предупреждение)
+    if (ctx.units.get(inp.in_unit_id)?.dimension === 'count') {
+      const conv = inp.source_type === 'raw' ? ctx.prodConv.get(inp.ref_id) : ctx.semiConv.get(inp.ref_id);
+      const g = conv?.gPerPcs != null && conv.gPerPcs > 0 ? Number(conv.gPerPcs) : null;
+      if (g != null) {
+        await feed(inp, (q * g) / (y / 100), true);
+        continue;
+      }
+    }
+    await feed(inp, q / (y / 100));
   }
 }
 
@@ -317,12 +302,12 @@ export async function expandSemi(
   const prodConv = await loadProductConv(client);
   const semiConv = await loadSemiConv(client);
   const ctx: ExpCtx = { client, units, prodConv, semiConv };
-  const { rows } = await client.query('select unit_id from semi_products where id = $1', [semiId]);
+  const { rows } = await client.query('select unit_id, out_qty::float8 as out_qty from semi_products where id = $1', [semiId]);
   if (!rows.length) throw new ApiError(404, 'Полуфабрикат не найден');
   const need = new Map<number, number>();
   const add = (productId: number, qty: number) =>
     need.set(productId, (need.get(productId) ?? 0) + qty);
-  await resolveSemi(ctx, semiId, outputQtyBase, rows[0].unit_id, add, new Set([semiId]));
+  await resolveSemi(ctx, semiId, outputQtyBase, rows[0].unit_id, Number(rows[0].out_qty) || 1, add, new Set([semiId]));
   return [...need.entries()].map(([productId, qty]) => ({ productId, qty: round3(qty) }));
 }
 

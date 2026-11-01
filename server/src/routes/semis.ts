@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { pool, tx } from '../db';
 import { ApiError, reqArr, reqInt, reqNum, reqStr, wrap, aiSource } from '../http';
 import { assertBaseUnit } from '../services/expansion';
+import { buildBoardFromInputs, boardIsEmpty } from '../services/semi-board';
 import { audit, auditTx, diff } from '../services/audit';
 
 export const semisRouter = Router();
@@ -24,55 +25,70 @@ function intOrNull(body: Record<string, unknown>, field: string): number | null 
   return n;
 }
 
+/** Положительное число или null — размер партии (сколько заготовки получаем из состава). */
+function posNum(body: Record<string, unknown>, field: string, fallback: number): number {
+  const v = body[field];
+  if (v === undefined || v === null || v === '') return fallback;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) throw new ApiError(400, `Поле «${field}» — положительное число`);
+  return n;
+}
+
+/**
+ * Состав заготовки: все входы равны между собой — у каждого своё количество НА ПАРТИЮ
+ * (в базовых единицах самого входа) и свой необязательный выход после обработки.
+ * Привязки к «базовому продукту» больше нет: выход партии задаёт out_qty, а не один из входов.
+ */
 interface SemiInputDto {
   sourceType: 'raw' | 'semi';
   refId: number;
-  role: 'base' | 'additive';
-  yieldPct?: number | null;
-  qtyPerOutput?: number | null;
+  qty: number;
+  yieldPct: number | null;
 }
 
 function parseInputs(raw: unknown): SemiInputDto[] {
   const arr = raw as Record<string, unknown>[];
+  if (!arr.length) throw new ApiError(400, 'Состав пуст — добавьте хотя бы один ингредиент');
+  const seen = new Set<string>();
   const inputs = arr.map((x) => {
-    const role = String(x.role);
-    if (role !== 'base' && role !== 'additive') throw new ApiError(400, 'role: base|additive');
     const sourceType = String(x.sourceType ?? 'raw');
     if (sourceType !== 'raw' && sourceType !== 'semi') throw new ApiError(400, 'sourceType: raw|semi');
-    // additive yield_pct опционален: пусто/0 => null (нет выхода после обработки, расход 1:1).
-    const rawAddYield = x.yieldPct;
-    const addYield = rawAddYield == null || rawAddYield === '' ? NaN : Number(rawAddYield);
-    return {
-      sourceType: sourceType as SemiInputDto['sourceType'],
-      refId: reqInt(x, 'refId'),
-      role: role as SemiInputDto['role'],
-      yieldPct: role === 'base' ? reqNum(x, 'yieldPct') : Number.isFinite(addYield) && addYield > 0 ? addYield : null,
-      qtyPerOutput: role === 'additive' ? reqNum(x, 'qtyPerOutput') : null,
-    };
+    const refId = reqInt(x, 'refId');
+    const qty = reqNum(x, 'qty');
+    if (!(qty > 0)) throw new ApiError(400, 'Количество входа должно быть больше 0');
+    // выход после обработки опционален: пусто/0/некорректно => null (расход 1:1, без потерь)
+    const y = Number(x.yieldPct);
+    const yieldPct = Number.isFinite(y) && y > 0 && y <= 100 ? y : null;
+    const key = `${sourceType}:${refId}`;
+    if (seen.has(key)) throw new ApiError(400, 'Один и тот же вход в составе дважды — объедините строки');
+    seen.add(key);
+    return { sourceType: sourceType as SemiInputDto['sourceType'], refId, qty, yieldPct };
   });
-  const bases = inputs.filter((i) => i.role === 'base');
-  if (bases.length !== 1) throw new ApiError(400, 'Нужен ровно один базовый вход (role=base)');
-  for (const i of inputs) {
-    if (i.role === 'base' && (i.yieldPct! <= 0 || i.yieldPct! > 100))
-      throw new ApiError(400, 'Выход после обработки должен быть в (0, 100]');
-    if (i.role === 'additive') {
-      if (i.qtyPerOutput! <= 0) throw new ApiError(400, 'Расход добавки должен быть > 0');
-      if (i.yieldPct != null && (i.yieldPct <= 0 || i.yieldPct > 100))
-        throw new ApiError(400, 'Выход после обработки добавки должен быть в (0, 100] или пуст');
-    }
-  }
   return inputs;
 }
 
-/** Снимок состава для журнала: компонент (человеческое имя), роль, норма на 1 баз. ед. выхода, выход после обработки. */
+/**
+ * Стол конструктора (расположение блоков и связи) — рисованный артефакт той же заготовки.
+ * Сервер проверяет только форму и размер: содержимое рисует клиент.
+ */
+function boardJson(body: Record<string, unknown>): string | null {
+  const b = body.board;
+  if (b === undefined || b === null) return null;
+  if (typeof b !== 'object') throw new ApiError(400, 'Поле «board» — объект стола');
+  const j = JSON.stringify(b);
+  if (j.length > 4_000_000) throw new ApiError(400, 'Стол слишком большой');
+  return j;
+}
+
+/** Снимок состава для журнала: компонент (человеческое имя), количество на партию, выход после обработки. */
 const SNAPSHOT_INPUTS_SQL = `
-  select coalesce(p.name, sub.name) as name, si.role,
+  select coalesce(p.name, sub.name) as name,
          si.qty_per_output::float8 as qty, si.yield_pct::float8 as yield_pct
     from semi_inputs si
     left join products p on si.source_type = 'raw'  and p.id = si.ref_id
     left join semi_products sub on si.source_type = 'semi' and sub.id = si.ref_id
    where si.semi_id = $1
-   order by (si.role = 'base') desc, si.id`;
+   order by si.id`;
 
 /** Что поменялось в самом составе: «Морковь чищенная: 200 → 0.6». Считается по имени компонента. */
 function normChanges(
@@ -92,15 +108,17 @@ function normChanges(
 
 const LIST_SQL = `
   select sp.id, sp.name, sp.note, u.code as "unitCode", sp.unit_id as "unitId",
+         sp.out_qty::float8 as "outQty",
          sp.shelf_life_days as "shelfLifeDays",
          sp.g_per_pcs::float8 as "gPerPcs", sp.ml_per_pcs::float8 as "mlPerPcs", sp.g_per_ml::float8 as "gPerMl",
+         (sp.board is not null) as "hasBoard",
      jsonb_agg(
        jsonb_build_object(
          'id', si.id, 'sourceType', si.source_type, 'refId', si.ref_id,
-         'name', coalesce(p.name, sub.name), 'role', si.role,
-         'yieldPct', si.yield_pct, 'qtyPerOutput', si.qty_per_output,
+         'name', coalesce(p.name, sub.name),
+         'qty', si.qty_per_output, 'yieldPct', si.yield_pct,
          'unitCode', coalesce(pu.code, su.code), 'unitId', coalesce(p.unit_id, sub.unit_id)
-       ) order by (si.role = 'base') desc, si.id
+       ) order by si.id
      ) as inputs
     from semi_products sp
     join units u on u.id = sp.unit_id
@@ -123,7 +141,11 @@ semisRouter.get(
 semisRouter.get(
   '/:id',
   wrap(async (req, res) => {
-    const { rows } = await pool.query(`select * from (${LIST_SQL}) t where t.id = $1`, [Number(req.params.id)]);
+    const { rows } = await pool.query(
+      `select t.*, (select sp.board from semi_products sp where sp.id = t.id) as board
+         from (${LIST_SQL}) t where t.id = $1`,
+      [Number(req.params.id)]
+    );
     if (!rows.length) throw new ApiError(404, 'Полуфабрикат не найден');
     res.json(decodeRow(rows[0]));
   })
@@ -135,17 +157,21 @@ semisRouter.post(
     const name = reqStr(req.body, 'name');
     const unitId = reqInt(req.body, 'unitId');
     const note = typeof req.body.note === 'string' ? req.body.note : '';
+    const outQty = posNum(req.body, 'outQty', 1);
     const shelfLifeDays = intOrNull(req.body, 'shelfLifeDays');
     const gPerPcs = convNum(req.body, 'gPerPcs');
     const mlPerPcs = convNum(req.body, 'mlPerPcs');
     const gPerMl = convNum(req.body, 'gPerMl');
     const inputs = parseInputs(reqArr(req.body, 'inputs'));
+    const board = boardJson(req.body);
     const id = await tx(async (client) => {
       await assertBaseUnit(client, unitId, 'Полуфабрикат');
+      // редактор рецептов стол не шлёт — соберём блок-схему из состава (у конструктора стол свой)
+      const boardStr = await autoBoard(client, board, inputs, name, unitId);
       const { rows } = await client.query(
-        `insert into semi_products (name, unit_id, note, shelf_life_days, g_per_pcs, ml_per_pcs, g_per_ml, created_by, updated_by)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$8) returning id`,
-        [name, unitId, note, shelfLifeDays, gPerPcs, mlPerPcs, gPerMl, req.user?.id ?? null]
+        `insert into semi_products (name, unit_id, note, out_qty, shelf_life_days, g_per_pcs, ml_per_pcs, g_per_ml, board, created_by, updated_by)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$10) returning id`,
+        [name, unitId, note, outQty, shelfLifeDays, gPerPcs, mlPerPcs, gPerMl, boardStr, req.user?.id ?? null]
       );
       await insertInputs(client, rows[0].id, inputs);
       await assertNoCycle(client, rows[0].id);
@@ -154,7 +180,7 @@ semisRouter.post(
         entity: 'semi',
         entityId: rows[0].id as number,
         title: `Полуфабрикат «${name}»`,
-        details: { unitId, note, shelfLifeDays, inputs: inputs.length },
+        details: { unitId, outQty, note, shelfLifeDays, inputs: inputs.length },
       });
       return rows[0].id as number;
     });
@@ -169,22 +195,35 @@ semisRouter.patch(
     const name = reqStr(req.body, 'name');
     const unitId = reqInt(req.body, 'unitId');
     const note = typeof req.body.note === 'string' ? req.body.note : '';
+    const outQty = posNum(req.body, 'outQty', 1);
     const shelfLifeDays = intOrNull(req.body, 'shelfLifeDays');
     const gPerPcs = convNum(req.body, 'gPerPcs');
     const mlPerPcs = convNum(req.body, 'mlPerPcs');
     const gPerMl = convNum(req.body, 'gPerMl');
     const inputs = parseInputs(reqArr(req.body, 'inputs'));
+    // стол правится отдельно (конструктор) — null значит «не трогать»
+    const board = req.body.board === undefined ? null : boardJson(req.body);
     await tx(async (client) => {
       await assertBaseUnit(client, unitId, 'Полуфабрикат');
       const { rows: before } = await client.query(
-        'select name, unit_id, note, shelf_life_days, g_per_pcs::float8 as g_per_pcs, ml_per_pcs::float8 as ml_per_pcs, g_per_ml::float8 as g_per_ml from semi_products where id = $1',
+        'select name, unit_id, note, out_qty::float8 as out_qty, shelf_life_days, g_per_pcs::float8 as g_per_pcs, ml_per_pcs::float8 as ml_per_pcs, g_per_ml::float8 as g_per_ml, board from semi_products where id = $1',
         [id]
       );
       if (!before.length) throw new ApiError(404, 'Полуфабрикат не найден');
+      // стол правится отдельно: прислали — берём; не прислали, но стола нет — генерим из нового состава;
+      // не прислали и стол уже есть (ручная раскладка) — не трогаем (null → coalesce оставит как было).
+      const existingBoard = (before[0] as { board?: unknown }).board;
+      delete (before[0] as Record<string, unknown>).board; // в снапшот изменений board не участвует
+      const boardStr =
+        board ?? (boardIsEmpty(existingBoard) ? await autoBoard(client, null, inputs, name, unitId) : null);
       const { rows: beforeInputs } = await client.query(SNAPSHOT_INPUTS_SQL, [id]);
       await client.query(
-        'update semi_products set name=$2, unit_id=$3, note=$4, shelf_life_days=$5, g_per_pcs=$6, ml_per_pcs=$7, g_per_ml=$8, updated_by=$9 where id=$1',
-        [id, name, unitId, note, shelfLifeDays, gPerPcs, mlPerPcs, gPerMl, req.user?.id ?? null]
+        `update semi_products
+            set name=$2, unit_id=$3, note=$4, out_qty=$5, shelf_life_days=$6, g_per_pcs=$7, ml_per_pcs=$8, g_per_ml=$9,
+                board = coalesce($11::jsonb, board),
+                updated_by = $10
+          where id=$1`,
+        [id, name, unitId, note, outQty, shelfLifeDays, gPerPcs, mlPerPcs, gPerMl, req.user?.id ?? null, boardStr]
       );
       await client.query('delete from semi_inputs where semi_id = $1', [id]);
       await insertInputs(client, id, inputs);
@@ -193,7 +232,10 @@ semisRouter.patch(
       const changes = {
         ...diff(
           { ...before[0], inputs: beforeInputs.length },
-          { name, unit_id: unitId, note, shelf_life_days: shelfLifeDays, g_per_pcs: gPerPcs, ml_per_pcs: mlPerPcs, g_per_ml: gPerMl, inputs: inputs.length }
+          {
+            name, unit_id: unitId, note, out_qty: outQty, shelf_life_days: shelfLifeDays,
+            g_per_pcs: gPerPcs, ml_per_pcs: mlPerPcs, g_per_ml: gPerMl, inputs: inputs.length,
+          }
         ),
         // нормы входов тоже должны быть видны: иначе правка рецептуры остаётся в журнале пустой записью
         ...normChanges(beforeInputs, afterInputs),
@@ -239,11 +281,34 @@ semisRouter.delete(
 async function insertInputs(client: import('pg').PoolClient, semiId: number, inputs: SemiInputDto[]) {
   for (const i of inputs) {
     await client.query(
-      `insert into semi_inputs (semi_id, source_type, ref_id, role, yield_pct, qty_per_output)
-       values ($1,$2,$3,$4,$5,$6)`,
-      [semiId, i.sourceType, i.refId, i.role, i.yieldPct ?? null, i.qtyPerOutput ?? null]
+      `insert into semi_inputs (semi_id, source_type, ref_id, qty_per_output, yield_pct)
+       values ($1,$2,$3,$4,$5)`,
+      [semiId, i.sourceType, i.refId, i.qty, i.yieldPct]
     );
   }
+}
+
+/** Код базовой единицы — для подписи центрального блока автосгенерированного стола. */
+async function unitCodeOf(client: import('pg').PoolClient, unitId: number): Promise<string> {
+  const { rows } = await client.query('select code from units where id = $1', [unitId]);
+  return rows.length ? String(rows[0].code) : '';
+}
+
+/**
+ * Если клиент не прислал стол (редактор рецептов правит только состав) — раскладываем
+ * рецепт на блок-схему, чтобы у заготовки сразу был визуальный «стол» в конструкторе.
+ * Присланный стол (конструктор) возвращаем как есть — ручную раскладку не перезаписываем.
+ */
+async function autoBoard(
+  client: import('pg').PoolClient,
+  provided: string | null,
+  inputs: SemiInputDto[],
+  name: string,
+  unitId: number
+): Promise<string | null> {
+  if (provided !== null) return provided;
+  const built = await buildBoardFromInputs(client, inputs, name, await unitCodeOf(client, unitId));
+  return built ? JSON.stringify(built) : null;
 }
 
 /** DFS по графу semi_inputs: из `startId` нельзя вернуться в `startId` через составные полуфабрикаты. */
@@ -271,5 +336,6 @@ async function assertNoCycle(client: import('pg').PoolClient, startId: number) {
 
 function decodeRow(r: Record<string, unknown>) {
   const inputs = typeof r.inputs === 'string' ? JSON.parse(r.inputs) : r.inputs;
-  return { ...r, inputs };
+  const board = typeof r.board === 'string' ? JSON.parse(r.board) : r.board ?? null;
+  return { ...r, inputs, board };
 }

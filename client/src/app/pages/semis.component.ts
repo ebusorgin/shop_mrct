@@ -3,7 +3,6 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ApiService } from '../core/api.service';
 import { Product, Semi, TechCard, Unit } from '../core/models';
-import { Conv } from '../core/units';
 import {
   CONV_FIELD_HINT,
   CONV_FIELD_LABEL,
@@ -13,6 +12,7 @@ import {
   RawLine,
   SemiCtx,
   SemiDraft,
+  SemiDraftInput,
   SourceKind,
   SortMode,
   SORT_LABELS,
@@ -25,16 +25,13 @@ import {
   fixableWarn,
   fmtBase,
   incompleteOf,
-  outDenom,
   pickableAsInput,
   productConvBody,
   refInfo,
-  semiAdditives,
-  semiBase,
+  semiPrimary,
   semiBodyOf,
   semiMatches,
   sortSemis,
-  toInputQty,
   trimNum,
   unitCodeOf,
   usedBySemis,
@@ -115,13 +112,13 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
           <div class="chipset">
             <span class="clbl">Тип</span>
             <button type="button" class="chip" [class.on]="fType() === 'all'" (click)="fType.set('all'); page.set(1)">Все</button>
-            <button type="button" class="chip" [class.on]="fType() === 'raw'" (click)="fType.set('raw'); page.set(1)">Из сырья</button>
-            <button type="button" class="chip" [class.on]="fType() === 'semi'" (click)="fType.set('semi'); page.set(1)">Из полуфабриката</button>
+            <button type="button" class="chip" [class.on]="fType() === 'raw'" (click)="fType.set('raw'); page.set(1)">Только сырьё</button>
+            <button type="button" class="chip" [class.on]="fType() === 'semi'" (click)="fType.set('semi'); page.set(1)">С полуфабрикатами</button>
           </div>
           <div class="chipset">
             <span class="clbl">Состав</span>
-            <button type="button" class="chip" [class.on]="fAdds() === 'with'" (click)="fAdds.set('with'); page.set(1)">С добавками</button>
-            <button type="button" class="chip" [class.on]="fAdds() === 'none'" (click)="fAdds.set('none'); page.set(1)">Только ядро</button>
+            <button type="button" class="chip" [class.on]="fAdds() === 'multi'" (click)="fAdds.set('multi'); page.set(1)">Много ингредиентов</button>
+            <button type="button" class="chip" [class.on]="fAdds() === 'single'" (click)="fAdds.set('single'); page.set(1)">Один ингредиент</button>
             <button type="button" class="chip warn" [class.on]="fBad()" (click)="toggleBad()">⚠ Неполные</button>
           </div>
           <div class="chipset">
@@ -146,15 +143,14 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
               <button type="button" class="rc" [class.on]="draft()?.id === s.id" (click)="editSemi(s)">
                 <div class="rc-1">
                   <b>{{ s.name }}</b>
-                  <span class="badge" [class.blue]="semiBase(s)?.sourceType === 'raw'" [class.amber]="semiBase(s)?.sourceType === 'semi'">
-                    {{ semiBase(s)?.sourceType === 'semi' ? '🟨 из полуфабриката' : '🟦 из сырья' }}
+                  <span class="badge" [class.blue]="!hasSemiInput(s)" [class.amber]="hasSemiInput(s)">
+                    {{ hasSemiInput(s) ? '🟨 с полуфабрикатами' : '🟦 только сырьё' }}
                   </span>
                 </div>
                 <div class="rc-2">
-                  <span>ядро: {{ semiBase(s)?.name ?? '— не выбрано —' }}</span>
-                  <span>· выход {{ yieldText(s) }}</span>
-                  <span>· добавок: {{ semiAdditives(s).length }}</span>
-                  <span>· ед. выхода: {{ s.unitCode }}</span>
+                  <span>ингредиентов: {{ s.inputs.length }}</span>
+                  <span>· партия: {{ fmt(s.outQty, s.unitCode) }}</span>
+                  <span>· с потерями: {{ lossCount(s) }} ({{ lossText(s) }})</span>
                 </div>
                 @if (rowWarn(s)) { <div class="rc-w">⚠ {{ rowWarn(s) }}</div> }
               </button>
@@ -199,9 +195,9 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
           </div>
           @if (err()) { <div class="err">{{ err() }}</div> }
 
-          <!-- БЛОК A. Основная информация -->
+          <!-- БЛОК A. Заготовка и размер партии -->
           <div class="blk">
-            <div class="blk-t">A · Основная информация</div>
+            <div class="blk-t">A · Заготовка и размер партии</div>
             <div class="row">
               <label class="f" style="flex:2">Название
                 <input [ngModel]="d.name" (ngModelChange)="patchDraft('name', $event)" placeholder="Картофель варёный" />
@@ -216,6 +212,22 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
               <label class="f" style="flex:1">Описание
                 <input [ngModel]="d.note" (ngModelChange)="patchDraft('note', $event)" placeholder="почистили и сварили" />
               </label>
+            </div>
+            <div class="row batch-row">
+              <label class="f">Размер партии — сколько заготовки даёт состав
+                <input style="width:140px" type="number" min="0" step="any" inputmode="decimal"
+                       [ngModel]="d.outQty" (ngModelChange)="patchDraft('outQty', num($event))" placeholder="напр. 1000" />
+                @if (issue('outQty')) { <span class="f-err">{{ issue('outQty') }}</span> }
+              </label>
+              <span class="ro">{{ unitCodeOf(d.unitId) }}</span>
+              <div class="spacer"></div>
+              @for (p of presets(); track p.label) {
+                <button type="button" class="btn sm" [class.on]="d.outQty === p.qty" (click)="patchDraft('outQty', p.qty)">{{ p.label }}</button>
+              }
+            </div>
+            <div class="muted tip">
+              Все ингредиенты равноправны: количество каждого задаётся <b>на эту партию</b> и в своей базовой единице.
+              Меняете размер партии — блок E тут же переложит состав до сырья заново, рецептуру править не нужно.
             </div>
             <details class="adv">
               <summary>Доп. параметры (срок годности, пересчёт размерностей)</summary>
@@ -241,73 +253,22 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
             </details>
           </div>
 
-          <!-- БЛОК B. Основной продукт и обработка -->
-          <div class="blk core">
-            <div class="blk-t">B · Основной продукт и обработка
-              <span class="blk-note">ровно один вход, он задаёт выход заготовки</span></div>
-            <div class="core-grid">
-              <label class="f">Тип входа
-                <select [ngModel]="d.base.sourceType" (ngModelChange)="setBaseType($event)">
-                  <option value="raw">🟦 Сырьё</option>
-                  <option value="semi">🟨 Полуфабрикат</option>
-                </select>
-              </label>
-              <label class="f">Продукт
-                <app-picker
-                  [options]="baseSource() === 'raw' ? productOptions() : semiOptions()"
-                  [selectedId]="d.base.refId"
-                  (picked)="pickBase($event)"
-                />
-                @if (issue('base')) { <span class="f-err">{{ issue('base') }}</span> }
-              </label>
-              <label class="f">Ед. входа
-                <span class="ro">{{ baseUnit() || '—' }}</span>
-              </label>
-              <label class="f">Выход после обработки, %
-                <input type="number" min="1" max="100" step="any" [ngModel]="d.base.yieldPct" (ngModelChange)="patchBase({ yieldPct: num($event) })" />
-                @if (issue('baseYield')) { <span class="f-err">{{ issue('baseYield') }}</span> }
-              </label>
-            </div>
-            <div class="chain">
-              <span class="ci">вход (весь)</span>
-              <b>{{ chainIn() }}</b>
-              <span class="ar">→</span>
-              <span class="ci">выход после обработки</span>
-              <b>{{ trim(num(d.base.yieldPct) ?? 0) }}%</b>
-              <span class="ar">→</span>
-              <span class="ci">выход на партию</span>
-              <b>{{ chainOut() }}</b>
-            </div>
-            <div class="muted tip">
-              Количество входа считается автоматически: нужно {{ wantHint() }}. Выход — технологический коэффициент,
-              а не сумма входящих: при варке и жарке масса меняется.
-            </div>
-            @if (outIsPcs() && yieldIsLoss()) {
-              <div class="mini" [class.warn]="!selfGPerPcs()">
-                Выход — в штуках, поэтому {{ trim(num(d.base.yieldPct) ?? 0) }} % это потери <b>массы</b>, а не штук:
-                штуки выхода переводятся в граммы по «грамм в 1 шт» самой заготовки (блок A → «Доп. параметры»),
-                там делятся на выход после обработки и возвращаются в штуки входа.
-                @if (!selfGPerPcs()) { <b>Сейчас «грамм в 1 шт» не задан — расход считается по-старому: делятся штуки, число неверно.</b> }
-              </div>
-            }
-          </div>
-
-          <!-- БЛОК C. Дополнительные ингредиенты -->
+          <!-- БЛОК B. Ингредиенты (все равноправны) -->
           <div class="blk">
-            <div class="blk-t">C · Дополнительные ингредиенты
-              <span class="blk-note">сколько угодно, необязательны · норма на {{ outDenom() }} выхода</span></div>
+            <div class="blk-t">B · Ингредиенты
+              <span class="blk-note">сколько угодно · количество на всю партию, в базовой единице компонента</span></div>
 
             <div class="tb-head">
               <div>Тип</div>
               <div>Компонент</div>
-              <div class="num">Норма на {{ outDenom() }}</div>
+              <div class="num">На партию</div>
               <div class="num">Свой выход, %</div>
-              <div class="num">Расход на партию</div>
+              <div class="num">Вход с потерями</div>
               <div class="del"></div>
             </div>
-            @for (a of d.additives; track $index) {
+            @for (a of d.inputs; track $index) {
               <div class="tb-row">
-                <select class="t-sel" [ngModel]="a.sourceType" (ngModelChange)="patchAdditive($index, { sourceType: $event, refId: null })">
+                <select class="t-sel" [ngModel]="a.sourceType" (ngModelChange)="patchInput($index, { sourceType: $event, refId: null })">
                   <option value="raw">🟦 Сырьё</option>
                   <option value="semi">🟨 Полуфабр.</option>
                 </select>
@@ -315,90 +276,57 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
                   <app-picker
                     [options]="a.sourceType === 'raw' ? productOptions() : semiOptions()"
                     [selectedId]="a.refId"
-                    (picked)="pickAdditive($index, $event)"
+                    (picked)="pickInput($index, $event)"
                   />
-                  @if (issue('add' + $index + ':ref') || issue('add' + $index + ':dup')) {
-                    <span class="f-err">{{ issue('add' + $index + ':ref') || issue('add' + $index + ':dup') }}</span>
+                  <span class="t-unit">{{ a.refId == null ? '—' : inputUnit(a) }}</span>
+                  @if (issue('in' + $index + ':ref') || issue('in' + $index + ':dup')) {
+                    <span class="f-err">{{ issue('in' + $index + ':ref') || issue('in' + $index + ':dup') }}</span>
                   }
                 </div>
-                <input class="t-num" type="number" min="0" step="any" [ngModel]="a.qtyPerOutput"
-                       (ngModelChange)="patchAdditive($index, { qtyPerOutput: num($event) })" placeholder="кол-во" />
+                <input class="t-num" type="number" min="0" step="any" [ngModel]="a.qty"
+                       (ngModelChange)="patchInput($index, { qty: num($event) })" placeholder="кол-во" />
                 <input class="t-num" type="number" min="1" max="100" step="any" [ngModel]="a.yieldPct"
-                       (ngModelChange)="patchAdditive($index, { yieldPct: num($event) })" placeholder="100"
-                       title="Свой выход добавки после обработки, %. Пусто = без потерь (100%)" />
-                <div class="t-part">{{ addPerBatch(a) }}</div>
-                <div class="t-del"><button type="button" class="btn sm danger" (click)="removeAdditive($index)">✕</button></div>
+                       (ngModelChange)="patchInput($index, { yieldPct: num($event) })" placeholder="—"
+                       title="Свой выход этого компонента после обработки, %. Пусто = без потерь (расход 1:1)" />
+                <div class="t-part">{{ grossOf(a) }}</div>
+                <div class="t-del"><button type="button" class="btn sm danger" (click)="removeInput($index)">✕</button></div>
               </div>
-              @if (issue('add' + $index + ':qty') || issue('add' + $index + ':yield')) {
-                <div class="tb-err">{{ issue('add' + $index + ':qty') || issue('add' + $index + ':yield') }}</div>
+              @if (issue('in' + $index + ':qty') || issue('in' + $index + ':yield')) {
+                <div class="tb-err">{{ issue('in' + $index + ':qty') || issue('in' + $index + ':yield') }}</div>
               }
             } @empty {
-              <div class="tb-empty">Добавок нет — заготовка состоит только из основного продукта.</div>
+              <div class="tb-empty">Ингредиенты не заданы — добавьте хотя бы один.</div>
             }
-            <div class="tb-add"><button type="button" class="btn sm" (click)="addAdditive()">+ Добавить ингредиент</button></div>
+            <div class="tb-add"><button type="button" class="btn sm" (click)="addInput()">+ Добавить ингредиент</button></div>
+            @if (outIsPcs()) {
+              <div class="muted tip">
+                Выход заготовки — в штуках, поэтому «свой выход» меньше 100 % понимается как потери <b>массы</b>:
+                штуки входа переводятся в граммы по «грамм в 1 шт» самого компонента (у заготовки — блок A → «Доп. параметры»). 
+              </div>
+            }
           </div>
 
-          <!-- БЛОК D. База расчёта норм -->
-          <div class="blk basis">
-            <div class="blk-t">D · База расчёта норм <span class="blk-note">как переводятся числа в полях в расход</span></div>
-            <div class="basis-grid">
-              <div class="bi">
-                <span class="bt">Основной продукт</span>
-                <span>норма задаётся <b>на весь выход</b> партии: вход = выход ÷ выход после обработки. Складского количества входа
-                  здесь нет — весь выход заготовки идёт из него.</span>
-              </div>
-              <div class="bi">
-                <span class="bt">Добавки</span>
-                <span>норма задаётся <b>на {{ outDenom() }} готовой заготовки</b> (по размерности единицы выхода),
-                  расход = выход × норма ÷ 1000 ÷ свой выход.</span>
-              </div>
-              <div class="bi">
-                <span class="bt">Размерности</span>
-                <span>г / мл / шт переводятся только по коэффициентам заготовки и продукта
-                  (г в 1 шт, мл в 1 шт, г в 1 мл). 1 мл ≠ 1 г автоматически — без коэффициента будет предупреждение.</span>
-              </div>
-              <div class="bi">
-                <span class="bt">Выход после обработки и штуки</span>
-                <span>выход после обработки — отношение <b>масс</b>: при варке и чистке уходит грамм, а не «штуки». Поэтому если выход
-                  заготовки в шт, потери считаются через «грамм в 1 шт» самой заготовки: без него деление выходом
-                  превращает 1 яйцо в 1.111 яйца — расчёт помечается предупреждением.</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- БЛОК E. Расчёт производства -->
+          <!-- БЛОК E. Проверка рецепта -->
           <div class="blk calc">
-            <div class="blk-t">E · Расчёт производства
-              <span class="blk-note">предварительный: склад и себестоимость не трогаем</span></div>
-            <div class="row calc-in">
-              <label class="f">Хотим получить
-                <input style="width:140px" type="number" min="0" step="any" [ngModel]="want()" (ngModelChange)="want.set(num($event) ?? 0)" />
-              </label>
-              <span class="ro">{{ unitCodeOf(d.unitId) }}</span>
-              <div class="spacer"></div>
-              @for (p of presets(); track p.label) {
-                <button type="button" class="btn sm" [class.on]="want() === p.qty" (click)="want.set(p.qty)">{{ p.label }}</button>
-              }
-            </div>
-            @if (d.base.refId == null || !(want() > 0)) {
-              <p class="muted small">Выберите основной продукт и укажите объём партии, чтобы увидеть расход.</p>
+            <div class="blk-t">E · Проверка рецепта
+              <span class="blk-note">раскладка партии из блока A до чистого сырья; склад и себестоимость не трогаем</span></div>
+            @if (!hasInputs() || !(batchOut() > 0)) {
+              <p class="muted small">Добавьте ингредиент и задайте размер партии в блоке A, чтобы увидеть, как состав раскладывается до сырья.</p>
             } @else {
               <div class="calc-sum">
-                <div><span class="l">Выход заготовки</span><b>{{ fmt(want(), unitCodeOf(d.unitId)) }}</b></div>
-                <div><span class="l">Нужно основного продукта</span><b>{{ fmt(baseNeed(), baseUnit()) }}</b></div>
+                <div><span class="l">Партия</span><b>{{ fmt(batchOut(), unitCodeOf(d.unitId)) }}</b></div>
                 <div><span class="l">Позиций сырья</span><b>{{ calc().raw.length }}</b></div>
+                <div><span class="l">Предупреждений</span><b [class.bad]="calcWarnCount() > 0">{{ calcWarnCount() ? calcWarnCount() : 'нет' }}</b></div>
               </div>
 
-              <div class="sub-t">Дерево состава{{ expanded().size ? ' (с раскрытием)' : '' }}</div>
+              <div class="sub-t">Дерево расхода{{ expanded().size ? ' (с раскрытием)' : '' }}</div>
               <div class="tree">
                 @for (r of calcRows(); track r.node.key) {
                   <div class="tr" [style.paddingLeft.px]="4 + r.node.depth * 18">
                     @if (r.hasKids) {
                     <button type="button" class="tw" (click)="toggleNode(r.node.key)">{{ r.open ? '▾' : '▸' }} {{ r.node.children.length }}</button>
                     } @else { <span class="tw-sp"></span> }
-                    <span class="k" [class.base]="r.node.role === 'base'" [class.semi]="r.node.sourceType === 'semi'">
-                      {{ r.node.role === 'base' ? 'ядро' : 'добавка' }}{{ r.node.sourceType === 'semi' ? ' · полуфабрикат' : '' }}
-                    </span>
+                    <span class="k" [class.semi]="r.node.sourceType === 'semi'">{{ r.node.sourceType === 'semi' ? 'полуфабрикат' : 'сырьё' }}</span>
                     <span class="n">{{ r.node.name }}</span>
                     <span class="b">{{ r.node.basis }}</span>
                     <span class="q">{{ fmt(r.node.qty, r.node.unitCode) }}</span>
@@ -414,14 +342,14 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
                 }
               </div>
 
-              <div class="sub-t">Итоговая потребность в сырье (сквозь все уровни)</div>
+              <div class="sub-t">Сырьё на партию (сквозь все уровни)</div>
               <table class="tbl stack">
-                <tr class="th-row"><th>Сырьё</th><th>Откуда расход</th><th class="num">Количество</th></tr>
+                <tr class="th-row"><th>Сырьё</th><th>Откуда расход</th><th class="num">Количество на партию</th></tr>
                 @for (r of calc().raw; track r.productId) {
                   <tr>
                     <td data-l="Сырьё">{{ r.name }}</td>
                     <td data-l="Откуда" class="muted">{{ r.via.length ? 'через ' + r.via.join(', ') : 'напрямую' }}</td>
-                    <td class="num" data-l="Нужно">{{ fmt(r.qty, r.unitCode) }}</td>
+                    <td class="num" data-l="На партию">{{ fmt(r.qty, r.unitCode) }}</td>
                   </tr>
                 } @empty {
                   <tr><td class="empty" colspan="3">Сырьё не собирается — проверьте состав</td></tr>
@@ -500,15 +428,15 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
             <div class="blk-err">Сохранение заблокировано: посмотрите подсказки у полей ({{ issues().length }}).</div>
           }
           @if (calcWarnCount() && !issues().length) {
-            <div class="mini warn">Расчёт содержит нерешённые пересчёты размерностей — кликните предупреждение в блоке E, чтобы задать коэффициент.</div>
+            <div class="mini warn">Проверка рецепта содержит нерешённые пересчёты размерностей — кликните предупреждение в блоке E, чтобы задать коэффициент.</div>
           }
         </div>
       } @else {
         <div class="panel">
           <p class="muted">Выберите заготовку слева или создайте новую. Заготовка делается как из складского сырья,
             так и из других полуфабрикатов — расход полностью раскладывается до сырья с учётом выхода после обработки на каждом уровне.</p>
-          <p class="muted small">База расчёта норм: количество добавки задаётся <b>на 1 кг / 1 л / 1000 шт готовой заготовки</b>
-            (по размерности единицы выхода), количество основного продукта — <b>на весь выход</b> партии.</p>
+          <p class="muted small">База расчёта норм: каждый ингредиент задаётся <b>абсолютным количеством на партию</b>
+            (в своей базовой единице), а размер партии показывает, сколько заготовки из неё выходит.</p>
         </div>
       }
     </div>
@@ -574,49 +502,39 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
     .blk { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px 12px; margin-top: 12px; }
     .blk-t { font-size: 11.5px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
     .blk-note { margin-left: 8px; font-weight: 400; text-transform: none; letter-spacing: 0; }
-    .blk.core { background: var(--accent-soft); border-color: #cfe0fb; }
-    .blk.core .blk-t { color: var(--accent); }
     .blk.calc { background: #fbfcfe; }
-    .basis-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; }
-    .bi { display: flex; flex-direction: column; gap: 3px; border: 1px solid var(--border); border-radius: 8px; background: #fff; padding: 8px 10px; font-size: 12px; color: var(--muted); line-height: 1.45; }
-    .bi b { color: var(--text); }
-    .bi .bt { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; color: var(--accent); }
+    /* блоки-подсказки «как считается» (упразднён вместе с блоком D) */
     .blk-err { margin-top: 10px; font-size: 12px; color: var(--red); }
 
-    .core-grid { display: grid; grid-template-columns: 150px minmax(200px, 1.6fr) 96px 150px; gap: 10px; align-items: start; }
+    .batch-row { margin-top: 10px; align-items: flex-end; }
     .ro {
       border: 1px solid var(--border); border-radius: 8px; background: #f7f9fc; padding: 8px 10px;
       font-size: 13px; font-weight: 600; color: var(--text); min-height: 38px; display: flex; align-items: center;
     }
-    .chain {
-      display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; padding: 8px 10px;
-      background: #fff; border: 1px solid #cfe0fb; border-radius: 8px; font-size: 13px;
-    }
-    .chain .ci { font-size: 10.5px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); }
-    .chain .ar { color: var(--accent); font-weight: 700; }
     .tip { margin-top: 6px; font-size: 11.5px; line-height: 1.4; }
     .f-err { display: block; font-size: 11.5px; color: var(--red); text-transform: none; letter-spacing: 0; }
 
-    /* таблица добавок */
+    /* таблица ингредиентов */
     .tb-head, .tb-row { display: grid; gap: 10px; align-items: start; }
     .tb-head {
-      grid-template-columns: 128px minmax(180px, 1.7fr) 120px 116px minmax(120px, 1fr) 34px;
+      grid-template-columns: 128px minmax(200px, 1.9fr) 116px 112px minmax(110px, 1fr) 34px;
       font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); padding: 2px 0 6px;
     }
     .tb-head .num { text-align: right; }
     .tb-head .del { text-align: center; }
-    .tb-row { grid-template-columns: 128px minmax(180px, 1.7fr) 120px 116px minmax(120px, 1fr) 34px; padding: 6px 0; border-top: 1px solid var(--border); }
+    .tb-row { grid-template-columns: 128px minmax(200px, 1.9fr) 116px 112px minmax(110px, 1fr) 34px; padding: 6px 0; border-top: 1px solid var(--border); }
     .t-sel, .t-num { width: 100%; }
     .t-num { text-align: right; font-variant-numeric: tabular-nums; }
-    .t-pick { min-width: 0; }
+    .t-pick { min-width: 0; display: flex; align-items: flex-start; gap: 6px; flex-wrap: wrap; }
+    .t-pick app-picker { min-width: 0; }
+    .t-unit { font-size: 11.5px; color: var(--muted); padding-top: 9px; white-space: nowrap; }
     .t-part { text-align: right; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; padding-top: 9px; }
     .t-del { display: flex; justify-content: center; padding-top: 4px; }
     .tb-err { font-size: 11.5px; color: var(--red); margin-top: -4px; }
     .tb-empty { padding: 10px; font-size: 12px; text-align: center; color: var(--muted); border: 1px dashed var(--border); border-radius: 8px; }
     .tb-add { margin-top: 8px; }
 
-    /* расчёт */
-    .calc-in { align-items: flex-end; }
+    /* проверка рецепта */
     .btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
     .calc-sum { display: flex; gap: 10px; flex-wrap: wrap; margin: 10px 0 4px; }
     .calc-sum > div {
@@ -625,6 +543,7 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
     }
     .calc-sum .l { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); }
     .calc-sum b { font-size: 15px; font-variant-numeric: tabular-nums; }
+    .calc-sum b.bad { color: var(--red); }
     .sub-t { margin: 12px 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); }
     .tree { border: 1px solid var(--border); border-radius: 8px; background: #fff; padding: 4px 6px; }
     .tr { display: flex; align-items: baseline; gap: 8px; padding: 4px 0; font-size: 12.5px; border-bottom: 1px solid #f0f3f8; flex-wrap: wrap; }
@@ -632,7 +551,6 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
     .tw { border: 0; background: transparent; cursor: pointer; color: var(--accent); font: inherit; font-size: 11px; padding: 0 2px; flex: none; }
     .tw-sp { width: 22px; flex: none; }
     .tr .k { font-size: 10.5px; color: var(--muted); flex: none; }
-    .tr .k.base { color: var(--accent); font-weight: 700; }
     .tr .k.semi { color: var(--amber); }
     .tr .n { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
     .tr .b { color: var(--muted); font-size: 11.5px; }
@@ -690,8 +608,7 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
     .acts { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
 
     @media (max-width: 1180px) {
-      .tb-head, .tb-row { grid-template-columns: 116px minmax(150px, 1.4fr) 104px 100px minmax(100px, 1fr) 30px; gap: 8px; }
-      .core-grid { grid-template-columns: 132px minmax(170px, 1.4fr) 84px 132px; }
+      .tb-head, .tb-row { grid-template-columns: 116px minmax(160px, 1.5fr) 104px 100px minmax(100px, 1fr) 30px; gap: 8px; }
     }
     @media (max-width: 900px) {
       /* узкий экран: каталог и редактор идут друг под другом (глобальная .grid2 без нашего правила не переопределяется) */
@@ -701,7 +618,6 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
       .tb-row { grid-template-columns: 1fr 1fr; }
       .t-part, .t-del { padding-top: 0; }
       .t-part { text-align: left; }
-      .core-grid { grid-template-columns: 1fr 1fr; }
       .warn-row.fix { align-items: flex-start; }
       .warn-row.fix .fg { margin-left: 0; flex-basis: 100%; }
     }
@@ -727,8 +643,10 @@ export class SemisComponent implements OnInit {
 
   // ---------- каталог ----------
   query = signal('');
+  /** Тип: есть ли в составе другие полуфабрикаты (ролей больше нет — смотрим по всем входам). */
   fType = signal<'all' | 'raw' | 'semi'>('all');
-  fAdds = signal<'all' | 'with' | 'none'>('all');
+  /** Состав: количество ингредиентов. */
+  fAdds = signal<'all' | 'multi' | 'single'>('all');
   fBad = signal(false);
   sortMode = signal<SortMode>('name');
   page = signal(1);
@@ -741,10 +659,10 @@ export class SemisComponent implements OnInit {
     const q = this.query().trim();
     const list = this.semis().filter((s) => {
       if (q && !semiMatches(s, q)) return false;
-      if (this.fType() !== 'all' && (semiBase(s)?.sourceType ?? 'none') !== this.fType()) return false;
-      const adds = semiAdditives(s).length;
-      if (this.fAdds() === 'with' && adds === 0) return false;
-      if (this.fAdds() === 'none' && adds > 0) return false;
+      if (this.fType() !== 'all' && (this.hasSemiInput(s) ? 'semi' : 'raw') !== this.fType()) return false;
+      const inputs = s.inputs.filter((i) => i.refId != null).length;
+      if (this.fAdds() === 'multi' && inputs < 2) return false;
+      if (this.fAdds() === 'single' && inputs !== 1) return false;
       if (this.fBad() && !incompleteOf(s)) return false;
       return true;
     });
@@ -810,12 +728,26 @@ export class SemisComponent implements OnInit {
     this.page.set(Math.min(Math.max(1, p), this.pageCount()));
   }
 
-  semiBase = semiBase;
-  semiAdditives = semiAdditives;
-  /** Выход базового входа для строки каталога. */
-  yieldText(s: Semi): string {
-    const y = semiBase(s)?.yieldPct;
-    return y != null ? `${trim(Number(y))}%` : '—';
+  /** В составе есть хотя бы одна вложенная заготовка. */
+  hasSemiInput(s: Semi): boolean {
+    return s.inputs.some((i) => i.sourceType === 'semi');
+  }
+  /** Сколько входов с заданным «своим выходом» (потери при обработке). */
+  lossCount(s: Semi): number {
+    return s.inputs.filter((i) => Number(i.yieldPct ?? 0) > 0 && Number(i.yieldPct ?? 0) < 100).length;
+  }
+  /** Потери показываем диапазоном выходов: общий для всех одинаковый — одной цифрой. */
+  lossText(s: Semi): string {
+    const ys = this.lossCount(s)
+      ? s.inputs
+          .map((i) => Number(i.yieldPct ?? 0))
+          .filter((y) => y > 0 && y < 100)
+          .sort((a, b) => a - b)
+      : [];
+    if (!ys.length) return '—';
+    const lo = trim(ys[0]);
+    const hi = trim(ys[ys.length - 1]);
+    return lo === hi ? `${lo}%` : `${lo}–${hi}%`;
   }
   num = (v: unknown): number | null => {
     if (v === null || v === undefined || v === '') return null;
@@ -824,16 +756,15 @@ export class SemisComponent implements OnInit {
   };
   fmt = (qty: number, unitCode: string) => fmtBase(qty, unitCode ?? '');
   unitCodeOf = (unitId: number | null) => unitCodeOf(this.ctx(), unitId);
-  outDenom = () => outDenom(this.ctx(), this.draft()?.unitId ?? null);
 
   /** Чем «неполна» заготовка для бейджа в каталоге. */
   rowWarn(s: Semi): string | null {
     const bad = incompleteOf(s);
     if (bad) return bad;
-    const b = semiBase(s);
-    if (!b || !b.unitId || !s.unitId) return null;
+    const first = semiPrimary(s);
+    if (!first || !first.unitId || !s.unitId) return null;
     const outU = this.units().find((u) => u.id === s.unitId);
-    const inU = this.units().find((u) => u.id === b.unitId);
+    const inU = this.units().find((u) => u.id === first.unitId);
     if (outU && inU && outU.dimension !== inU.dimension && !(s.gPerPcs || s.mlPerPcs || s.gPerMl)) {
       return 'нет коэффициента пересчёта размерностей';
     }
@@ -847,10 +778,8 @@ export class SemisComponent implements OnInit {
   saving = signal(false);
   err = signal('');
   msg = signal('');
-  want = signal(1000);
 
   baseUnits = computed(() => this.units().filter((u) => u.baseFactor === 1));
-  baseSource = computed<SourceKind>(() => this.draft()?.base.sourceType ?? 'raw');
 
   issues = computed<Issue[]>(() => {
     const d = this.draft();
@@ -881,71 +810,32 @@ export class SemisComponent implements OnInit {
       .sort((a, b) => Number(!!a.blocked) - Number(!!b.blocked) || a.label.localeCompare(b.label, 'ru'));
   });
 
-  baseUnit(): string {
-    const d = this.draft();
-    if (!d) return '';
-    const refId = d.base.refId;
-    if (refId == null) return '';
-    const u = this.units().find((x) => x.id === this.refUnitId(d.base.sourceType, refId));
-    return u?.code ?? '';
-  }
-
-  private refUnitId(sourceType: SourceKind, refId: number): number | null {
-    const r = sourceType === 'raw' ? this.products().find((p) => p.id === refId) : this.semis().find((s) => s.id === refId);
-    return r?.unitId ?? null;
-  }
-
   presets = computed(() => batchPresets(this.ctx(), this.draft()?.unitId ?? null));
 
-  chainIn(): string {
-    const e = this.calc();
-    const b = e.nodes.find((n) => n.role === 'base');
-    return b ? `${this.fmt(b.qty, b.unitCode)} (${b.name})` : '— выберите продукт —';
-  }
-  chainOut(): string {
-    const d = this.draft();
-    if (!d) return '—';
-    return `${this.fmt(this.want(), this.unitCodeOf(d.unitId))} заготовки`;
-  }
-  wantHint(): string {
-    const d = this.draft();
-    if (!d) return '—';
-    return `${this.fmt(this.want(), this.unitCodeOf(d.unitId))} готовой заготовки`;
-  }
-  baseNeed(): number {
-    return this.calc().nodes.find((n) => n.role === 'base')?.qty ?? 0;
+  /** Базовая единица выбранного компонента — она же единица его количества. */
+  inputUnit(a: SemiDraftInput): string {
+    const ref = a.refId == null ? null : refInfo(this.ctx(), a.sourceType, a.refId);
+    return ref?.unitCode ?? '';
   }
 
-  /** Норма добавки → расход на текущую партию (только отображение, рецептуру не меняет). */
-  addPerBatch(a: SemiDraft['additives'][number]): string {
-    const d = this.draft();
-    if (!d || a.refId == null || !(Number(a.qtyPerOutput) > 0) || !(this.want() > 0)) return '—';
-    const ctx = this.ctx();
-    const ref = refInfo(ctx, a.sourceType, a.refId);
+  /** Сколько реально уйдёт компонента с его потерями: qty ÷ (свой выход ÷ 100). */
+  grossOf(a: SemiDraftInput): string {
+    const q = Number(a.qty ?? 0);
+    if (a.refId == null || !(q > 0)) return '—';
+    const ref = refInfo(this.ctx(), a.sourceType, a.refId);
     if (!ref) return '—';
-    let q = (this.want() * Number(a.qtyPerOutput)) / 1000;
-    const own = Number(a.yieldPct ?? 0);
-    // свой выход добавки — как в блоке E: при выходе в штуках делим МАССУ, а не штуки.
-    // inGrams=true → число в граммах, переводим из размерности mass (обратного /gPerPcs нет).
-    let byMass = false;
-    const g = this.selfGPerPcs();
-    if (own > 0 && own < 100) {
-      if (this.outIsPcs() && g && g > 0) {
-        q = (q * g) / (own / 100);
-        byMass = true;
-      } else {
-        q = q / (own / 100);
-      }
-    }
-    const conv = toInputQty(ctx, q, d.unitId, ref, byMass);
-    return `${this.fmt(conv.qty, ref.unitCode)}${conv.warn ? ' ⚠' : ''}`;
+    const y = Number(a.yieldPct ?? 0);
+    const gross = y > 0 && y < 100 ? q / (y / 100) : q;
+    return this.fmt(gross, ref.unitCode);
   }
 
-  /** Состав черновика + коэффициенты самой заготовки: без них выход в штуках не посчитать. */
-  private draftConv(): Conv {
-    const d = this.draft();
-    return { gPerPcs: d?.gPerPcs ?? null, mlPerPcs: d?.mlPerPcs ?? null, gPerMl: d?.gPerMl ?? null };
+  /** Есть ли хотя бы один выбранный компонент — иначе расчёт показывать нечего. */
+  hasInputs(): boolean {
+    return (this.draft()?.inputs ?? []).some((i) => i.refId != null);
   }
+
+  /** Размер партии редактируемой заготовки — база раскладки в блоке E (масштаб ×1). */
+  batchOut = computed(() => Number(this.draft()?.outQty ?? 0));
 
   /** Выход редактируемой заготовки — в штуках. */
   outIsPcs(): boolean {
@@ -953,32 +843,21 @@ export class SemisComponent implements OnInit {
     return u?.dimension === 'count';
   }
 
-  /** Задан выход после обработки меньше 100 % — то есть потери есть. */
-  yieldIsLoss(): boolean {
-    const y = Number(this.draft()?.base.yieldPct ?? 0);
-    return y > 0 && y < 100;
-  }
-
-  selfGPerPcs(): number | null {
-    return this.draft()?.gPerPcs ?? null;
-  }
-
-  // ---------- расчёт (блок E) ----------
+  // ---------- раскладка партии до сырья (блок E, масштаб ×1) ----------
   calc = computed<Expansion>(() => {
     const d = this.draft();
-    if (!d || d.base.refId == null || !(this.want() > 0)) {
+    const batch = this.batchOut();
+    if (!d || !(batch > 0) || !this.hasInputs()) {
       return { nodes: [], raw: [] as RawLine[], warnings: [], ready: false };
     }
     return expandComposition(
       this.ctx(),
       edgesOfDraft(d),
-      this.want(),
-      d.unitId,
+      batch,
+      batch,
       d.id != null ? new Set<number>([d.id]) : new Set<number>(),
       [],
-      0,
-      this.draftConv(),
-      d.id != null ? { sourceType: 'semi', refId: d.id, name: d.name } : null
+      0
     );
   });
 
@@ -1185,10 +1064,11 @@ export class SemisComponent implements OnInit {
       inSum += n.qty * iu.baseFactor;
     }
     if (!inSum) return null;
-    const ratio = inSum / this.want();
-    const parts = `Σ входа ${fmtBase(inSum, outU.code)} vs выход ${fmtBase(this.want(), outU.code)}`;
+    const outBase = this.batchOut();
+    const ratio = inSum / outBase;
+    const parts = `Σ входа ${fmtBase(inSum, outU.code)} vs выход ${fmtBase(outBase, outU.code)}`;
     if (ratio <= 1.02) return { text: `${parts} — потер при обработке не задано (выход ≈ входу)`, warn: false };
-    if (ratio > 4) return { text: `${parts} — вход в ×${trimNum(Math.round(ratio * 10) / 10)} больше выхода: проверьте выход после обработки и нормы`, warn: true };
+    if (ratio > 4) return { text: `${parts} — вход в ×${trimNum(Math.round(ratio * 10) / 10)} больше выхода: проверьте свои выходы после обработки и количества на партию`, warn: true };
     return { text: `${parts} — технологический расход ×${trimNum(Math.round(ratio * 100) / 100)}`, warn: false };
   });
 
@@ -1196,26 +1076,20 @@ export class SemisComponent implements OnInit {
   patchDraft<K extends keyof SemiDraft>(k: K, v: SemiDraft[K]): void {
     this.draft.update((d) => (d ? { ...d, [k]: v } : d));
   }
-  patchBase(patch: Partial<SemiDraft['base']>): void {
-    this.draft.update((d) => (d ? { ...d, base: { ...d.base, ...patch } } : d));
+  patchInput(i: number, patch: Partial<SemiDraftInput>): void {
+    this.draft.update((d) => (d ? { ...d, inputs: d.inputs.map((a, idx) => (idx === i ? { ...a, ...patch } : a)) } : d));
   }
-  setBaseType(t: SourceKind): void {
-    this.patchBase({ sourceType: t, refId: null });
+  pickInput(i: number, o: PickOption): void {
+    this.patchInput(i, { refId: o.id });
   }
-  pickBase(o: PickOption): void {
-    this.patchBase({ refId: o.id });
+  private blankInput(): SemiDraftInput {
+    return { sourceType: 'raw', refId: null, qty: null, yieldPct: null };
   }
-  patchAdditive(i: number, patch: Partial<SemiDraft['additives'][number]>): void {
-    this.draft.update((d) => (d ? { ...d, additives: d.additives.map((a, idx) => (idx === i ? { ...a, ...patch } : a)) } : d));
+  addInput(): void {
+    this.draft.update((d) => (d ? { ...d, inputs: [...d.inputs, this.blankInput()] } : d));
   }
-  pickAdditive(i: number, o: PickOption): void {
-    this.patchAdditive(i, { refId: o.id });
-  }
-  addAdditive(): void {
-    this.draft.update((d) => (d ? { ...d, additives: [...d.additives, { sourceType: 'raw' as SourceKind, refId: null, qtyPerOutput: null, yieldPct: null }] } : d));
-  }
-  removeAdditive(i: number): void {
-    this.draft.update((d) => (d ? { ...d, additives: d.additives.filter((_, idx) => idx !== i) } : d));
+  removeInput(i: number): void {
+    this.draft.update((d) => (d ? { ...d, inputs: d.inputs.filter((_, idx) => idx !== i) } : d));
   }
 
   // ---------- загрузка / каталог ----------
@@ -1244,28 +1118,22 @@ export class SemisComponent implements OnInit {
     });
   }
 
-  /** Черновик из сохранённой заготовки (additive qtyPerOutput → удобная шкала ×1000). */
+  /** Черновик из сохранённой заготовки: количества в БД уже абсолютные, на партию. */
   private toDraft(s: Semi): SemiDraft {
-    const base = semiBase(s);
-    const adds = semiAdditives(s);
     return {
       id: s.id,
       name: s.name,
       note: s.note,
       unitId: s.unitId,
+      outQty: Number(s.outQty) || 1,
       shelfLifeDays: s.shelfLifeDays ?? null,
       gPerPcs: s.gPerPcs ?? null,
       mlPerPcs: s.mlPerPcs ?? null,
       gPerMl: s.gPerMl ?? null,
-      base: {
-        sourceType: (base?.sourceType ?? 'raw') as SourceKind,
-        refId: base?.refId ?? null,
-        yieldPct: base ? Number(base.yieldPct) : 90,
-      },
-      additives: adds.map((a) => ({
+      inputs: s.inputs.map((a) => ({
         sourceType: a.sourceType,
         refId: a.refId,
-        qtyPerOutput: Number(a.qtyPerOutput) * 1000,
+        qty: Number(a.qty),
         yieldPct: a.yieldPct != null ? Number(a.yieldPct) : null,
       })),
     };
@@ -1287,19 +1155,21 @@ export class SemisComponent implements OnInit {
   newSemi(): void {
     if (!this.confirmLoss()) return;
     this.msg.set('');
+    const gramsOut = this.baseUnits().find((u) => u.code === 'г');
+    const unitId = gramsOut?.id ?? this.baseUnits()[0]?.id ?? null;
     this.applyDraft({
       id: null,
       name: '',
       note: '',
-      unitId: this.baseUnits().find((u) => u.code === 'г')?.id ?? this.baseUnits()[0]?.id ?? null,
+      unitId,
+      // стартовая партия: 1 кг выхода (или 1 шт, если выход не в граммах)
+      outQty: unitId != null && gramsOut?.id === unitId ? 1000 : 1,
       shelfLifeDays: null,
       gPerPcs: null,
       mlPerPcs: null,
       gPerMl: null,
-      base: { sourceType: 'raw', refId: null, yieldPct: 90 },
-      additives: [],
+      inputs: [this.blankInput()],
     });
-    this.want.set(1000);
     this.revealEditor();
   }
 
@@ -1320,8 +1190,7 @@ export class SemisComponent implements OnInit {
       ...d,
       id: null,
       name: `${d.name.trim() || 'заготовка'} (копия)`,
-      base: { ...d.base },
-      additives: d.additives.map((a) => ({ ...a })),
+      inputs: d.inputs.map((a) => ({ ...a })),
     };
     this.msg.set('');
     this.applyDraft(copy);
@@ -1356,23 +1225,20 @@ export class SemisComponent implements OnInit {
       this.err.set(problems.map((p) => p.message).join(' · '));
       return;
     }
-    // payload — ровно как раньше: additive qtyPerOutput в БД = доля на 1 базовую ед. выхода (÷1000 от UI)
-    const inputs: Record<string, unknown>[] = [
-      { sourceType: d.base.sourceType, refId: d.base.refId, role: 'base', yieldPct: d.base.yieldPct },
-      ...d.additives
-        .filter((a) => a.refId != null && (a.qtyPerOutput ?? 0) > 0)
-        .map((a) => ({
-          sourceType: a.sourceType,
-          refId: a.refId,
-          role: 'additive',
-          qtyPerOutput: (a.qtyPerOutput ?? 0) / 1000,
-          yieldPct: (a.yieldPct ?? 0) > 0 && (a.yieldPct ?? 0) < 100 ? a.yieldPct : null,
-        })),
-    ];
+    // payload: абсолютные количества на партию + размер партии (outQty)
+    const inputs: Record<string, unknown>[] = d.inputs
+      .filter((a) => a.refId != null && (a.qty ?? 0) > 0)
+      .map((a) => ({
+        sourceType: a.sourceType,
+        refId: a.refId,
+        qty: a.qty,
+        yieldPct: (a.yieldPct ?? 0) > 0 && (a.yieldPct ?? 0) < 100 ? a.yieldPct : null,
+      }));
     const body = {
       name: d.name.trim(),
       note: d.note,
       unitId: d.unitId,
+      outQty: Number(d.outQty) || 1,
       shelfLifeDays:
         d.shelfLifeDays === null || (d.shelfLifeDays as unknown) === '' || !Number.isFinite(Number(d.shelfLifeDays))
           ? null

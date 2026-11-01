@@ -23,7 +23,7 @@ import { ToastService } from '../core/toast.service';
     .toast {
       max-width: min(420px, calc(100vw - 28px));
       padding: 10px 14px; border-radius: 10px;
-      background: #10233f; color: #fff; font-size: 13px; line-height: 1.35;
+      background: #0a3550; color: #fff; font-size: 13px; line-height: 1.35;
       box-shadow: 0 10px 28px rgba(10, 18, 32, 0.28);
       animation: toast-in 0.16s ease-out;
     }

@@ -13,7 +13,7 @@ import { httpErr } from '../core/format';
   template: `
     <div class="wrap">
       <form class="card" (ngSubmit)="submit()">
-        <div class="brand">🥗 MIX markt<small>CRM учёта продукции</small></div>
+        <div class="brand"><span class="wm-mix">mix</span> <span class="wm-markt">markt</span><small>CRM учёта продукции</small></div>
         <h1>Вход</h1>
 
         @if (err()) { <div class="err">{{ err() }}</div> }
@@ -36,7 +36,7 @@ import { httpErr } from '../core/format';
   `,
   styles: [
     `
-    :host { display: block; min-height: 100vh; background: #10233f; }
+    :host { display: block; min-height: 100vh; background: #0a3550; }
     .wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
     .card {
       width: min(380px, 100%); display: flex; flex-direction: column; gap: 12px;
@@ -45,6 +45,8 @@ import { httpErr } from '../core/format';
     }
     .brand { color: var(--muted); font-size: 13px; }
     .brand small { display: block; font-size: 11px; color: var(--muted); opacity: .8; }
+    .brand .wm-mix { color: var(--brand-yellow); font-weight: 800; letter-spacing: .3px; }
+    .brand .wm-markt { color: var(--brand-blue-dark); font-weight: 800; }
     h1 { margin: 0 0 4px; font-size: 20px; }
     .submit { justify-content: center; padding: 10px 14px; margin-top: 4px; }
     .hint { font-size: 12px; text-align: center; }

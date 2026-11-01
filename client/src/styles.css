@@ -1,20 +1,30 @@
 /* ============ MIX markt CRM — глобальные стили ============ */
+/* Фирменная палитра Mix Markt (вычитана из css mixmarkt.eu):
+   синий #1f91d9 (основной), тёмно-синий #006699 (ссылки/акцент),
+   жёлтый #fce005 (акции/подсветка), красный #e11b22 (тревога). */
 :root {
-  --bg: #f4f6f9;
+  --bg: #eef3f8;
   --panel: #ffffff;
-  --border: #dfe4ec;
-  --text: #1d2433;
-  --muted: #6b7488;
-  --accent: #1668dc;
-  --accent-soft: #e8f0fe;
+  --border: #d5e2ef;
+  --text: #16283a;
+  --muted: #5b6b7d;
+
+  /* брендовые токены — доступны всем компонентам */
+  --brand-blue: #1f91d9;
+  --brand-blue-dark: #006699;
+  --brand-yellow: #fce005;
+  --brand-red: #e11b22;
+
+  --accent: #1f91d9;
+  --accent-soft: #e2f1fc;
   --green: #1a8a4a;
-  --green-soft: #e5f6ec;
-  --red: #c62f2f;
+  --green-soft: #e4f6ec;
+  --red: #e11b22;
   --red-soft: #fdeaea;
-  --amber: #9a6b00;
-  --amber-soft: #fdf3d7;
+  --amber: #b8860b;
+  --amber-soft: #fff4c6;
   --radius: 10px;
-  --shadow: 0 1px 3px rgba(20, 30, 55, 0.08);
+  --shadow: 0 1px 3px rgba(20, 40, 70, 0.08);
 }
 
 * { box-sizing: border-box; }
@@ -32,22 +42,25 @@ body {
 /* ---------- каркас ---------- */
 .shell { display: flex; min-height: 100vh; }
 .sidebar {
-  width: 230px; flex-shrink: 0; background: #10233f; color: #cfd9ea;
+  width: 230px; flex-shrink: 0; background: #0a3550; color: #cfe0f0;
   display: flex; flex-direction: column; padding: 16px 10px; gap: 2px;
   position: sticky; top: 0; height: 100vh;
 }
-.sidebar .logo { font-size: 17px; font-weight: 700; color: #fff; padding: 6px 12px 16px; }
-.sidebar .logo small { display: block; font-size: 11px; font-weight: 400; color: #8fa1bd; margin-top: 2px; }
+.sidebar .logo { font-size: 17px; font-weight: 700; color: #fff; padding: 6px 12px 14px; }
+/* фирменный вордмарк: mix — жёлтый, markt — белый (как логотип Mix Markt) */
+.sidebar .logo .wm-mix { color: var(--brand-yellow); font-weight: 800; letter-spacing: .3px; }
+.sidebar .logo .wm-markt { color: #fff; font-weight: 800; }
+.sidebar .logo small { display: block; font-size: 11px; font-weight: 400; color: #93b4cf; margin-top: 2px; }
 .sidebar a {
   display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 8px;
-  color: #cfd9ea; text-decoration: none; font-size: 14px;
+  color: #cfe0f0; text-decoration: none; font-size: 14px;
 }
-.sidebar a:hover { background: #1b3357; color: #fff; }
-.sidebar a.active { background: var(--accent); color: #fff; font-weight: 600; }
+.sidebar a:hover { background: #12496b; color: #fff; }
+.sidebar a.active { background: var(--brand-blue); color: #fff; font-weight: 600; box-shadow: inset 3px 0 0 var(--brand-yellow); }
 /* группы меню: редкие разделы не спорят с ежедневными по вниманию */
 .side-group {
   margin: 12px 12px 2px; font-size: 10.5px; font-weight: 700; letter-spacing: .7px;
-  text-transform: uppercase; color: #7d90ad;
+  text-transform: uppercase; color: #7ba3c2;
 }
 .main { flex: 1; padding: 22px 26px; min-width: 0; }
 .page-title { font-size: 21px; font-weight: 700; margin: 0 0 16px; }
@@ -72,7 +85,7 @@ body {
 }
 .quick-btn:hover { background: #f2f5fa; }
 .quick-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.quick-btn.primary:hover { background: #0f5ac0; }
+.quick-btn.primary:hover { background: #157ab5; }
 .quick-btn.hot { border-color: var(--amber); background: var(--amber-soft); color: var(--amber); }
 .quick-btn .qi { font-size: 18px; flex: 0 0 auto; line-height: 1; }
 .quick-btn .qt { display: flex; flex-direction: column; min-width: 0; font-size: 13px; }
@@ -137,7 +150,7 @@ input[type='number']::-webkit-inner-spin-button { opacity: 1; }
 }
 .btn:hover { background: #f2f5fa; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.btn.primary:hover { background: #0f5ac0; }
+.btn.primary:hover { background: #157ab5; }
 .btn.danger { color: var(--red); border-color: var(--red); background: #fff; }
 .btn.danger:hover { background: var(--red-soft); }
 .btn.sm { padding: 4px 9px; font-size: 12px; border-radius: 6px; }
@@ -169,9 +182,9 @@ input[type='number']::-webkit-inner-spin-button { opacity: 1; }
 }
 .diagram { display: block; } /* без этого у <svg> baseline-щель и лишняя высота */
 .diagram text { font-family: 'Segoe UI', sans-serif; }
-.d-node-raw { fill: #eaf3ff; stroke: #1668dc; }
-.d-node-semi { fill: #fdf3d7; stroke: #b8860b; }
-.d-node-card { fill: #e5f6ec; stroke: #1a8a4a; }
+.d-node-raw { fill: #e2f1fc; stroke: #1f91d9; }
+.d-node-semi { fill: #fff4c6; stroke: #b8860b; }
+.d-node-card { fill: #e4f6ec; stroke: #1a8a4a; }
 .d-edge { stroke: #93a3bc; stroke-width: 1.5; fill: none; marker-end: url(#arrow); }
 .d-elabel { fill: var(--muted); font-size: 10px; }
 
@@ -207,29 +220,31 @@ input[type='number']::-webkit-inner-spin-button { opacity: 1; }
 /* ---------- телефон: верхняя панель + выдвижное меню ---------- */
 .topbar {
   display: none; position: sticky; top: 0; z-index: 60; align-items: center; gap: 10px;
-  background: #10233f; color: #fff; padding: 10px 14px;
+  background: #0a3550; color: #fff; padding: 10px 14px;
 }
 .topbar .burger {
-  border: 1px solid #2c4a77; background: #1b3357; color: #fff; border-radius: 8px;
+  border: 1px solid #1c5f88; background: #12496b; color: #fff; border-radius: 8px;
   font-size: 18px; line-height: 1; padding: 7px 12px; cursor: pointer;
 }
-.topbar .tb-logo { font-weight: 700; font-size: 15px; }
+.topbar .tb-logo { font-weight: 800; font-size: 15px; letter-spacing: .3px; }
+.topbar .tb-logo .wm-mix { color: var(--brand-yellow); }
+.topbar .tb-logo .wm-markt { color: #fff; }
 .side-close {
   display: none; position: absolute; top: 10px; right: 10px; border: 0; background: transparent;
-  color: #cfd9ea; font-size: 18px; cursor: pointer; padding: 6px 10px;
+  color: #cfe0f0; font-size: 18px; cursor: pointer; padding: 6px 10px;
 }
 /* подвал сайдбара: кто вошёл + смена пароля и выход */
 .side-foot {
-  margin-top: auto; padding: 10px 12px 2px; border-top: 1px solid #1e3760;
+  margin-top: auto; padding: 10px 12px 2px; border-top: 1px solid #144561;
   display: flex; flex-direction: column; gap: 7px;
 }
-.side-user { font-size: 12px; color: #8fa1bd; overflow-wrap: anywhere; }
+.side-user { font-size: 12px; color: #93b4cf; overflow-wrap: anywhere; }
 .side-actions { display: flex; gap: 6px; }
 .side-btn {
-  flex: 1 1 auto; border: 1px solid #26436e; background: transparent; color: #cfd9ea;
+  flex: 1 1 auto; border: 1px solid #1c5f88; background: transparent; color: #cfe0f0;
   border-radius: 6px; font: inherit; font-size: 12px; padding: 5px 8px; cursor: pointer;
 }
-.side-btn:hover { background: #1b3357; color: #fff; }
+.side-btn:hover { background: #12496b; color: #fff; }
 .scrim { position: fixed; inset: 0; background: rgba(10, 18, 32, .5); z-index: 50; touch-action: none; }
 /* открытое мобильное меню: морозим прокрутку документа, чтобы страница не ездила под drawer */
 html.menu-lock, html.menu-lock body { overflow: hidden; }

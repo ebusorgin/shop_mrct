@@ -16,11 +16,11 @@ import { ToastComponent } from './shared/toast.component';
       <div class="shell">
         <header class="topbar">
           <button type="button" class="burger" aria-label="Меню" (click)="menu.set(true)">☰</button>
-          <span class="tb-logo">🥗 MIX markt</span>
+          <span class="tb-logo"><span class="wm-mix">mix</span> <span class="wm-markt">markt</span></span>
         </header>
         @if (menu()) { <div class="scrim" (click)="menu.set(false)"></div> }
         <nav class="sidebar" [class.open]="menu()">
-          <div class="logo">🥗 MIX markt<small>CRM учёта продукции</small></div>
+          <div class="logo"><span class="wm-mix">mix</span> <span class="wm-markt">markt</span><small>CRM учёта продукции</small></div>
           <button type="button" class="side-close" aria-label="Закрыть меню" (click)="menu.set(false)">✕</button>
           @if (auth.isStoreUser()) {
             <!-- магазинный сотрудник видит только свою точку -->

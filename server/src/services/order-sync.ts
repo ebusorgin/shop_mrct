@@ -14,8 +14,15 @@ import { PoolClient } from 'pg';
 import { config } from '../config';
 import { listTabs, readSheet, parseSheet, assignYears, SheetTab, SheetOrderRow } from './gsheet';
 import { CardMatcher, toBase } from './order-match';
+import { planWriteForTab, writeBackActive } from './gsheet-write';
 
 const matcher = new CardMatcher();
+
+/** Идентичность линии, зеркалящая generated-колонку orders.line_key: lower(btrim(name)). */
+const normName = (s: string): string => s.trim().toLowerCase();
+/** CRM правил линию позже последней отправки в таблицу (значит при расхождении побеждает БД). */
+const dbEditedAfterPush = (dbEdited: Date | null, pushed: Date | null): boolean =>
+  !!dbEdited && (!pushed || new Date(dbEdited).getTime() > new Date(pushed).getTime());
 
 export interface SyncSummary {
   tabsSeen: number;
@@ -25,6 +32,7 @@ export interface SyncSummary {
   ordersCreated: number;
   ordersChanged: number;
   ordersRemoved: number;
+  pushed: number;
   full: boolean;
 }
 
@@ -49,7 +57,7 @@ export function runOrderSync(opts: { full?: boolean; tab?: string } = {}): Promi
 async function doSync(full: boolean, onlyTab?: string): Promise<SyncSummary> {
   const summary: SyncSummary = {
     tabsSeen: 0, tabsParsed: 0, tabsFailed: 0, unchanged: 0,
-    ordersCreated: 0, ordersChanged: 0, ordersRemoved: 0, full,
+    ordersCreated: 0, ordersChanged: 0, ordersRemoved: 0, pushed: 0, full,
   };
   await pool.query("update order_sync_run set status='running', last_run_at=now(), last_error=null where id=1");
   try {
@@ -66,6 +74,8 @@ async function doSync(full: boolean, onlyTab?: string): Promise<SyncSummary> {
     const hashByTab = new Map<string, string>(known.map((r: { sheet_name: string; content_hash: string | null }) => [r.sheet_name, r.content_hash ?? '']));
 
     const datedTabs = tabs.filter((t) => dates.has(t.name));
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const pushTargets = new Set<number>(); // id горячих листов, куда выталкиваем БД после импорта
     let targets: SheetTab[];
     if (onlyTab) {
       // уведомление из таблицы: правим только ту вкладку, о которой сообщили
@@ -86,6 +96,8 @@ async function doSync(full: boolean, onlyTab?: string): Promise<SyncSummary> {
         summary.tabsParsed += 1;
         const dateIso = dates.get(tab.name)!;
         const tabId = await upsertTab(tab.name, dateIso, parsed.hash, parsed.rows.length);
+        // «горячие» листы (сегодня + целевой по уведомлению) — куда позже выталкиваем БД
+        if (writeBackActive() && (dateIso === todayIso || tab.name === onlyTab)) pushTargets.add(tabId);
         if (hashByTab.get(tab.name) === parsed.hash) {
           summary.unchanged += 1;
           continue; // кеш: лист не менялся с прошлого цикла
@@ -101,14 +113,26 @@ async function doSync(full: boolean, onlyTab?: string): Promise<SyncSummary> {
       }
     }
 
+    // обратная запись: выталкиваем расхождения БД→таблица по горячим листам (после импорта).
+    // Ошибка одного листа не валит прогон; при выключенном рубильнике pushTargets пуст.
+    for (const tabId of pushTargets) {
+      try {
+        const w = await planWriteForTab(tabId);
+        summary.pushed += w.pushed;
+        if (w.failed) console.warn(`[order-sync] лист #${tabId}: не вытолкнулось ${w.failed}`);
+      } catch (e) {
+        console.error(`[order-sync] выталкивание в лист #${tabId}:`, (e as Error).message ?? e);
+      }
+    }
+
     await pool.query(
       `update order_sync_run set status='ok', finished_at=now(), tabs_synced=$1, tabs_failed=$2,
          last_error=null, next_run_at=now() + make_interval(mins => $3::int) where id=1`,
       [summary.tabsParsed, summary.tabsFailed, config.gsheetSyncMin]
     );
     lastSummary = summary;
-    if (summary.ordersCreated + summary.ordersChanged + summary.ordersRemoved > 0) {
-      console.log(`[order-sync]листов ${summary.tabsParsed}/${summary.tabsSeen}, без изменений ${summary.unchanged}, +${summary.ordersCreated} ~${summary.ordersChanged} -${summary.ordersRemoved}`);
+    if (summary.ordersCreated + summary.ordersChanged + summary.ordersRemoved + summary.pushed > 0) {
+      console.log(`[order-sync]листов ${summary.tabsParsed}/${summary.tabsSeen}, без изменений ${summary.unchanged}, +${summary.ordersCreated} ~${summary.ordersChanged} -${summary.ordersRemoved}, в таблицу ${summary.pushed}`);
     }
     return summary;
   } catch (e) {
@@ -150,9 +174,14 @@ async function categoryId(client: PoolClient, name: string): Promise<number | nu
 }
 
 /**
- * Дифф-применение листа: линия = (tab, store, source_name) — уникальна.
- * Всё изменение листа — одной транзакцией; триггер orders_audit сам кладёт
- * created/qty_changed/removed в журнал.
+ * Дифф-применение листа (двустороннее, БД приоритетнее).
+ * Идентичность линии — (store, date, нормализованное имя), сквозная для листа и CRM
+ * (orders.line_key). Для каждой линии сверяем значение листа с базлайном sheet_qty:
+ *   • лист == sheet_qty                    — наше эхо/без изменений → no-op (защита от петли);
+ *   • лист != sheet_qty и БД правилась     — конфликт → побеждает БД (не импортируем, later вытолкнем);
+ *   • лист != sheet_qty и БД не правилась  — правка человека → импортируем в БД + обновляем базлайн.
+ * Строки только в БД (ручные/вытолкнутые) НЕ удаляем — их вытолкнет план записи; g_sheet-строки,
+ * пропавшие из листа (и не правленные в CRM) — удаляем, как раньше.
  */
 async function applyTab(
   tabId: number,
@@ -164,11 +193,20 @@ async function applyTab(
   let removed = 0;
   await tx(async (client) => {
     const { rows: existing } = await client.query(
-      `select id, store_id, source_name, quantity::float8 as qty from orders where tab_id = $1 and source='g_sheet'`,
-      [tabId]
+      `select id, store_id, source_name, quantity::float8 as qty, sheet_qty::float8 as "sheetQty",
+              db_edited_at as "dbEdited", pushed_at as "pushed", source
+         from orders where date_tab = $1::date`,
+      [dateIso]
     );
-    const exMap = new Map<string, { id: number; qty: number }>();
-    for (const e of existing) exMap.set(`${e.store_id}|${e.source_name}`, { id: e.id, qty: Number(e.qty) });
+    interface Ex { id: number; qty: number; sheetQty: number | null; dbEdited: Date | null; pushed: Date | null; source: string }
+    const exMap = new Map<string, Ex>();
+    for (const e of existing) {
+      exMap.set(`${e.store_id}|${normName(e.source_name)}`, {
+        id: e.id, qty: Number(e.qty),
+        sheetQty: e.sheetQty === null ? null : Number(e.sheetQty),
+        dbEdited: e.dbEdited, pushed: e.pushed, source: e.source,
+      });
+    }
 
     const seen = new Set<string>();
     for (const row of rows) {
@@ -178,33 +216,48 @@ async function applyTab(
       for (const [storeKey, printedQty] of Object.entries(row.qty)) {
         const storeId = Number(storeKey); // parsed.qty уже ключён store_id (103..110)
         if (!Number.isFinite(storeId)) continue;
-        const key = `${storeId}|${row.name}`;
+        const key = `${storeId}|${normName(row.name)}`;
         seen.add(key);
         const baseQty = card ? toBase(printedQty, row.unit, card.baseUnitCode, card.portionQty) : printedQty;
         const minBase = row.min !== null ? (card ? toBase(row.min, row.unit, card.baseUnitCode, card.portionQty) : row.min) : null;
         const ex = exMap.get(key);
         if (ex) {
-          if (Math.abs(ex.qty - baseQty) > 1e-6) {
+          // значение листа разошлось с тем, что мы последний раз сверили с таблицей?
+          const sheetDiffers = ex.sheetQty === null || Math.abs(ex.sheetQty - baseQty) > 1e-6;
+          if (!sheetDiffers) continue; // наше эхо / лист не менялся — не трогаем (защита от петли)
+          if (dbEditedAfterPush(ex.dbEdited, ex.pushed)) {
+            // конфликт: CRM правил позже отправки → БД побеждает. Обновляем не-количествовые
+            // атрибуты из листа, quantity/sheet_qty НЕ трогаем → planWrite вытолкнет БД в лист.
             await client.query(
-              `update orders set quantity=$2, card_id=coalesce($3, card_id), plu=coalesce($4, plu),
-                 min_qty=$5, ek_price=$6, vk_price=$7, unit_code=$8, date_tab=$9::date,
-                 category_id=coalesce($10, category_id), updated_at=now()
+              `update orders set card_id=coalesce($2, card_id), plu=coalesce($3, plu), min_qty=$4,
+                 ek_price=$5, vk_price=$6, unit_code=$7, category_id=coalesce($8, category_id), updated_at=now()
                where id=$1`,
-              [ex.id, baseQty, m.cardId, row.plu, minBase, row.ek, row.vk, row.unit, dateIso, catId]
+              [ex.id, m.cardId, row.plu, minBase, row.ek, row.vk, row.unit, catId]
             );
-            changed += 1;
+            continue;
           }
+          // правка человека в таблице → импортируем количество и обновляем базлайн
+          await client.query(
+            `update orders set quantity=$2, card_id=coalesce($3, card_id), plu=coalesce($4, plu),
+               min_qty=$5, ek_price=$6, vk_price=$7, unit_code=$8, date_tab=$9::date,
+               category_id=coalesce($10, category_id), sheet_qty=$2, updated_at=now()
+             where id=$1`,
+            [ex.id, baseQty, m.cardId, row.plu, minBase, row.ek, row.vk, row.unit, dateIso, catId]
+          );
+          changed += 1;
         } else {
-          // on conflict — защита от повтора после частичного сбоя прогона
+          // новая строка листа: базлайн = значение листа, «сверено» сейчас (pushed/db_edited now),
+          // чтобы до правки в CRM авторитет оставался у таблицы.
           await client.query(
             `insert into orders (tab_id, store_id, card_id, source_name, plu, min_qty, ek_price, vk_price,
-                                 quantity, unit_code, date_tab, category_id, status, source)
-             values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::date,$12,'synced','g_sheet')
+                                 quantity, unit_code, date_tab, category_id, status, source,
+                                 sheet_qty, db_edited_at, pushed_at)
+             values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::date,$12,'synced','g_sheet',$9,now(),now())
              on conflict (tab_id, store_id, source_name) do update
                 set quantity = excluded.quantity, card_id = excluded.card_id, plu = excluded.plu,
                     min_qty = excluded.min_qty, ek_price = excluded.ek_price, vk_price = excluded.vk_price,
                     unit_code = excluded.unit_code, date_tab = excluded.date_tab,
-                    category_id = excluded.category_id, updated_at = now()`,
+                    category_id = excluded.category_id, sheet_qty = excluded.quantity, updated_at = now()`,
             [tabId, storeId, m.cardId, row.name, row.plu, minBase, row.ek, row.vk, baseQty, row.unit, dateIso, catId]
           );
           created += 1;
@@ -212,10 +265,12 @@ async function applyTab(
       }
     }
     for (const [key, ex] of exMap) {
-      if (!seen.has(key)) {
-        await client.query('delete from orders where id = $1', [ex.id]);
-        removed += 1;
-      }
+      if (seen.has(key)) continue;
+      // линии нет в листе: ручная или правленная в CRM позже отправки — НЕ удаляем (вытолкнем);
+      // иначе это листовая строка, которую убрали из таблицы → снимаем (как раньше).
+      if (ex.source === 'manual' || dbEditedAfterPush(ex.dbEdited, ex.pushed)) continue;
+      await client.query('delete from orders where id = $1', [ex.id]);
+      removed += 1;
     }
   });
   return { created, changed, removed };

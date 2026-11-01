@@ -27,6 +27,15 @@ export const config = {
   // URL веб-приложения Apps Script, привязанного к ПРОД-таблице: кнопка «Прод → тест»
   // копированием листов прод-таблицы в тестовую (id теста — в CFG.TEST_SPREADSHEET_ID)
   sheetCopyUrl: process.env.GSHEET_COPY_WEBAPP_URL ?? '', // пусто — кнопка не показывается
+  // обратная запись заказов из БД в прод-таблицу (Apps Script Web App, action='write_orders')
+  sheetWriteUrl: process.env.GSHEET_WRITE_WEBAPP_URL ?? '', // пусто — запись выключена
+  // главный рубильник выталкивания БД→таблица: по умолчанию ВЫКЛ (прод остаётся только читаемым)
+  sheetWriteEnabled: (process.env.GSHEET_WRITE_ENABLED ?? 'false') === 'true',
+  // точки, которым разрешена запись в таблицу, через запятую ('103,104'); пусто = все активные
+  sheetWriteStores: (process.env.GSHEET_WRITE_STORES ?? '')
+    .split(',')
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isInteger(n)),
   // вход в CRM: срок сессии и первый администратор (создаётся, только пока таблица users пуста)
   sessionDays: Number(process.env.AUTH_SESSION_DAYS ?? 7),
   authAdminLogin: process.env.AUTH_ADMIN_LOGIN ?? 'admin',

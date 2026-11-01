@@ -135,6 +135,12 @@ export class ApiService {
       `${this.base}/orders/sheet-copy`, {}, {}
     );
   }
+  /** вручную вытолкнуть расхождения БД→таблица по текущему листу (офис; рубильник GSHEET_WRITE_ENABLED) */
+  sheetPush$(): Observable<{ ok: boolean; pushed: number; failed: number; error: string | null }> {
+    return this.http.post<{ ok: boolean; pushed: number; failed: number; error: string | null }>(
+      `${this.base}/orders/sheet-push`, {}, {}
+    );
+  }
 
   // ---- точки продаж (управление магазинами + карточки) ----
   points$(): Observable<M.PointCard[]> { return this.http.get<M.PointCard[]>(`${this.base}/points`); }

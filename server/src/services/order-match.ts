@@ -23,17 +23,30 @@ export interface MatchResult {
   sim: number;
 }
 
-/** Убираем «!!ЗАКАЗ КРАТНО 2 КГ!!», скобки, пунктуацию; нижний регистр. */
-export function normalizeName(s: string): string {
+/** Общая часть нормализации: «!!аннотации!!», скобки, пунктуация, ё→е, схлоп пробелов. */
+function normalizeBase(s: string): string {
   return s
     .toLowerCase()
     .replace(/!![^!]*!!/g, ' ')
     .replace(/[(«”"][^)]*[)»"]/g, ' ')
     .replace(/ё/g, 'е')
     .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
-    .replace(/\d+\s*(кг|г|л|мл|шт|g|kg)\b/g, ' ') // «Блины с сыром/ветчиной(100г)» ~ «Блины с сыром ветчиной»
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/** Терпимая нормализация: дополнительно вырезает фасовку «250g/450г» — «Блины(100г)» ≈ «Блины». */
+export function normalizeName(s: string): string {
+  return normalizeBase(s).replace(/\d+\s*(кг|г|л|мл|шт|g|kg)\b/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Строгая нормализация: фасовку СОХРАНЯЕТ. Нужна, чтобы различать товары, отличающиеся только
+ * весом порции — «Спаржа по корейски» (кг) vs «Спаржа по корейски 250g» (порции): под терпимой
+ * нормой они коллизируют и матчер брал первую карту по алфавиту.
+ */
+export function normalizeNameStrict(s: string): string {
+  return normalizeBase(s);
 }
 
 function levenshtein(a: string, b: string): number {
@@ -72,7 +85,7 @@ const FUZZY_THRESHOLD = 0.62;
 
 export class CardMatcher {
   private cards: CardRef[] = [];
-  private normIdx: { norm: string; card: CardRef }[] = [];
+  private normIdx: { norm: string; strict: string; card: CardRef }[] = [];
 
   async load(): Promise<void> {
     const { rows } = await pool.query(`
@@ -82,7 +95,7 @@ export class CardMatcher {
         join units u on u.id = tc.portion_unit_id
        order by tc.name`);
     this.cards = rows as CardRef[];
-    this.normIdx = this.cards.map((c) => ({ norm: normalizeName(c.name), card: c }));
+    this.normIdx = this.cards.map((c) => ({ norm: normalizeName(c.name), strict: normalizeNameStrict(c.name), card: c }));
   }
 
   async match(name: string, plu: string | null): Promise<MatchResult> {
@@ -93,8 +106,21 @@ export class CardMatcher {
     }
     const src = normalizeName(name);
     if (!src) return { cardId: null, via: null, sim: 0 };
-    const exact = this.normIdx.find((x) => x.norm === src);
-    if (exact) return { cardId: exact.card.id, via: 'name', sim: 1 };
+    const exacts = this.normIdx.filter((x) => x.norm === src);
+    if (exacts.length === 1) return { cardId: exacts[0].card.id, via: 'name', sim: 1 };
+    // коллизия терпимой нормы (2+ карты, отличающиеся только фасовкой): различаем по строгому имени
+    if (exacts.length > 1) {
+      const sSrc = normalizeNameStrict(name);
+      const strictHits = exacts.filter((x) => x.strict === sSrc);
+      if (strictHits.length === 1) return { cardId: strictHits[0].card.id, via: 'name', sim: 1 };
+      const pool2 = strictHits.length ? strictHits : exacts;
+      let bestS: { card: CardRef; sc: number } | null = null;
+      for (const x of pool2) {
+        const sc = score(sSrc, x.strict);
+        if (!bestS || sc > bestS.sc) bestS = { card: x.card, sc };
+      }
+      if (bestS && bestS.sc >= FUZZY_THRESHOLD) return { cardId: bestS.card.id, via: 'name', sim: bestS.sc };
+    }
     let best: { card: CardRef; sc: number } | null = null;
     for (const x of this.normIdx) {
       const sc = score(src, x.norm);

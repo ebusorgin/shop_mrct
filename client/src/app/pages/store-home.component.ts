@@ -6,15 +6,16 @@ import { AuthService } from '../core/auth.service';
 import { MyStore } from '../core/models';
 import { httpErr } from '../core/format';
 import { ModalComponent } from '../shared/modal.component';
-import { OrderStoreComponent } from './order-store.component';
+import { OrdersBoardComponent } from './orders-board.component';
 
 /**
  * Страница магазинного сотрудника: только своя точка.
  *
  *   • карточка магазина (адрес, телефоны, контакты, часы работы, примечание) + правка;
- *   • заказы с производства: оформление на сегодня и архив по датам
- *     (порядок заказов живёт в app-order-store, но без выбора магазина
- *      и без подтверждений — это делает производство).
+ *   • заказы с производства в виде таблицы-доски («как в Google-таблице»),
+ *     только своя колонка; оформление на сегодня и архив по датам
+ *     (порядок заказов живёт в app-orders-board — без выбора магазина
+ *      и без подтверждений, это делает производство).
  *
  * Доступна только пользователю с привязкой к точке (storeGuard), и все
  * запросы на сервере всё равно сужены до его store_id.
@@ -22,7 +23,7 @@ import { OrderStoreComponent } from './order-store.component';
 @Component({
   selector: 'app-store-home',
   standalone: true,
-  imports: [CommonModule, FormsModule, ModalComponent, OrderStoreComponent],
+  imports: [CommonModule, FormsModule, ModalComponent, OrdersBoardComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="bar">
@@ -67,7 +68,9 @@ import { OrderStoreComponent } from './order-store.component';
         </div>
       </div>
 
-      <app-order-store [fixedStoreId]="s.id" [storeView]="true" />
+      <!-- раздел «Заказы»: таблица-доска («как в Google-таблице»), только своя колонка -->
+      <h3 style="margin:14px 0 6px">Заказы</h3>
+      <app-orders-board [embedded]="true" />
     } @else if (!err()) {
       <p class="muted">Загрузка…</p>
     }

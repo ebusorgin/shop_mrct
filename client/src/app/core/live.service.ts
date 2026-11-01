@@ -41,6 +41,8 @@ export class LiveService {
 
   /** Счётчик событий «таблица изменилась» — триггер для перечитывания данных на страницах. */
   readonly sheetVersion = signal(0);
+  /** Счётчик событий «заказ изменён в CRM» (оформлен/правка/отмена) — рефреш списка заказов. */
+  readonly ordersVersion = signal(0);
   readonly connected = signal(false);
 
   connect(): void {
@@ -60,6 +62,8 @@ export class LiveService {
     });
     es.addEventListener('sheet-changed', (e) => this.onChanged(e as MessageEvent));
     es.addEventListener('sheet-synced', (e) => this.onSynced(e as MessageEvent));
+    es.addEventListener('orders-changed', () => this.ordersVersion.update((v) => v + 1));
+    es.addEventListener('orders-pushed', (e) => this.onPushed(e as MessageEvent));
 
     this.es = es;
   }
@@ -98,5 +102,13 @@ export class LiveService {
     } catch {
       return null;
     }
+  }
+
+  /** Заказ из CRM ушёл в Google-таблицу — рефрешим список и тихо подсвечиваем итог. */
+  private onPushed(e: MessageEvent): void {
+    const d = this.parse<{ store?: number; date?: string; pushed?: number }>(e);
+    if (!d) return;
+    this.ordersVersion.update((v) => v + 1);
+    if (d.pushed) this.toast.show(`Заказ отправлен в Google-таблицу (${d.pushed} поз.)`, 'ok');
   }
 }

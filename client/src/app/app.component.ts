@@ -108,6 +108,7 @@ export class AppComponent {
         { path: 'stock', icon: '🏬', label: 'Склад' },
         { path: 'semis', icon: '🔪', label: 'Полуфабрикаты' },
         { path: 'cards', icon: '📐', label: 'Техкарты' },
+        { path: 'constructor', icon: '🍲', label: 'Конструктор блюд' },
       ],
     },
     {

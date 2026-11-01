@@ -85,7 +85,15 @@ interface CartLine {
                 <b>{{ it.name }}</b>
                 @if (it.category) { <div class="muted" style="font-size:11px">{{ it.category }}@if (it.plu) { · {{ it.plu }} }</div> }
               </td>
-              <td class="num" data-l="Кол-во">{{ fmtQty(it.qty, unitOf(it)) }}</td>
+              <td class="num" data-l="Кол-во">
+                @if (isEditing(it)) {
+                  <input type="number" min="0" step="0.01" style="width:84px;text-align:right"
+                         [ngModel]="editQty()" (ngModelChange)="editQty.set($event)" (keyup.enter)="saveQty(it)" />
+                  <select style="width:auto" [ngModel]="editUnit()" (ngModelChange)="onEditUnit($event, it)">
+                    @for (u of unitsFor(baseUnitOf(it)); track u) { <option [ngValue]="u">{{ u }}</option> }
+                  </select>
+                } @else { {{ fmtQty(it.qty, unitOf(it)) }} }
+              </td>
               <td class="num" data-l="Мин.">
                 @if (it.minQty !== null) {
                   <span [class.red]="belowMin(it)">{{ fmtQty(it.minQty, unitOf(it)) }}</span>
@@ -94,6 +102,10 @@ interface CartLine {
               <td data-l="Статус">
                 <span class="badge" [class]="badgeCls(it.status)">{{ statusLabel(it.status) }}</span>
                 @if (it.source === 'g_sheet') { <span class="badge gray" title="из Google Таблицы">G</span> }
+                @if (it.source !== 'g_sheet') {
+                  <span class="badge" [class.green]="!!it.pushedAt" [class.gray]="!it.pushedAt"
+                        [title]="it.pushedAt ? 'вытолкнуто в Google-таблицу' : 'заказ из CRM'">CRM</span>
+                }
                 @if (it.statusByLogin) {
                   <div class="who" [title]="'статус сменил: ' + it.statusByLogin + ' · ' + fmtWhen(it.statusAt)">
                     {{ it.statusByName || it.statusByLogin }} · {{ fmtWhen(it.statusAt) }}
@@ -107,6 +119,14 @@ interface CartLine {
                   }
                   @if (it.status === 'confirmed') {
                     <button class="btn sm" (click)="setStatus(it, 'collected')">📦 собрали</button>
+                  }
+                }
+                @if (editable(it)) {
+                  @if (isEditing(it)) {
+                    <button class="btn sm primary" [disabled]="savingQty()" (click)="saveQty(it)">✓</button>
+                    <button class="btn sm" (click)="cancelEdit()">отмена</button>
+                  } @else {
+                    <button class="btn sm" title="изменить количество" (click)="startEdit(it)">✎</button>
                   }
                 }
                 @if (it.status !== 'cancelled' && it.status !== 'collected') {
@@ -207,6 +227,12 @@ export class OrderStoreComponent implements OnInit {
   placing = signal(false);
   lastViolations = signal<OrderViolation[]>([]);
 
+  // инлайн-правка количества своей линии (режим магазина): qty — печатное в editUnit
+  readonly editId = signal<number | null>(null);
+  readonly editQty = signal(0);
+  readonly editUnit = signal('г');
+  readonly savingQty = signal(false);
+
   fmtQty = fmtQty;
   fmtMoney = fmtMoney;
   trim = trim;
@@ -222,9 +248,10 @@ export class OrderStoreComponent implements OnInit {
   }
 
   constructor() {
-    // в таблице что-то поменяли и сервер уже перечитал её — обновляем список заказов
+    // в таблице что-то поменяли и сервер уже перечитал её — или заказ изменён в CRM
+    // (оформлен/правка/отмена, в т.ч. другим сотрудником точки) — перечитываем список
     effect(() => {
-      if (this.live.sheetVersion() > 0 && this.storeId) {
+      if (this.live.sheetVersion() + this.live.ordersVersion() > 0 && this.storeId) {
         untracked(() => {
           this.loadDates();
           this.ordersSvc.ensureCategories(true);
@@ -342,6 +369,74 @@ export class OrderStoreComponent implements OnInit {
         this.loadOrders();
       },
       error: (e) => this.err.set(httpErr(e)),
+    });
+  }
+
+  // ---- инлайн-правка количества (магазин) ----
+  baseUnitOf(it: OrderItem): string {
+    return it.cardUnit ?? it.unitCode ?? 'г';
+  }
+  /** магазин правит свою линию, пока её не приняло производство (synced/placed). */
+  editable(it: OrderItem): boolean {
+    return this.storeView && (it.status === 'synced' || it.status === 'placed');
+  }
+  isEditing(it: OrderItem): boolean {
+    return this.editId() === it.id;
+  }
+  /** базовое (г/мл/шт) -> печатное в выбранной единице (обратное к серверному toBase).
+   *  Единицы в редакторе — только масса/объём (г/кг, мл/л) либо сама базовая (шт),
+   *  поэтому порции сюда не приходят: пересчёт упрощён до размерностей. */
+  private printedOf(baseQty: number, unit: string, it: OrderItem): number {
+    const base = this.baseUnitOf(it);
+    if (base === 'шт') return baseQty;
+    const mv: Record<string, number> = { г: 1, кг: 1000, мл: 1, л: 1000 };
+    const f = mv[unit];
+    return f ? baseQty / f : baseQty;
+  }
+  /** печатное в unit -> базовое (для пересчёта при смене единицы прямо в редакторе). */
+  private toBase(printed: number, unit: string, it: OrderItem): number {
+    const base = this.baseUnitOf(it);
+    if (base === 'шт') return printed;
+    const mv: Record<string, number> = { г: 1, кг: 1000, мл: 1, л: 1000 };
+    const f = mv[unit];
+    return f ? printed * f : printed;
+  }
+  private round3(n: number): number {
+    return Math.round(n * 1000) / 1000;
+  }
+  startEdit(it: OrderItem): void {
+    const u = this.friendly(this.baseUnitOf(it));
+    this.editUnit.set(u);
+    this.editQty.set(this.round3(this.printedOf(it.qty, u, it)));
+    this.editId.set(it.id);
+  }
+  cancelEdit(): void {
+    this.editId.set(null);
+  }
+  onEditUnit(u: string, it: OrderItem): void {
+    const baseQty = this.toBase(Number(this.editQty()), this.editUnit(), it);
+    this.editUnit.set(u);
+    this.editQty.set(this.round3(this.printedOf(baseQty, u, it)));
+  }
+  saveQty(it: OrderItem): void {
+    const qty = Number(this.editQty());
+    if (!(qty > 0)) {
+      this.err.set('Количество должно быть больше нуля');
+      return;
+    }
+    this.savingQty.set(true);
+    this.err.set('');
+    this.api.patchOrder$(it.id, { qty, unit: this.editUnit() }).subscribe({
+      next: () => {
+        this.savingQty.set(false);
+        this.editId.set(null);
+        this.msg.set('Количество сохранено, выталкиваем в таблицу ✓');
+        this.loadOrders();
+      },
+      error: (e) => {
+        this.savingQty.set(false);
+        this.err.set(httpErr(e));
+      },
     });
   }
 

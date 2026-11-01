@@ -46,12 +46,13 @@ type Tab = 'balances' | 'catalog' | 'journal' | 'shelf';
         </div>
         <hr class="hr" />
         <table class="tbl">
-          <tr><th>Продукт</th><th>Категория</th><th class="num">Остаток</th><th class="num">Себестоимость</th><th class="num">Сумма</th><th></th><th></th></tr>
+          <tr><th>Продукт</th><th>Категория</th><th class="num">Остаток</th><th class="num">Мин. остаток</th><th class="num">Себестоимость</th><th class="num">Сумма</th><th></th><th></th></tr>
           @for (r of filteredRows(); track r.productId) {
             <tr>
               <td><b>{{ r.name }}</b></td>
               <td class="muted">{{ r.category }}</td>
-              <td class="num">{{ fmtQty(r.qty, r.unitCode) }}</td>
+              <td class="num" [class.red]="r.low">{{ fmtQty(r.qty, r.unitCode) }}</td>
+              <td class="num muted">@if (r.minStock > 0) { {{ fmtQty(r.minStock, r.unitCode) }} } @else { — }</td>
               <td class="num muted">{{ fmtCost(r.avgCost, r.unitCode) }}</td>
               <td class="num">{{ fmtMoney(r.qty * r.avgCost) }}</td>
               <td>@if (r.low) { <span class="badge red"> ↓ ниже минимума</span> }</td>
@@ -60,7 +61,7 @@ type Tab = 'balances' | 'catalog' | 'journal' | 'shelf';
                 <button class="btn sm" (click)="showMovements(r.name)">история</button>
               </td>
             </tr>
-          } @empty { <tr class="empty"><td colspan="7">нет позиций</td></tr> }
+          } @empty { <tr class="empty"><td colspan="8">нет позиций</td></tr> }
         </table>
       </div>
 

@@ -83,7 +83,7 @@ export function clearSessionCookie(res: Response): void {
 
 // ---------- сессии ----------
 
-const sha256 = (s: string): string => crypto.createHash('sha256').update(s).digest('hex');
+export const sha256 = (s: string): string => crypto.createHash('sha256').update(s).digest('hex');
 
 export async function createSession(userId: number, userAgent: string | null): Promise<{ token: string; expiresAt: Date }> {
   const token = crypto.randomBytes(32).toString('base64url');

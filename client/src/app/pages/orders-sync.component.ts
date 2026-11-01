@@ -52,6 +52,24 @@ import { OrdersNavComponent } from './orders-nav.component';
             </div>
           }
         }
+        @if (st.write; as w) {
+          <div class="row write-row">
+            <span class="badge" [class.green]="w.active" [class.amber]="!w.active && w.configured" [class.gray]="!w.configured">
+              @if (w.active) { ⇅ обратная запись включена }
+              @else if (w.configured) { ⛔ запись настроена, но выключена }
+              @else { ➖ запись не настроена }
+            </span>
+            <span class="muted hint">
+              @if (w.stores.length) { · точки {{ w.stores.join(', ') }} } @else if (w.configured) { · все точки }
+            </span>
+            <span class="spacer"></span>
+            <button class="btn sm" [disabled]="pushing() || !w.active" (click)="pushToSheet()"
+                    [title]="w.active ? 'вытолкнуть данные БД в Google-таблицу' : 'нужно задать GSHEET_WRITE_WEBAPP_URL и GSHEET_WRITE_ENABLED=true'">
+              {{ pushing() ? '⏳ Толкаю…' : '⬆️ Вытолкнуть в таблицу' }}
+            </button>
+            @if (pushMsg()) { <span class="ok-msg" style="margin:0">{{ pushMsg() }}</span> }
+          </div>
+        }
         <div class="kpis" style="margin-top:12px">
           <div class="kpi"><div class="v">{{ st.state?.status ?? '—' }}</div><div class="l">статус прогона</div></div>
           <div class="kpi"><div class="v">{{ st.state?.tabs_synced ?? 0 }}</div><div class="l">листов синхронизировано</div></div>
@@ -62,6 +80,7 @@ import { OrdersNavComponent } from './orders-nav.component';
           <p class="muted" style="font-size:12px">
             Последний прогон: увидено {{ st.summary.tabsSeen }}, разобрано {{ st.summary.tabsParsed }},
             без изменений {{ st.summary.unchanged }}, +{{ st.summary.ordersCreated }} · ~{{ st.summary.ordersChanged }} · −{{ st.summary.ordersRemoved }}
+            @if (st.summary.pushed) { · ↑{{ st.summary.pushed }} в таблицу }
             @if (st.summary.full) { · (полный) }
           </p>
         }
@@ -97,6 +116,9 @@ import { OrdersNavComponent } from './orders-nav.component';
     .sheet-src input { font-size: 12.5px; width: 100%; min-width: 0; }
     .copy-row { margin-top: 10px; align-items: center; }
     .copy-row .hint { font-size: 12px; }
+    .write-row { margin-top: 10px; align-items: center; }
+    .write-row .hint { font-size: 12px; }
+    .badge.amber { background: #fff3cd; color: #856404; }
   `],
 })
 export class OrdersSyncComponent implements OnInit, OnDestroy {
@@ -156,6 +178,30 @@ export class OrdersSyncComponent implements OnInit, OnDestroy {
 
   copying = signal(false);
   copyMsg = signal('');
+
+  pushing = signal(false);
+  pushMsg = signal('');
+
+  /** ручное выталкивание БД→прод-таблица (аварийный синк/отладка); сервер сам проверит рубильник */
+  pushToSheet(): void {
+    this.pushing.set(true);
+    this.pushMsg.set('');
+    this.err.set('');
+    this.api.sheetPush$().subscribe({
+      next: (v) => {
+        this.pushing.set(false);
+        if (!v.ok && v.error) { this.err.set(v.error); return; }
+        this.pushMsg.set(v.pushed
+          ? `Вытолкнуто позиций: ${v.pushed}` + (v.failed ? ` · сбоев ${v.failed}` : '')
+          : 'Расхождений БД с таблицей нет');
+        this.refreshSync();
+      },
+      error: (e) => {
+        this.pushing.set(false);
+        this.err.set(httpErr(e));
+      },
+    });
+  }
 
   /** прод → тест: сервер зовёт Apps Script на прод-таблице; копирование всех листов долгое */
   copyToTest(): void {

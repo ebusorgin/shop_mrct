@@ -32,6 +32,7 @@ function parseItems(raw: unknown): CardItemDto[] {
 const CARD_SQL = `
   select tc.id, tc.name, tc.note, tc.portion_qty as "portionQty",
          tc.portion_unit_id as "portionUnitId", pu.code as "portionUnitCode",
+         tc.category_id as "categoryId", tcc.name as category,
          coalesce(
            jsonb_agg(
              jsonb_build_object(
@@ -48,7 +49,8 @@ const CARD_SQL = `
     left join products p on i.source_type = 'raw' and p.id = i.ref_id
     left join semi_products sp on i.source_type = 'semi' and sp.id = i.ref_id
     left join units u on u.id = i.unit_id
-   group by tc.id, pu.code`;
+    left join order_categories tcc on tcc.id = tc.category_id
+   group by tc.id, pu.code, tcc.name`;
 
 const decode = (r: Record<string, unknown>) => ({
   ...r,

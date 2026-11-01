@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, OnInit, computed, effect, inject, signal, untracked } from '@angular/core';
+import { ChangeDetectionStrategy, Component, Input, OnInit, computed, effect, inject, signal, untracked } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ApiService } from '../core/api.service';
@@ -51,6 +51,9 @@ import { OrdersNavComponent } from './orders-nav.component';
       .tbl.xlsx td.cname { background: #fff; font-weight: 600; color: #202124; }
       .tbl.xlsx th.cname { z-index: 3; }
       .tbl.xlsx .sub { font-weight: 400; color: var(--muted); font-size: 11px; }
+      /* id товара из БД рядом с наименованием */
+      .tbl.xlsx .pid { font-weight: 400; color: #8a8a8a; font-size: 11px; margin-left: 6px;
+        font-variant-numeric: tabular-nums; }
       /* «активная ячейка» при наведении (не трогаем закрепления и итог) */
       .tbl.xlsx tr:not(.th-row):not(.tfoot):hover td:not(.cname) { background: #f6faf7; }
       .tbl.xlsx tr:not(.tfoot) td:not(.cname):hover { box-shadow: inset 0 0 0 2px #107c41; }
@@ -63,11 +66,29 @@ import { OrdersNavComponent } from './orders-nav.component';
       .tbl.xlsx tr.tfoot td { position: sticky; bottom: 0; z-index: 2; background: #eef2ee; font-weight: 700; }
       .tbl.xlsx tr.tfoot td.cname { z-index: 4; background: #e7ece7; }
       .tbl.xlsx .empty td { position: static; box-shadow: none; background: #fff; text-align: center; color: var(--muted); padding: 24px; }
+      /* степ-редактор количества прямо на доске (аккаунт магазина): ▼ [число] ед ▲ */
+      .qty-step { display: inline-flex; align-items: center; gap: 4px; }
+      .qty-step input { width: 76px; text-align: right; font-size: 14px; padding: 3px 6px;
+        border: 1px solid #c9c9c9; border-radius: 5px; font-variant-numeric: tabular-nums; }
+      .qty-step input:focus { outline: 2px solid #107c41; outline-offset: -1px; border-color: #107c41; }
+      /* убираем нативные стрелки-спиннер внутри поля (у нас свои ▼/▲) */
+      .qty-step input::-webkit-outer-spin-button,
+      .qty-step input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+      .qty-step input[type=number] { -moz-appearance: textfield; appearance: textfield; }
+      .qty-step .step { min-width: 26px; padding: 3px 6px; font-size: 11px; line-height: 1;
+        border: 1px solid #c9c9c9; border-radius: 5px; background: #f3f2f1; cursor: pointer; color: #242424; }
+      .qty-step .step:hover:not(:disabled) { background: #e5efe6; border-color: #107c41; color: #1d5c2e; }
+      .qty-step .step:disabled { opacity: .5; cursor: default; }
+      .qty-step.saving { opacity: .6; }
+      /* фоновая перезагрузка доски: не прячем таблицу (иначе скачет скролл) — лишь слегка гасим */
+      .xlsx-wrap.refreshing { opacity: .72; transition: opacity .15s ease; }
     `,
   ],
   template: `
-    <h1 class="page-title">📋 Доска производства</h1>
-    <app-orders-nav />
+    @if (!embedded) {
+      <h1 class="page-title">📋 Доска производства</h1>
+      <app-orders-nav />
+    }
 
     <div class="panel board-toolbar">
       <div class="bt-row">
@@ -99,24 +120,25 @@ import { OrdersNavComponent } from './orders-nav.component';
     @if (err()) { <div class="err">{{ err() }}</div> }
 
     <div class="panel">
-      @if (loading()) {
+      @if (loading() && !rows().length) {
         <p class="muted">Загрузка…</p>
       } @else {
-        <div class="xlsx-wrap">
+        <div class="xlsx-wrap" [class.refreshing]="loading()">
           <table class="tbl xlsx">
             <tr class="th-row">
               <th class="cname">Наименование товара</th>
               <th class="num">Кол-во</th>
+              <th class="num" title="Минимальный заказ — кратность изменения по кнопкам ▼/▲">Мин. заказ</th>
               <th class="num">Цена порции</th>
               <th class="num">Полная цена</th>
-              @for (s of stores(); track s.id) {
+              @for (s of storeCols(); track s.id) {
                 <th class="c" [title]="s.name">{{ s.code }}</th>
               }
             </tr>
 
             @for (g of groups(); track g.key) {
               <tr class="cat-row">
-                <td class="cname" [attr.colspan]="4 + stores().length">
+                <td class="cname" [attr.colspan]="colspan()">
                   {{ g.category ?? 'Без категории' }}<span class="cnt">· {{ g.rows.length }} поз.</span>
                 </td>
               </tr>
@@ -124,18 +146,39 @@ import { OrdersNavComponent } from './orders-nav.component';
                 <tr>
                   <td class="cname">
                     {{ r.name }}
+                    @if (r.productId != null) { <span class="pid">#{{ r.productId }}</span> }
                     @if (r.plu) { <div class="sub">{{ r.plu }}</div> }
                   </td>
-                  <td class="num">{{ trim(r.totalQty) }} <span class="sub">{{ r.unit }}</span></td>
+                  <td class="num">
+                    @if (canEdit(r)) {
+                      <div class="qty-step" [class.saving]="savingKey() === r.key">
+                        <button type="button" class="step dn" [disabled]="savingKey() === r.key || qtyOf(r) <= 0"
+                                (click)="bump(r, -1)" title="меньше">▼</button>
+                        <input type="number" min="0" [step]="stepSize(r)"
+                               [ngModel]="qtyOf(r)" (ngModelChange)="onQty(r, $event)"
+                               (blur)="commit(r)" (keyup.enter)="commit(r)" />
+                        <span class="sub">{{ r.unit }}</span>
+                        <button type="button" class="step up" [disabled]="savingKey() === r.key"
+                                (click)="bump(r, 1)" title="больше">▲</button>
+                      </div>
+                    } @else {
+                      {{ trim(r.totalQty) }} <span class="sub">{{ r.unit }}</span>
+                    }
+                  </td>
+                  <td class="num">
+                    @if (r.minOrder && r.minOrder > 0) {
+                      {{ trim(r.minOrder) }} <span class="sub">{{ r.unit }}</span>
+                    } @else { <span class="sub">—</span> }
+                  </td>
                   <td class="num">{{ r.pricePer === null ? '—' : fmtMoney(r.pricePer) }}</td>
                   <td class="num">{{ fmtMoney(r.fullPrice) }}</td>
-                  @for (s of stores(); track s.id) {
+                  @for (s of storeCols(); track s.id) {
                     <td class="num c">{{ cell(r.byStore[s.id]) }}</td>
                   }
                 </tr>
               }
             } @empty {
-              <tr class="empty"><td [attr.colspan]="4 + stores().length">На этот лист заказов нет</td></tr>
+              <tr class="empty"><td [attr.colspan]="colspan()">На этот лист заказов нет</td></tr>
             }
 
             @if (rows().length) {
@@ -143,8 +186,9 @@ import { OrdersNavComponent } from './orders-nav.component';
                 <td class="cname">Итого · {{ rows().length }} поз.</td>
                 <td class="num"></td>
                 <td class="num"></td>
+                <td class="num"></td>
                 <td class="num">{{ fmtMoney(totals()?.full ?? 0) }}</td>
-                @for (s of stores(); track s.id) {
+                @for (s of storeCols(); track s.id) {
                   <td class="num c">{{ cell(totals()?.byStore?.[s.id]) }}</td>
                 }
               </tr>
@@ -160,6 +204,9 @@ import { OrdersNavComponent } from './orders-nav.component';
   `,
 })
 export class OrdersBoardComponent implements OnInit {
+  /** Встроено в чужую страницу (аккаунт магазина): без офисной шапки и навигации. */
+  @Input() embedded = false;
+
   private api = inject(ApiService);
   protected ordersSvc = inject(OrdersService);
   private live = inject(LiveService);
@@ -178,6 +225,23 @@ export class OrdersBoardComponent implements OnInit {
   private freshDate = signal<string | null>(null);
   /** Пользователь выбрал дату вручную — не переключать на свежий при live-событиях. */
   private pinned = false;
+
+  /** Черновик печатного количества по ключу строки — правка на доске до подтверждения. */
+  protected draft = signal<Record<string, number>>({});
+  /** ключ строки, которая сейчас сохраняется (блокирует стрелки/повторный запрос). */
+  protected savingKey = signal<string | null>(null);
+
+  /**
+   * Колонки-точки справа от «Полной цены». В аккаунте магазина точка одна, и её количество
+   * совпадает с «Кол-во» — колонку дублировать не нужно, скрываем её (embedded).
+   */
+  protected storeCols(): { id: number; code: string; name: string }[] {
+    return this.embedded ? [] : this.stores();
+  }
+  /** Ширина сквозных ячеек (категория/пусто): 5 фикс. колонок + видимые колонки точек. */
+  protected colspan(): number {
+    return 5 + this.storeCols().length;
+  }
 
   fmtMoney = new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format;
 
@@ -284,15 +348,118 @@ export class OrdersBoardComponent implements OnInit {
     this.dates.set(this.dates().slice(0, this.dates().length + 30));
   }
 
-  /** Число печатной единицы: пусто при 0/отсутствии, иначе с разделителями (до 3 знаков). */
+  /** Число печатной единицы: пусто при отсутствии, иначе с разделителями (до 3 знаков); 0 показываем как «0». */
   protected cell(v: number | undefined | null): string {
-    if (v === undefined || v === null || Math.abs(v) < 1e-9) return '';
+    if (v === undefined || v === null) return '';
     return this.trim(v);
   }
 
   protected trim(n: number): string {
     if (!Number.isFinite(n)) return '';
     return (Math.round(n * 1000) / 1000).toLocaleString('ru-RU', { maximumFractionDigits: 3 });
+  }
+
+  // ---- редактирование количества прямо на доске (аккаунт магазина) ----
+  /** Правка доступна встроенной доске магазина: существующая линия или позиция каталога (0) для добавления. */
+  protected canEdit(r: BoardRow): boolean {
+    return this.embedded && !!r.editable;
+  }
+  /** id точки для создания заказа (встроенная доска — своя единственная колонка). */
+  private storeId(): number | null {
+    return this.stores()[0]?.id ?? null;
+  }
+  /** Текущее печатное количество строки: черновик (если правим) или значение доски. */
+  protected qtyOf(r: BoardRow): number {
+    const d = this.draft()[r.key];
+    return d === undefined ? r.totalQty : d;
+  }
+  /** Шаг стрелок по единице: порции/шт — 1, кг/л — 0,5, г/мл — 100. */
+  protected stepFor(unit: string): number {
+    if (['порц', 'порция', 'порции', 'шт', 'des'].includes(unit)) return 1;
+    if (unit === 'кг' || unit === 'л') return 0.5;
+    if (unit === 'г' || unit === 'мл') return 100;
+    return 1;
+  }
+  /** Шаг ▼/▲ = минимальный заказ (кратность) строки; если не задан — типовой шаг по единице. */
+  protected stepSize(r: BoardRow): number {
+    const m = r.minOrder;
+    return m && m > 0 ? m : this.stepFor(r.unit);
+  }
+  private setDraft(key: string, v: number): void {
+    this.draft.update((m) => ({ ...m, [key]: v }));
+  }
+  private clearDraft(key: string): void {
+    this.draft.update((m) => { const n = { ...m }; delete n[key]; return n; });
+  }
+  protected onQty(r: BoardRow, v: number): void {
+    this.setDraft(r.key, Number(v) || 0);
+  }
+  /** Стрелка ▼/▲: сдвиг на шаг и немедленное сохранение. */
+  protected bump(r: BoardRow, delta: 1 | -1): void {
+    if (this.savingKey() === r.key) return;
+    const step = this.stepSize(r);
+    const next = Math.max(0, Math.round((this.qtyOf(r) + delta * step) * 1000) / 1000);
+    this.setDraft(r.key, next);
+    this.save(r, next);
+  }
+  /** Потеря фокуса/Enter: сохранить, если значение изменилось; иначе сбросить черновик. */
+  protected commit(r: BoardRow): void {
+    const v = this.draft()[r.key];
+    if (v === undefined) return;
+    if (Math.abs(v - r.totalQty) < 1e-9) { this.clearDraft(r.key); return; }
+    this.save(r, v);
+  }
+  /**
+   * Сохранение строки доски: существующая линия — PATCH по orderId; позиция каталога без линии —
+   * POST /place (создание строки заказа на выбранную дату, force — чтобы не блокировать минимумом).
+   * После успеха — перезагрузка доски (созданная строка станет редактируемой линией).
+   */
+  private save(r: BoardRow, qty: number): void {
+    if (this.savingKey() === r.key) return;
+    if (!(qty > 0)) {
+      // 0 = «убрать позицию»: существующую линию отменяем (в таблице ячейка очистится),
+      // синтетическую строку каталога (и так 0) нечего удалять — просто сбрасываем черновик.
+      if (r.orderId != null) {
+        this.savingKey.set(r.key);
+        this.err.set('');
+        const reload = (): void => { this.savingKey.set(null); this.clearDraft(r.key); this.load(); };
+        this.api
+          .patchOrder$(r.orderId, { status: 'cancelled' })
+          .subscribe({
+            next: reload,
+            error: (e: { error?: { message?: string } }) => {
+              this.savingKey.set(null);
+              this.clearDraft(r.key);
+              this.err.set(e?.error?.message ?? 'Не удалось отменить позицию');
+            },
+          });
+      } else {
+        this.clearDraft(r.key);
+      }
+      return;
+    }
+    if (r.orderId == null && r.cardId == null) {
+      this.err.set('Эту позицию нельзя изменить с доски.');
+      this.clearDraft(r.key);
+      return;
+    }
+    this.savingKey.set(r.key);
+    this.err.set('');
+    const done = (): void => { this.savingKey.set(null); this.clearDraft(r.key); this.load(); };
+    const fail = (e: { error?: { message?: string } }): void => {
+      this.savingKey.set(null);
+      this.clearDraft(r.key);
+      this.err.set(e?.error?.message ?? 'Не удалось сохранить количество');
+    };
+    if (r.orderId != null) {
+      this.api.patchOrder$(r.orderId, { qty, unit: r.unit }).subscribe({ next: done, error: fail });
+    } else {
+      const store = this.storeId();
+      const date = this.date();
+      if (store == null || !date) { fail({ error: { message: 'Не удалось определить точку и дату для добавления' } }); return; }
+      this.api.placeOrder$(store, { date, force: true, items: [{ cardId: r.cardId, qty, unit: r.unit }] })
+        .subscribe({ next: done, error: fail });
+    }
   }
 
   protected pretty(iso: string | null): string {

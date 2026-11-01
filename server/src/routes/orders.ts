@@ -3,7 +3,7 @@
  *  GET  /api/orders/stores               — витрины 103..110
  *  GET  /api/orders/dates?store=103      — даты-листы (для переключения истории)
  *  GET  /api/orders?store=103&date=…     — заказы магазина за дату (+сводка)
- *  GET  /api/orders/board?date=…         — доска производства: все магазины за лист
+ *  GET  /api/orders/board?date=…         — доска производства (пивот); офис — все точки, магазин — своя
  *  GET  /api/orders/categories           — категории строк (фильтр UI)
  *  GET  /api/orders/catalog              — каталог для оформления (техкарты)
  *  POST /api/orders/place?store=103      — оформление заказа (транзакция, проверка min)
@@ -21,6 +21,9 @@ import { watchState } from '../services/sheet-watch';
 import { toBase, printedQty } from '../services/order-match';
 import { asUser, audit, auditTx } from '../services/audit';
 import { requireOffice } from '../services/auth';
+import { pushManualForStore, planWriteForTab, writeBackActive, writeBackConfigured } from '../services/gsheet-write';
+import { broadcast } from '../services/live';
+import { postToWebApp, readWebAppJson } from '../services/webapp';
 
 export const ordersRouter = Router();
 
@@ -42,6 +45,7 @@ const ORDER_SELECT = `
          o.ek_price::float8 as ek, o.vk_price::float8 as vk,
          o.date_tab::text as "dateTab", o.status, o.source, o.note,
          o.created_at as "createdAt", o.updated_at as "updatedAt",
+         o.pushed_at as "pushedAt", o.db_edited_at as "dbEditedAt",
          o.created_by as "createdById", cu.login as "createdByLogin",
          coalesce(nullif(btrim(cu.full_name), ''), cu.login) as "createdByName",
          coalesce(o.status_by_login, su.login) as "statusByLogin",
@@ -86,6 +90,9 @@ interface OrderItem {
   statusByLogin: string | null;
   statusByName: string | null;
   statusAt: string | null;
+  /** когда значение линии ultimo уходило в таблицу / когда его правили в CRM (для бейджа отправки). */
+  pushedAt?: string | null;
+  dbEditedAt?: string | null;
 }
 
 const dec = (r: Record<string, unknown>): OrderItem =>
@@ -109,6 +116,16 @@ interface BoardPivotRow {
   pricePer: number | null;
   fullPrice: number;
   byStore: Record<number, number>;
+  /** id линии заказа — правится на доске, если строка = ровно одна линия в статусе synced/placed */
+  orderId: number | null;
+  /** можно ли редактировать количество прямо на доске (одна линия, не принята производством) */
+  editable: boolean;
+  /** id техкарты — для строк из каталога без линии заказа (магазин может добавить через POST /place) */
+  cardId?: number | null;
+  /** id товара (техкарты) в БД — показывается рядом с наименованием; заполняется и для строк заказа, не только каталога */
+  productId?: number | null;
+  /** минимальный заказ = кратность строки в печатной единице (из orders.min_qty); null — не задан */
+  minOrder: number | null;
 }
 
 const round3 = (n: number): number => Math.round(n * 1000) / 1000;
@@ -229,14 +246,20 @@ ordersRouter.get(
  */
 ordersRouter.get(
   '/board',
-  requireOffice,
   wrap(async (req, res) => {
+    // магазинный сотрудник видит доску только по своей точке (колонка одна), офис — все витрины.
+    const scope = ownStore(req);
     const qDate = typeof req.query.date === 'string' && req.query.date ? req.query.date : null;
     const cat = typeof req.query.category === 'string' && req.query.category ? req.query.category.toLowerCase() : null;
     const q = typeof req.query.q === 'string' ? req.query.q.trim().toLowerCase() : null;
 
-    // активные витрины — фиксированные колонки доски (103..110 и т.д.)
-    const { rows: storeRows } = await pool.query('select id, code, name from stores where active order by position, id');
+    // активные витрины — фиксированные колонки доски (103..110 и т.д.); магазину — только своя
+    const { rows: storeRows } = await pool.query(
+      scope
+        ? 'select id, code, name from stores where active and id = $1 order by position, id'
+        : 'select id, code, name from stores where active order by position, id',
+      scope ? [scope] : []
+    );
     const stores = storeRows as { id: number; code: string; name: string }[];
 
     // список листов-дат с заказами у активных магазинов — для переключателя
@@ -246,7 +269,9 @@ ordersRouter.get(
               bool_or(o.source = 'g_sheet') as synced,
               bool_or(o.source = 'manual') as manual
          from orders o join stores st on st.id = o.store_id and st.active
-        group by 1 order by 1 desc limit 200`
+         ${scope ? 'where o.store_id = $1' : ''}
+        group by 1 order by 1 desc limit 200`,
+      scope ? [scope] : []
     );
     const dates = dateRows as { date: string; cnt: number; tabId: number; synced: boolean; manual: boolean }[];
 
@@ -256,13 +281,15 @@ ordersRouter.get(
       const { rows: fresh } = await pool.query(
         `select max(o.date_tab)::text as d
            from orders o join stores st on st.id = o.store_id and st.active
-          where o.status in ('synced','placed')`
+          where o.status in ('synced','placed')${scope ? ' and o.store_id = $1' : ''}`,
+        scope ? [scope] : []
       );
       date = fresh[0]?.d ?? dates[0]?.date ?? null;
     }
 
     const conds: string[] = ['st.active'];
     const params: unknown[] = [];
+    if (scope) { params.push(scope); conds.push(`o.store_id = $${params.length}`); }
     if (date) { params.push(date); conds.push(`o.date_tab = $${params.length}::date`); }
     if (cat) { params.push(cat); conds.push(`coalesce(tcc.name, oc.name) = $${params.length}`); }
     if (q) { params.push(`%${q}%`); conds.push(`lower(coalesce(tc.name, o.source_name)) like $${params.length}`); }
@@ -276,10 +303,17 @@ ordersRouter.get(
     // пивот: товар × магазин (кол-во в печатной единице); отмены не считаем
     const map = new Map<string, BoardPivotRow>();
     const byStoreTotal: Record<number, number> = {};
+    // правка на доске допустима, если строка = одна линия заказа и она не принята производством
+    const lineIds = new Map<string, Set<number>>();
+    const lockedKeys = new Set<string>();
     for (const raw of rows) {
       const it = dec(raw);
       if (it.status === 'cancelled') continue;
       const printed = printedQty(it);
+      // кратность (минимальный заказ) в печатной единице: orders.min_qty хранится в базовых
+      const printedMin = it.minQty != null && it.minQty > 0
+        ? printedQty({ qty: it.minQty, unitCode: it.unitCode, cardUnit: it.cardUnit, portionQty: it.portionQty })
+        : null;
       const base = it.cardUnit ?? it.unitCode ?? 'г';
       const key = it.cardId != null ? `c${it.cardId}` : `n${(it.sourceName || it.name).toLowerCase().trim()}`;
       let row = map.get(key);
@@ -287,24 +321,63 @@ ordersRouter.get(
         row = {
           key, name: it.name, category: it.cardCategory ?? it.category, plu: it.plu,
           unit: it.unitCode ?? (base === 'шт' ? 'шт' : base),
-          totalQty: 0, pricePer: null, fullPrice: 0, byStore: {},
+          totalQty: 0, pricePer: null, fullPrice: 0, byStore: {}, orderId: null, editable: false,
+          productId: it.cardId ?? null, minOrder: null,
         };
         map.set(key, row);
       }
+      if (printedMin != null) row.minOrder = row.minOrder == null ? printedMin : Math.min(row.minOrder, printedMin);
       row.totalQty += printed;
       row.fullPrice += (it.vk ?? 0) * printed;
       if (row.pricePer === null && it.vk !== null) row.pricePer = it.vk;
       row.byStore[it.storeId] = (row.byStore[it.storeId] ?? 0) + printed;
       byStoreTotal[it.storeId] = (byStoreTotal[it.storeId] ?? 0) + printed;
+      let idset = lineIds.get(key);
+      if (!idset) { idset = new Set(); lineIds.set(key, idset); }
+      idset.add(it.id);
+      if (it.status !== 'synced' && it.status !== 'placed') lockedKeys.add(key);
+    }
+
+    // дозаполняем доску ВСЕЙ продукцией каталога: незаказанные позиции идут с 0 по умолчанию.
+    // Офис видит их справочно (без правки), магазину строка доступна для добавления в заказ.
+    const catConds: string[] = [];
+    const catParams: unknown[] = [];
+    if (cat) { catParams.push(cat); catConds.push(`lower(tcc.name) = $${catParams.length}`); }
+    if (q) { catParams.push(`%${q}%`); catConds.push(`lower(tc.name) like $${catParams.length}`); }
+    const { rows: catRows } = await pool.query(
+      `select tc.id, coalesce(tc.name, '') as name, tc.plu, u.code as unit,
+              coalesce(tc.portion_qty::float8, 0) as "portionQty", tcc.name as category
+         from tech_cards tc
+         join units u on u.id = tc.portion_unit_id
+         left join order_categories tcc on tcc.id = tc.category_id
+         ${catConds.length ? 'where ' + catConds.join(' and ') : ''}`,
+      catParams
+    );
+    for (const c of catRows) {
+      const key = `c${c.id}`;
+      if (map.has(key)) continue;
+      const portion = Number(c.portionQty) > 0 && (c.unit === 'г' || c.unit === 'мл');
+      map.set(key, {
+        key, name: c.name, category: c.category ?? null, plu: c.plu ?? null,
+        unit: portion ? 'порц' : c.unit,
+        totalQty: 0, pricePer: null, fullPrice: 0, byStore: {},
+        orderId: null, editable: true, cardId: c.id, productId: c.id, minOrder: null,
+      });
     }
 
     // округление «в месте»: порции до тысячных, деньги до копеек
     const pivotRows = [...map.values()];
     for (const r of pivotRows) {
       r.totalQty = round3(r.totalQty);
+      if (r.minOrder != null) r.minOrder = round3(r.minOrder);
       if (r.pricePer !== null) r.pricePer = Math.round(r.pricePer * 100) / 100;
       r.fullPrice = Math.round(r.fullPrice * 100) / 100;
       for (const k of Object.keys(r.byStore)) r.byStore[Number(k)] = round3(r.byStore[Number(k)]);
+      const set = lineIds.get(r.key);
+      if (set && set.size === 1 && !lockedKeys.has(r.key)) {
+        r.editable = true;
+        r.orderId = [...set][0];
+      }
     }
     for (const k of Object.keys(byStoreTotal)) byStoreTotal[Number(k)] = round3(byStoreTotal[Number(k)]);
     // группировка на доске: сначала категория (без неё — в конце), внутри — по товару
@@ -407,22 +480,31 @@ ordersRouter.post(
         }
 
         const { rows: exRows } = await client.query(
-          `select id, quantity::float8 as qty from orders
-            where store_id=$1 and date_tab=$2::date and source_name=$3 and source='manual' for update`,
+          `select id, quantity::float8 as qty, status from orders
+            where store_id=$1 and date_tab=$2::date and lower(btrim(source_name))=lower(btrim($3)) for update`,
           [store, date, name]
         );
         if (exRows.length) {
-          await client.query(
-            `update orders set quantity = quantity + $2::numeric, updated_at = now() where id = $1`,
-            [exRows[0].id, baseQty]
-          );
+          if (exRows[0].status === 'cancelled') {
+            // отменённую линию кладём заново: ставим новое количество и возвращаем в работу,
+            // иначе строка останется скрытой доской (qty слился, а status — нет)
+            await client.query(
+              `update orders set quantity = $2::numeric, status = 'placed', db_edited_at = now(), updated_at = now() where id = $1`,
+              [exRows[0].id, baseQty]
+            );
+          } else {
+            await client.query(
+              `update orders set quantity = quantity + $2::numeric, db_edited_at = now(), updated_at = now() where id = $1`,
+              [exRows[0].id, baseQty]
+            );
+          }
           merged.push(exRows[0].id);
           created.push({ id: exRows[0].id, name, qty: Number(exRows[0].qty) + baseQty, unit: baseUnit });
         } else {
           const { rows: ins } = await client.query(
             `insert into orders (tab_id, store_id, card_id, source_name, min_qty, quantity, unit_code,
-                                 date_tab, status, source, note, created_by)
-             values (null, $1, $2, $3, $4, $5, $6, $7::date, 'placed', 'manual', $8, $9)
+                                 date_tab, status, source, note, created_by, db_edited_at)
+             values (null, $1, $2, $3, $4, $5, $6, $7::date, 'placed', 'manual', $8, $9, now())
              returning id`,
             [store, cardId, name, minQty, baseQty, unit, date, String(raw.note ?? ''), req.user?.id ?? null]
           );
@@ -441,6 +523,12 @@ ordersRouter.post(
     });
 
     res.status(201).json({ ok: true, ...result, message: `Заказ оформлен: ${result.created.length} позиц.` });
+    // best-effort: вытолкнуть заказ в таблицу и разослать обновление магазинам; сбой
+    // записи в Google не должен ломать ответ — БД уже истина, синк повторит.
+    broadcast('orders-changed', { store, date, at: new Date().toISOString() });
+    void pushManualForStore(store, date)
+      .then((p) => p.pushed && broadcast('orders-pushed', { store, date, pushed: p.pushed, at: new Date().toISOString() }))
+      .catch(() => undefined);
   })
 );
 
@@ -459,7 +547,8 @@ ordersRouter.patch(
     const id = Number(req.params.id);
     const audit_ = await tx(async (client) => {
       const { rows } = await client.query(
-        `select o.id, o.store_id as "storeId", o.status, coalesce(tc.name, o.source_name) as name, st.name as "storeName"
+        `select o.id, o.store_id as "storeId", o.status, o.date_tab::text as "dateTab",
+                coalesce(tc.name, o.source_name) as name, st.name as "storeName"
            from orders o join stores st on st.id = o.store_id
            left join tech_cards tc on tc.id = o.card_id
           where o.id = $1 for update of o`,
@@ -491,14 +580,33 @@ ordersRouter.patch(
         // кто и когда сменил статус — видно прямо в строке заказа (принял/собрал/отменил)
         params.push(req.user?.id ?? null, req.user?.login ?? 'system');
         sets.push(`status_by = $${params.length - 1}`, `status_by_login = $${params.length}`, 'status_at = now()');
+        // статус (особенно отмена) — правка БД: при расхождении с таблицей должна победить
+        sets.push('db_edited_at = now()');
       }
       if (req.body.note !== undefined) {
         params.push(String(req.body.note));
         sets.push(`note = $${params.length}`);
       }
       if (req.body.qty !== undefined) {
-        params.push(reqNum(req.body, 'qty'));
+        const printed = reqNum(req.body, 'qty');
+        const unitIn = typeof req.body.unit === 'string' ? req.body.unit : null;
+        // если передана единица — qty печатное, пересчитываем в базовое (как в /place);
+        // иначе qty уже базовое (обратная совместимость с прежними вызовами)
+        let base = printed;
+        if (unitIn) {
+          const { rows: cu } = await client.query(
+            `select coalesce(u.code, o.unit_code) as "baseUnit", coalesce(tc.portion_qty::float8, 0) as "portionQty"
+               from orders o left join tech_cards tc on tc.id = o.card_id
+               left join units u on u.id = tc.portion_unit_id where o.id = $1`,
+            [id]
+          );
+          const baseUnit = cu[0]?.baseUnit ?? unitIn;
+          base = toBase(printed, unitIn, baseUnit, Number(cu[0]?.portionQty) || 0);
+        }
+        params.push(base);
         sets.push(`quantity = $${params.length}::numeric`);
+        // правка из CRM — позже отправки: при расхождении с таблицей должна победить БД
+        sets.push('db_edited_at = now()');
       }
       params.push(id);
       await client.query(`update orders set ${sets.join(', ')} where id = $${params.length}`, params);
@@ -515,6 +623,11 @@ ordersRouter.patch(
         : { note: req.body.note, qty: req.body.qty },
     });
     res.json({ ok: true });
+    // вытолкнуть изменённую линию в таблицу (best-effort) + сигнал обновиться
+    if (item.storeId && item.dateTab) {
+      broadcast('orders-changed', { store: Number(item.storeId), date: String(item.dateTab), at: new Date().toISOString() });
+      void pushManualForStore(Number(item.storeId), String(item.dateTab)).catch(() => undefined);
+    }
   })
 );
 
@@ -576,29 +689,21 @@ ordersRouter.get(
       sheetUrl: `https://docs.google.com/spreadsheets/d/${config.gsheetId}/edit`,
       // кнопка «Прод → тест» имеет смысл только когда настроено веб-приложение-копир и есть секрет
       copyConfigured: !!(config.sheetCopyUrl && config.sheetHookToken),
+      // обратная запись заказов в таблицу: настроенно/включено/каким точкам (для индикатора на «Синхронизации»)
+      write: {
+        configured: writeBackConfigured(),
+        enabled: config.sheetWriteEnabled,
+        active: writeBackActive(),
+        stores: config.sheetWriteStores,
+      },
     });
   })
 );
 
 /**
- * POST в Apps Script Web App с ручным проходом редиректа: веб-приложение
- * отвечает 302 на script.googleusercontent.com, а fetch по спецификации
- * превращает за ним POST в GET — doPost тогда не вызовется.
+ * POST в Apps Script Web App с ручным проходом редиректа — вынесен в services/webapp.ts
+ * (нужен и копиру, и обратной записи заказов).
  */
-async function postToWebApp(url: string, payload: unknown): Promise<Response> {
-  const opts: RequestInit = {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-    redirect: 'manual',
-    signal: AbortSignal.timeout(300_000), // копирование всех листов может идти минуты
-  };
-  let r = await fetch(url, opts);
-  const loc = r.headers.get('location');
-  if (r.status >= 300 && r.status < 400 && loc) r = await fetch(loc, opts);
-  return r;
-}
-
 // копирование прод-таблицы в тестовую (кнопка на «Синхронизации»; прод не трогаем)
 ordersRouter.post(
   '/sheet-copy',
@@ -614,9 +719,7 @@ ordersRouter.post(
     } catch (e) {
       throw new ApiError(502, `Веб-приложение недоступно: ${(e as Error).message || e}`);
     }
-    const text = await r.text();
-    let out: { ok?: boolean; error?: string; tabsCopied?: number; tabsCreated?: number; tabsRemoved?: number };
-    try { out = JSON.parse(text); } catch { out = { ok: false, error: text.slice(0, 200) || `HTTP ${r.status}` }; }
+    const out = await readWebAppJson<{ ok?: boolean; error?: string; tabsCopied?: number; tabsCreated?: number; tabsRemoved?: number }>(r);
     if (!r.ok || !out.ok) throw new ApiError(502, `Копирование не удалось: ${out.error || `HTTP ${r.status}`}`);
     // копию засчитаем сразу, не дожидаясь очередного цикла
     void runOrderSync().catch(() => undefined);
@@ -633,6 +736,20 @@ ordersRouter.post(
     runOrderSync({ full }).catch(() => undefined);
     void audit(req.user, { action: 'sync', entity: 'sheet', title: `Синхронизация Google Таблицы${full ? ' (все листы)' : ''}`, details: { full } });
     res.status(202).json({ ok: true, started: true, full });
+  })
+);
+
+// ручное выталкивание БД→таблица для текущего (самого свежего) листа — отладка/аварийный синк
+ordersRouter.post(
+  '/sheet-push',
+  requireOffice,
+  wrap(async (req, res) => {
+    if (!writeBackActive()) throw new ApiError(400, 'Обратная запись не активна: включите GSHEET_WRITE_ENABLED и задайте GSHEET_WRITE_WEBAPP_URL');
+    const { rows } = await pool.query(`select id from order_tabs order by extract_date desc nulls last limit 1`);
+    if (!rows.length) throw new ApiError(404, 'Нет ни одного синхронизированного листа');
+    const r = await planWriteForTab(Number(rows[0].id));
+    void audit(req.user, { action: 'sync', entity: 'sheet', title: 'Выталкивание заказов в таблицу', details: { pushed: r.pushed, failed: r.failed } });
+    res.json({ ok: true, pushed: r.pushed, failed: r.failed, error: r.error ?? null });
   })
 );
 

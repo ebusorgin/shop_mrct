@@ -247,6 +247,9 @@ export interface TechCard {
   portionQty: number;
   portionUnitId: number;
   portionUnitCode: string;
+  /** категория техкарты (для группировки списка) */
+  category: string | null;
+  categoryId?: number | null;
   items: CardItem[];
 }
 
@@ -399,6 +402,9 @@ export interface OrderItem {
   statusByLogin?: string | null;
   statusByName?: string | null;
   statusAt?: string | null;
+  /** когда линию ultimo вытолкнули в таблицу / когда правили в CRM (бейдж «в таблице»). */
+  pushedAt?: string | null;
+  dbEditedAt?: string | null;
 }
 
 export interface OrdersSummary {
@@ -436,6 +442,16 @@ export interface BoardRow {
   pricePer: number | null;
   fullPrice: number;
   byStore: Record<number, number>;
+  /** id линии заказа — правка на доске; null — строка из каталога без линии (0) или из нескольких линий */
+  orderId?: number | null;
+  /** строку можно редактировать прямо на доске (магазин): есть линия или это позиция каталога для добавления */
+  editable?: boolean;
+  /** id техкарты для строк каталога без линии заказа — добавление в заказ через POST /place */
+  cardId?: number | null;
+  /** id товара (техкарты) в БД — показывается рядом с наименованием */
+  productId?: number | null;
+  /** минимальный заказ (кратность) в печатной единице строки; null/0 — не задан (шаг по умолчанию) */
+  minOrder?: number | null;
 }
 
 /**
@@ -535,7 +551,7 @@ export interface OrderSyncState {
   } | null;
   summary: {
     tabsSeen: number; tabsParsed: number; tabsFailed: number; unchanged: number;
-    ordersCreated: number; ordersChanged: number; ordersRemoved: number; full: boolean;
+    ordersCreated: number; ordersChanged: number; ordersRemoved: number; pushed: number; full: boolean;
   } | null;
   tabs: OrderSyncTab[];
   /** Состояние живого канала: вотчер «горячего» листа и открытые SSE-вкладки. */
@@ -549,6 +565,13 @@ export interface OrderSyncState {
   sheetUrl?: string | null;
   /** Настроено ли копирование прод-таблицы в тестовую (кнопка на «Синхронизации»). */
   copyConfigured?: boolean;
+  /** Состояние обратной записи заказов в таблицу (двусторонний синк). */
+  write?: {
+    configured: boolean;
+    enabled: boolean;
+    active: boolean;
+    stores: number[];
+  } | null;
 }
 
 /** Вошедший пользователь CRM. */

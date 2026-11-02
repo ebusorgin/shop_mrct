@@ -36,11 +36,13 @@ jobs:
             server/package-lock.json
             client/package-lock.json
 
-      - name: Сервер — зависимости и сборка
+      - name: Сервер — зависимости, сборка и тесты
         working-directory: server
         run: |
           npm ci --no-audit --no-fund
           npm run build
+          # чистые + фейк-БД тесты умного прихода/отката — реальная БД не нужна
+          npm test
 
       - name: Клиент — зависимости и сборка
         working-directory: client

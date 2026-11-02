@@ -8,7 +8,12 @@
     "build": "tsc -p tsconfig.json && node -e \"require('fs').cpSync('sql','dist/sql',{recursive:true})\"",
     "start": "node dist/index.js",
     "db:migrate": "tsx src/migrate.ts",
-    "db:seed": "tsx src/seed.ts"
+    "db:seed": "tsx src/seed.ts",
+    "test": "node --import tsx --test test/waybill-units.pure.test.ts test/waybill-intake-reverse.fake.test.ts",
+    "test:pure": "node --import tsx --test test/waybill-units.pure.test.ts",
+    "test:fake": "node --import tsx --test test/waybill-intake-reverse.fake.test.ts",
+    "test:integration": "node --import tsx --test test/waybill-integration.pg.test.ts",
+    "test:all": "node --import tsx --test test/waybill-units.pure.test.ts test/waybill-intake-reverse.fake.test.ts test/waybill-integration.pg.test.ts"
   },
   "dependencies": {
     "cors": "^2.8.5",

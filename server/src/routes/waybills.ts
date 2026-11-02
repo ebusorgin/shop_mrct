@@ -11,7 +11,7 @@ import { auditTx, type Actor } from '../services/audit';
 
 export const waybillsRouter = Router();
 
-const round2 = (n: number): number => Math.round(n * 100) / 100;
+export const round2 = (n: number): number => Math.round(n * 100) / 100;
 
 export interface WaybillInItem {
   productId: number;
@@ -257,21 +257,32 @@ waybillsRouter.post(
       unitId: reqNum(it, 'unitId'),
       price: optNum(it, 'price'),
     }));
-
-    const id = await tx(async (client) => {
-      const waybillId = await ingestWaybill(client, { number, supplier, docDate, actor: req.user }, items);
-      await auditTx(client, req.user, {
-        action: 'post',
-        entity: 'waybill',
-        entityId: waybillId,
-        title: `Накладная №${number}${supplier ? ' · ' + supplier : ''}`,
-        details: { mode: 'manual', items: items.length, supplier, docDate },
-      });
-      return waybillId;
-    });
+    const id = await postWaybill({ number, supplier, docDate, actor: req.user }, items);
     res.status(201).json({ id });
   })
 );
+
+/**
+ * Ручной приход накладной: создание + проводки + журнал в одной транзакции.
+ * runTx — исполнитель транзакции; в тестах подставляют in-memory фейк, по умолчанию настоящая tx через pool.
+ */
+export async function postWaybill(
+  head: Pick<WaybillInHead, 'number' | 'supplier' | 'docDate' | 'actor'>,
+  items: WaybillInItem[],
+  runTx: typeof tx = tx
+): Promise<number> {
+  return runTx(async (client) => {
+    const waybillId = await ingestWaybill(client, head, items);
+    await auditTx(client, head.actor, {
+      action: 'post',
+      entity: 'waybill',
+      entityId: waybillId,
+      title: `Накладная №${head.number}${head.supplier ? ' · ' + head.supplier : ''}`,
+      details: { mode: 'manual', items: items.length, supplier: head.supplier, docDate: head.docDate },
+    });
+    return waybillId;
+  });
+}
 
 /**
  * Откат (сторно) накладной: движения прихода аннулируются, а остатки и средневзвешенная
@@ -281,80 +292,89 @@ waybillsRouter.post(
 waybillsRouter.post(
   '/:id/reverse',
   wrap(async (req, res) => {
-    const waybillId = Number(req.params.id);
-    const affected = await tx(async (client) => {
-      const { rows: st } = await client.query('select id, number, status from waybills where id = $1 for update', [waybillId]);
-      if (!st.length) throw new ApiError(404, 'Накладная не найдена');
-      if (st[0].status === 'reversed') throw new ApiError(409, 'Накладная уже отменена');
-
-      const { rows: items } = await client.query(
-        `select i.product_id as "productId", i.qty::float8 as qty, i.unit_id as "unitId", p.unit_id as "baseUnitId"
-           from waybill_items i join products p on p.id = i.product_id where i.waybill_id = $1`,
-        [waybillId]
-      );
-      if (!items.length) throw new ApiError(409, 'У накладной нет позиций — отменять нечего');
-
-      const units = await loadUnits(client);
-      const convMap = await loadProductConv(client);
-      const productIds = [...new Set(items.map((i) => i.productId as number))].sort((a, b) => a - b);
-      await client.query('select 1 from stock where product_id = any($1::int[]) for update', [productIds]);
-
-      // 1) сторнируем приход (с проверкой, что товар ещё не растащен со склада)
-      for (const it of items) {
-        const qtyBase = toBaseCross(it.qty, it.unitId, it.baseUnitId, units, convMap.get(it.productId));
-        await applyMovement(client, {
-          productId: it.productId,
-          type: 'writeoff',
-          delta: -qtyBase,
-          docType: 'waybill',
-          docId: waybillId,
-          comment: `Отмена накладной №${st[0].number}`,
-          actor: req.user,
-        });
-      }
-
-      // сначала помечаем отменённой — чтобы пересчёт ниже исключил и её движения
-      await client.query(
-        "update waybills set status = 'reversed', reversed_by = $2, reversed_login = $3, reversed_at = now() where id = $1",
-        [waybillId, req.user?.id ?? null, req.user?.login ?? null]
-      );
-
-      // 2) пересчёт остатка и avg_cost по журналу; движения ВСЕХ отменённых накладных
-      //    (приход и сторно) выбрасываются — иначе сторно одной отмены, проигранное при
-      //    пересчёте другой, заново отравляет средневзвешенную цену
-      for (const pid of productIds) {
-        const { rows: mv } = await client.query(
-          `select type, qty::float8 as qty, unit_cost::float8 as cost from movements
-            where product_id = $1
-              and not (coalesce(doc_type,'') = 'waybill'
-                       and coalesce(doc_id,0) in (select id from waybills where status = 'reversed'))
-            order by id`,
-          [pid]
-        );
-        let q = 0;
-        let c = 0;
-        for (const m of mv) {
-          if (m.type === 'receipt') {
-            const nq = q + m.qty;
-            c = nq > 0 ? (q * c + m.qty * m.cost) / nq : m.cost;
-            q = nq;
-          } else {
-            q += m.qty; // списания/корректировки среднюю цену не меняют
-          }
-        }
-        await client.query('update stock set qty = $2, avg_cost = $3, updated_at = now() where product_id = $1', [pid, q, c]);
-      }
-
-      await auditTx(client, req.user, {
-        action: 'reverse',
-        entity: 'waybill',
-        entityId: waybillId,
-        title: `Накладная №${st[0].number}`,
-        details: { productsRecalculated: productIds.length },
-      });
-
-      return productIds.length;
-    });
+    const affected = await reverseWaybill(Number(req.params.id), req.user);
     res.json({ ok: true, productsRecalculated: affected });
   })
 );
+
+/**
+ * Откат (сторно) накладной: движения прихода аннулируются, а остатки и средневзвешенная
+ * себестоимость затронутых продуктов пересчитываются «как будто накладной никогда не было» —
+ * иначе отменённая цена навсегда отравляет avg_cost.
+ * runTx — исполнитель транзакции; в тестах подставляют in-memory фейк, по умолчанию настоящая tx через pool.
+ */
+export async function reverseWaybill(waybillId: number, actor: Actor, runTx: typeof tx = tx): Promise<number> {
+  return runTx(async (c) => {
+    const { rows: st } = await c.query('select id, number, status from waybills where id = $1 for update', [waybillId]);
+    if (!st.length) throw new ApiError(404, 'Накладная не найдена');
+    if (st[0].status === 'reversed') throw new ApiError(409, 'Накладная уже отменена');
+
+    const { rows: items } = await c.query(
+      `select i.product_id as "productId", i.qty::float8 as qty, i.unit_id as "unitId", p.unit_id as "baseUnitId"
+         from waybill_items i join products p on p.id = i.product_id where i.waybill_id = $1`,
+      [waybillId]
+    );
+    if (!items.length) throw new ApiError(409, 'У накладной нет позиций — отменять нечего');
+
+    const units = await loadUnits(c);
+    const convMap = await loadProductConv(c);
+    const productIds = [...new Set(items.map((i) => i.productId as number))].sort((a, b) => a - b);
+    await c.query('select 1 from stock where product_id = any($1::int[]) for update', [productIds]);
+
+    // 1) сторнируем приход (с проверкой, что товар ещё не растащен со склада)
+    for (const it of items) {
+      const qtyBase = toBaseCross(it.qty, it.unitId, it.baseUnitId, units, convMap.get(it.productId));
+      await applyMovement(c, {
+        productId: it.productId,
+        type: 'writeoff',
+        delta: -qtyBase,
+        docType: 'waybill',
+        docId: waybillId,
+        comment: `Отмена накладной №${st[0].number}`,
+        actor,
+      });
+    }
+
+    // сначала помечаем отменённой — чтобы пересчёт ниже исключил и её движения
+    await c.query(
+      "update waybills set status = 'reversed', reversed_by = $2, reversed_login = $3, reversed_at = now() where id = $1",
+      [waybillId, actor?.id ?? null, actor?.login ?? null]
+    );
+
+    // 2) пересчёт остатка и avg_cost по журналу; движения ВСЕХ отменённых накладных
+    //    (приход и сторно) выбрасываются — иначе сторно одной отмены, проигранное при
+    //    пересчёте другой, заново отравляет средневзвешенную цену
+    for (const pid of productIds) {
+      const { rows: mv } = await c.query(
+        `select type, qty::float8 as qty, unit_cost::float8 as cost from movements
+          where product_id = $1
+            and not (coalesce(doc_type,'') = 'waybill'
+                     and coalesce(doc_id,0) in (select id from waybills where status = 'reversed'))
+          order by id`,
+        [pid]
+      );
+      let q = 0;
+      let ac = 0;
+      for (const m of mv) {
+        if (m.type === 'receipt') {
+          const nq = q + m.qty;
+          ac = nq > 0 ? (q * ac + m.qty * m.cost) / nq : m.cost;
+          q = nq;
+        } else {
+          q += m.qty; // списания/корректировки среднюю цену не меняют
+        }
+      }
+      await c.query('update stock set qty = $2, avg_cost = $3, updated_at = now() where product_id = $1', [pid, q, ac]);
+    }
+
+    await auditTx(c, actor, {
+      action: 'reverse',
+      entity: 'waybill',
+      entityId: waybillId,
+      title: `Накладная №${st[0].number}`,
+      details: { productsRecalculated: productIds.length },
+    });
+
+    return productIds.length;
+  });
+}

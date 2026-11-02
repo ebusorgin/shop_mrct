@@ -7,12 +7,12 @@ import { ApiError, optNum, reqArr, reqNum, reqStr, wrap } from '../http';
 import { parseWaybillDoc, CatalogProduct } from '../services/llm';
 import { convertAcross, type ProdConv } from '../services/expansion';
 import { ingestWaybill } from './waybills';
-import { auditTx } from '../services/audit';
+import { auditTx, type Actor } from '../services/audit';
 
 export const importRouter = Router();
 
 /** Нормализация имени для матчинга: lower, ё->е, только буквы/цифры, одиночные пробелы. */
-function normName(s: string): string {
+export function normName(s: string): string {
   return s.toLowerCase().replace(/ё/g, 'е').replace(/[^а-яa-z0-9]+/g, ' ').trim();
 }
 
@@ -33,7 +33,7 @@ const TOTAL_RE =
   /\b(sveukupno|ukupno|rekapitulacija|porez|pdv|vrednost|vrijednost|osnova)\b|итого|всего/i;
 
 /** Род не-товарной строки или null, если это обычная позиция. */
-function classifyNonProduct(name: string): 'discount' | 'service' | 'total' | null {
+export function classifyNonProduct(name: string): 'discount' | 'service' | 'total' | null {
   const s = String(name ?? '')
     .toLowerCase()
     .replace(/đ/g, 'dj')
@@ -603,12 +603,136 @@ importRouter.get(
   })
 );
 
+/** Позиция подтверждения импорта — то, что присылает клиент после правок разбора. */
+export interface ConfirmImportItem {
+  rawName: string;
+  qty: number;
+  unitId: number;
+  price: number | null;
+  vatRate: number | null;
+  productId?: number | null;
+  create?: { name?: string; category?: string; unitId?: number } | null;
+}
+
+export interface ConfirmImportInput {
+  number: string;
+  supplier: string;
+  docDate: string | null;
+  fileName: string | null;
+  storedFile: string | null;
+  /** Байты фото, поднятые с диска (uploads/waybills) — в тестах можно не передавать. */
+  fileBuf?: Buffer | null;
+  fileMime?: string | null;
+  extraFiles?: { stored: string; name: string; mime: string; data: Buffer }[] | null;
+  currency: string | null;
+  supplierPib: string | null;
+  docTotals: { net: number | null; vat: number | null; gross: number | null };
+  items: Record<string, unknown>[];
+}
+
+export interface ConfirmImportResult {
+  waybillId: number;
+  created: { id: number; name: string }[];
+  aliasesSaved: number;
+}
+
 /**
- * POST /api/import/confirm — проведение решений пользователя:
+ * Проведение решений пользователя по разбору накладной (без HTTP — общая для маршрута и тестов):
  *  - create -> создать позицию (или взять существующую с таким же именем);
  *  - для каждой позиции запоминаем написание из документа как псевдоним,
  *    если оно отличается от складского названия — в следующий раз сматчится само.
- * Затем обычный приход накладной (одна транзакция).
+ * Затем обычный приход накладной (всё в одной транзакции — runTx или tx через pool).
+ */
+export async function confirmImport(input: ConfirmImportInput, actor: Actor, runTx: typeof tx = tx): Promise<ConfirmImportResult> {
+  const { number, supplier, docDate, fileName, storedFile, fileBuf, fileMime, currency, supplierPib, docTotals, items: rawItems } = input;
+  const extraFiles = input.extraFiles ?? [];
+  return runTx(async (client) => {
+    const created: { id: number; name: string }[] = [];
+    let aliasesSaved = 0;
+    const items: { productId: number; qty: number; unitId: number; price: number | null; vatRate: number | null }[] = [];
+
+    for (const raw of rawItems) {
+      const rawName = reqStr(raw, 'rawName');
+      const qty = reqNum(raw, 'qty');
+      const unitId = reqNum(raw, 'unitId');
+      const price = optNum(raw, 'price');
+      const vatRate = optNum(raw, 'vatRate'); // ставка PDV в % или null
+      let productId: number;
+
+      const create = raw.create as { name?: string; category?: string; unitId?: number } | null | undefined;
+      if (create && create.name) {
+        const name = String(create.name).trim();
+        const category = String(create.category ?? 'прочее').trim() || 'прочее';
+        const unitReq = reqNum(create, 'unitId');
+        const { rows: u } = await client.query('select base_factor::float8 as f from units where id = $1', [unitReq]);
+        if (!u.length || u[0].f !== 1) throw new ApiError(400, 'Складская единица у новой позиции должна быть базовой (г/мл/шт)');
+        const { rows: ex } = await client.query('select id from products where lower(name) = lower($1)', [name]);
+        if (ex.length) {
+          productId = ex[0].id as number; // такое название уже есть — дописываемся к нему
+        } else {
+          const { rows: ins } = await client.query(
+            `insert into products (name, category, unit_id, created_by, updated_by) values ($1, $2, $3, $4, $4) returning id`,
+            [name, category, unitReq, actor?.id ?? null]
+          );
+          productId = ins[0].id as number;
+          await client.query('insert into stock (product_id, qty, avg_cost) values ($1, 0, 0)', [productId]);
+          created.push({ id: productId, name });
+        }
+      } else {
+        productId = reqNum(raw, 'productId');
+        const { rows: ok } = await client.query('select 1 from products where id = $1', [productId]);
+        if (!ok.length) throw new ApiError(400, `Позиция #${productId} не найдена`);
+      }
+
+      // запоминаем написание из документа, если оно не совпадает с названием позиции
+      const { rows: pn } = await client.query('select name from products where id = $1', [productId]);
+      const alias = normName(rawName);
+      if (alias && alias !== normName(pn[0].name)) {
+        const { rows: known } = await client.query('select 1 from product_aliases where alias = $1', [alias]);
+        await client.query(
+          `insert into product_aliases (product_id, alias, alias_raw) values ($1, $2, $3)
+           on conflict (alias) do update set product_id = excluded.product_id, alias_raw = excluded.alias_raw`,
+          [productId, alias, rawName.trim()]
+        );
+        if (!known.length) aliasesSaved++;
+      }
+
+      items.push({ productId, qty, unitId, price, vatRate });
+    }
+
+    const waybillId = await ingestWaybill(
+      client,
+      {
+        number,
+        supplier,
+        docDate,
+        actor,
+        fileName,
+        storedFile,
+        fileData: fileBuf ?? null,
+        fileMime: fileMime ?? null,
+        extraFiles: extraFiles.length ? extraFiles : null,
+        currency,
+        supplierPib,
+        docTotalNet: docTotals.net,
+        docTotalVat: docTotals.vat,
+        docTotalGross: docTotals.gross,
+      },
+      items
+    );
+    await auditTx(client, actor, {
+      action: 'post',
+      entity: 'waybill',
+      entityId: waybillId,
+      title: `Накладная №${number}${supplier ? ' · ' + supplier : ''}`,
+      details: { mode: 'import', items: items.length, createdProducts: created.length, aliasesSaved },
+    });
+    return { waybillId, created, aliasesSaved };
+  });
+}
+
+/**
+ * POST /api/import/confirm — разбор тела + поднятие фото с диска, затем confirmImport.
  */
 importRouter.post(
   '/confirm',
@@ -660,89 +784,23 @@ importRouter.post(
       if (extraFiles.length >= 8) break;
     }
 
-    const result = await tx(async (client) => {
-      const created: { id: number; name: string }[] = [];
-      let aliasesSaved = 0;
-      const items: { productId: number; qty: number; unitId: number; price: number | null; vatRate: number | null }[] = [];
-
-      for (const raw of rawItems) {
-        const rawName = reqStr(raw, 'rawName');
-        const qty = reqNum(raw, 'qty');
-        const unitId = reqNum(raw, 'unitId');
-        const price = optNum(raw, 'price');
-        const vatRate = optNum(raw, 'vatRate'); // ставка PDV в % или null
-        let productId: number;
-
-        const create = raw.create as { name?: string; category?: string; unitId?: number } | null | undefined;
-        if (create && create.name) {
-          const name = String(create.name).trim();
-          const category = String(create.category ?? 'прочее').trim() || 'прочее';
-          const unitReq = reqNum(create, 'unitId');
-          const { rows: u } = await client.query('select base_factor::float8 as f from units where id = $1', [unitReq]);
-          if (!u.length || u[0].f !== 1) throw new ApiError(400, 'Складская единица у новой позиции должна быть базовой (г/мл/шт)');
-          const { rows: ex } = await client.query('select id from products where lower(name) = lower($1)', [name]);
-          if (ex.length) {
-            productId = ex[0].id as number; // такое название уже есть — дописываемся к нему
-          } else {
-            const { rows: ins } = await client.query(
-              `insert into products (name, category, unit_id, created_by, updated_by) values ($1, $2, $3, $4, $4) returning id`,
-              [name, category, unitReq, req.user?.id ?? null]
-            );
-            productId = ins[0].id as number;
-            await client.query('insert into stock (product_id, qty, avg_cost) values ($1, 0, 0)', [productId]);
-            created.push({ id: productId, name });
-          }
-        } else {
-          productId = reqNum(raw, 'productId');
-          const { rows: ok } = await client.query('select 1 from products where id = $1', [productId]);
-          if (!ok.length) throw new ApiError(400, `Позиция #${productId} не найдена`);
-        }
-
-        // запоминаем написание из документа, если оно не совпадает с названием позиции
-        const { rows: pn } = await client.query('select name from products where id = $1', [productId]);
-        const alias = normName(rawName);
-        if (alias && alias !== normName(pn[0].name)) {
-          const { rows: known } = await client.query('select 1 from product_aliases where alias = $1', [alias]);
-          await client.query(
-            `insert into product_aliases (product_id, alias, alias_raw) values ($1, $2, $3)
-             on conflict (alias) do update set product_id = excluded.product_id, alias_raw = excluded.alias_raw`,
-            [productId, alias, rawName.trim()]
-          );
-          if (!known.length) aliasesSaved++;
-        }
-
-        items.push({ productId, qty, unitId, price, vatRate });
-      }
-
-      const waybillId = await ingestWaybill(
-        client,
-        {
-          number,
-          supplier,
-          docDate,
-          actor: req.user,
-          fileName,
-          storedFile,
-          fileData: fileBuf,
-          fileMime,
-          extraFiles: extraFiles.length ? extraFiles : null,
-          currency,
-          supplierPib,
-          docTotalNet: docTotals.net,
-          docTotalVat: docTotals.vat,
-          docTotalGross: docTotals.gross,
-        },
-        items
-      );
-      await auditTx(client, req.user, {
-        action: 'post',
-        entity: 'waybill',
-        entityId: waybillId,
-        title: `Накладная №${number}${supplier ? ' · ' + supplier : ''}`,
-        details: { mode: 'import', items: items.length, createdProducts: created.length, aliasesSaved },
-      });
-      return { waybillId, created, aliasesSaved };
-    });
+    const result = await confirmImport(
+      {
+        number,
+        supplier,
+        docDate,
+        fileName,
+        storedFile,
+        fileBuf,
+        fileMime,
+        extraFiles,
+        currency,
+        supplierPib,
+        docTotals,
+        items: rawItems,
+      },
+      req.user
+    );
 
     res.status(201).json(result);
   })

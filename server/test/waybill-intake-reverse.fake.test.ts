@@ -504,3 +504,76 @@ test('кросс-размерность г -> мл (масло, g_per_ml 0.93): 
   await reverseWaybill(wbId, actor, tx);
   closeTo(db.stockOf(id.oil).qty, 0, 'сторно считает то же мл-количество, что и приход');
 });
+
+// ==================== дубли номеров накладных ====================
+
+test('дубль номера: вторая накладная с тем же номером — 409, склад и журнал не тронуты', async () => {
+  const { db, id, tx } = fixture();
+  const wbId = await postWaybill(
+    { number: 'T-500', supplier: 'Milkos', docDate: '2026-11-01', actor },
+    [{ productId: id.potato, qty: 1000, unitId: U.g, price: 0.2 }],
+    tx
+  );
+  await assert.rejects(
+    postWaybill(
+      { number: 'T-500', supplier: 'Drugi', docDate: '2026-11-02', actor },
+      [{ productId: id.flour, qty: 500, unitId: U.g, price: 0.3 }],
+      tx
+    ),
+    (e: unknown) => e instanceof ApiError && e.status === 409 && /уже проведена/.test(e.message) && /#T-500|№T-500/.test(e.message)
+  );
+  assert.equal(db.state.waybills.length, 1, 'вторая накладная не создана');
+  assert.equal(db.state.movements.length, 1, 'лишних проводок нет');
+  closeTo(db.stockOf(id.flour).qty, 0, 'мука не приходована');
+  assert.ok(db.waybill(wbId), 'оригинал на месте');
+});
+
+test('дубль номера с пробелами вокруг — тоже отказ (btrim как в проде)', async () => {
+  const { db, id, tx } = fixture();
+  await postWaybill({ number: 'T-501', supplier: 'A', docDate: null, actor }, [{ productId: id.potato, qty: 100, unitId: U.g, price: 0.1 }], tx);
+  await assert.rejects(
+    postWaybill({ number: ' T-501 ', supplier: 'B', docDate: null, actor }, [{ productId: id.potato, qty: 100, unitId: U.g, price: 0.1 }], tx),
+    (e: unknown) => e instanceof ApiError && e.status === 409
+  );
+});
+
+test('отменённая накладная номер освобождает — тот же номер можно провести заново', async () => {
+  const { db, id, tx } = fixture();
+  const wb1 = await postWaybill(
+    { number: 'T-502', supplier: 'Milkos', docDate: null, actor },
+    [{ productId: id.potato, qty: 1000, unitId: U.g, price: 0.2 }],
+    tx
+  );
+  await reverseWaybill(wb1, actor, tx);
+  // кладовщик откатил ошибочный приход и принимает ту же бумажку заново, но правильно
+  const wb2 = await postWaybill(
+    { number: 'T-502', supplier: 'Milkos', docDate: null, actor },
+    [{ productId: id.potato, qty: 1500, unitId: U.g, price: 0.25 }],
+    tx
+  );
+  assert.notEqual(wb2, wb1);
+  closeTo(db.stockOf(id.potato).qty, 1500);
+  closeTo(db.stockOf(id.potato).avgCost, 0.25, 'пересчёт не отравлен отменённой версией документа');
+});
+
+test('confirm (умный приход): дубль номера — 409 до создания позиций и псевдонимов', async () => {
+  const { db, id, tx } = fixture();
+  await postWaybill({ number: 'T-503', supplier: 'GDP', docDate: null, actor }, [{ productId: id.potato, qty: 100, unitId: U.g, price: 0.1 }], tx);
+  await assert.rejects(
+    confirmImport(
+      {
+        ...confirmBase(),
+        number: 'T-503',
+        supplier: 'GDP',
+        docDate: null,
+        items: [{ rawName: 'Novo', qty: 1000, unitId: U.g, price: 0.2, vatRate: null, create: { name: 'Новый товар', category: 'овощи', unitId: U.g } }],
+      },
+      actor,
+      tx
+    ),
+    (e: unknown) => e instanceof ApiError && e.status === 409 && /уже проведена/.test(e.message)
+  );
+  assert.equal(db.state.products.length, 4, 'позиция не создана');
+  assert.equal(db.state.product_aliases.length, 0, 'псевдоним не запомнился');
+  assert.equal(db.state.waybills.length, 1);
+});

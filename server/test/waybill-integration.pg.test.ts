@@ -275,3 +275,34 @@ test('int: ingestWaybill напрямую — несколько листов ф
     client.release();
   }
 });
+
+test('int: дубль номера накладной — 409; после отката номер свободен; частичный уникальный индекс на месте', async (t) => {
+  const c = await ensureReady();
+  if (!c) return t.skip('Postgres недоступен');
+  const { ApiError } = await import('../src/http');
+  const wbId = await c.postWaybill(
+    { number: 'INT-DUP', supplier: 'A', docDate: '2026-11-02', actor: c.actor },
+    [{ productId: c.products.flour, qty: 100, unitId: c.U.g, price: 0.1 }]
+  );
+  await assert.rejects(
+    c.postWaybill(
+      { number: 'INT-DUP', supplier: 'B', docDate: '2026-11-02', actor: c.actor },
+      [{ productId: c.products.flour, qty: 200, unitId: c.U.g, price: 0.2 }]
+    ),
+    (e: unknown) => e instanceof ApiError && e.status === 409 && /уже проведена/.test(e.message)
+  );
+  // откатили — и тот же номер снова разрешён (пере-приход ошибочной бумажки)
+  await c.reverseWaybill(wbId, c.actor);
+  const wb2 = await c.postWaybill(
+    { number: 'INT-DUP', supplier: 'A', docDate: '2026-11-02', actor: c.actor },
+    [{ productId: c.products.flour, qty: 300, unitId: c.U.g, price: 0.3 }]
+  );
+  assert.notEqual(wb2, wbId);
+  // страховка от гонки на уровне схемы — только по непроведённым
+  const { rows: ix } = await c.pool.query(
+    "select indexdef from pg_indexes where tablename = 'waybills' and indexname = 'waybills_number_active_uniq'"
+  );
+  assert.equal(ix.length, 1, 'частичный уникальный индекс создан на чистой тестовой БД');
+  assert.match(String(ix[0].indexdef), /btrim\(number\)/i);
+  assert.match(String(ix[0].indexdef), /reversed/);
+});

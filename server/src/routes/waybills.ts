@@ -49,6 +49,16 @@ export interface WaybillInHead {
  * Цены в накладных — без PDV, поэтому в себестоимость идёт price, а НДС хранится отдельно.
  */
 export async function ingestWaybill(client: PoolClient, head: WaybillInHead, items: WaybillInItem[]): Promise<number> {
+  // один номер накладной — один действующий документ (страховка от «два раза одно фото»/повторного ввода);
+  // отменённая («reversed») накладная номер освобождает — после отката документ можно принять заново
+  const { rows: dup } = await client.query(
+    "select id, doc_date::text as \"docDate\" from waybills where btrim(number) = btrim($1) and status <> 'reversed' limit 1",
+    [head.number]
+  );
+  if (dup.length) {
+    const d = dup[0].docDate ? ', от ' + String(dup[0].docDate).slice(0, 10) : '';
+    throw new ApiError(409, `Накладная №${head.number} уже проведена (#${dup[0].id}${d}) — документы с одним номером принимать нельзя`);
+  }
   const units = await loadUnits(client);
   let totalNet = 0;
   let totalVat = 0;

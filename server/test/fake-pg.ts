@@ -162,6 +162,12 @@ export class FakePg {
     const num = (i: number): number => Number(params[i - 1]);
 
     // ---------- SELECT ----------
+    // проверка дубля номера (ingestWaybill) — до обработчика «where id"
+    if (/^select id, doc_date::text as "docdate" from waybills where btrim\(number\)/i.test(s)) {
+      const want = String(P(1)).trim();
+      const w = this.state.waybills.find((x) => x.number.trim() === want && x.status !== 'reversed');
+      return { rows: w ? [{ id: w.id, docDate: w.doc_date }] : [] };
+    }
     if (/^select id, number, status from waybills where id/i.test(s)) {
       const w = this.state.waybills.find((x) => x.id === num(1));
       return { rows: w ? [{ id: w.id, number: w.number, status: w.status }] : [] };

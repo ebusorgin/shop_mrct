@@ -516,6 +516,8 @@ export interface OrderDate {
   tabId: number;
   synced: boolean;
   manual: boolean;
+  /** лист закрыт после автосписания — магазин правки не вносит. */
+  locked?: boolean;
 }
 
 /** Каталог техкарт для оформления заказа. */
@@ -718,6 +720,53 @@ export interface AppSettings {
   defaults: GptSettings;
   openai: { keyConfigured: boolean; model: string };
   proxy: { scheme: string; host: string; port: number; reachable: boolean };
+  writeoff: WriteoffSettings;
+  writeoffDefaults: WriteoffSettings;
+  writeoffNext: { dateIso: string; time: string } | null;
+  delivery: DeliverySettings;
+  deliveryDefaults: DeliverySettings;
+  deliveryUpcoming: string[];
+}
+
+/** Расписание автосписания заказов со склада: дни недели + несколько времён (по tz). */
+export interface WriteoffSettings {
+  enabled: boolean;
+  /** 0=Вс … 6=Сб (конвенция JS getDay). */
+  weekdays: number[];
+  /** Слоты 'HH:MM'. */
+  times: string[];
+  /** IANA-таймзона, по умолчанию Europe/Moscow. */
+  tz: string;
+}
+
+/** Расписание доставок: какие дни недели — даты доставки (по tz). */
+export interface DeliverySettings {
+  /** 0=Вс … 6=Сб (конвенция JS getDay). */
+  weekdays: number[];
+  /** IANA-таймзона, по умолчанию Europe/Moscow. */
+  tz: string;
+}
+
+/** Отчёт по автосписанию за дату доставки: выдано продукции + списано сырья. */
+export interface WriteOffReport {
+  deliveryDate: string;
+  goods: { cardId: number; name: string; portions: number; costTotal: number }[];
+  raw: { productId: number; name: string; unitCode: string; qty: number; cost: number }[];
+  totalCost: number;
+}
+
+/** Одна запись прогона автосписания (архив). */
+export interface WriteOffRun {
+  id: number;
+  deliveryDate: string;
+  firedSlot: string;
+  status: string;
+  linesWritten: number;
+  batches: number;
+  startedAt: string;
+  finishedAt: string | null;
+  createdBy: string;
+  error: string | null;
 }
 
 /** Результат кнопки «Проверить связь»: настоящий запрос к модели текущим транспортом. */

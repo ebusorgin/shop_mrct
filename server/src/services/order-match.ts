@@ -87,8 +87,11 @@ export class CardMatcher {
   private cards: CardRef[] = [];
   private normIdx: { norm: string; strict: string; card: CardRef }[] = [];
 
-  async load(): Promise<void> {
-    const { rows } = await pool.query(`
+  /**
+   * queryFn — исполнитель запроса (в тестах подставляют in-memory фейк), по умолчанию — реальный pool.
+   */
+  async load(queryFn: (sql: string, params?: unknown[]) => Promise<{ rows: any[] }> = (sql, params) => pool.query(sql, params)): Promise<void> {
+    const { rows } = await queryFn(`
       select tc.id, tc.name, tc.plu, u.code as "unitCode", u.code as "baseUnitCode",
              coalesce(tc.portion_qty::float8, 0) as "portionQty"
         from tech_cards tc

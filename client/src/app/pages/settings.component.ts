@@ -2,7 +2,7 @@ import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } 
 import { FormsModule } from '@angular/forms';
 import { CommonModule } from '@angular/common';
 import { ApiService } from '../core/api.service';
-import { AppSettings, CardCategory, CardRef, GptTestResult } from '../core/models';
+import { AppSettings, CardCategory, CardRef, GptTestResult, WriteoffSettings, WriteOffReport, WriteOffRun } from '../core/models';
 import { httpErr } from '../core/format';
 
 /**
@@ -49,6 +49,19 @@ import { httpErr } from '../core/format';
       background: #eef1f5; font-size: 12px; color: #3c4450; }
     .chip .sub { color: var(--muted); font-size: 11px; }
     .chip-none { font-size: 13px; color: var(--green); }
+    .chip .x { flex: none; background: none; border: none; cursor: pointer; font-size: 15px; line-height: 1;
+      color: #b6bec9; padding: 0 3px; border-radius: 4px; }
+    .chip .x:hover { color: var(--red); background: #fdeaec; }
+    /* переключатель дня недели */
+    .wd { padding: 4px 11px; border-radius: 12px; border: 1px solid var(--border); background: #fff;
+      cursor: pointer; font-size: 13px; color: #3c4450; }
+    .wd:hover { background: #f4f7fb; }
+    .wd.on { background: #e8f0fe; border-color: #1a73e8; color: #1a73e8; font-weight: 600; }
+    /* таблица отчёта по списанию */
+    .rep { border-collapse: collapse; width: 100%; max-width: 640px; font-size: 13px; }
+    .rep th, .rep td { border-bottom: 1px solid var(--border); padding: 5px 8px; text-align: left; }
+    .rep th { color: var(--muted); font-weight: 600; font-size: 12px; }
+    .rep .num { text-align: right; font-variant-numeric: tabular-nums; }
   `],
   template: `
     <div class="bar">
@@ -103,6 +116,150 @@ import { httpErr } from '../core/format';
           @else { <div class="err" style="margin:12px 0 0">{{ t.transport }}: {{ t.error }}</div> }
         }
       } @else { <div class="muted" style="font-size:12px">Загружаем…</div> }
+    </div>
+
+    <!-- Автосписание заказов -->
+    <div class="panel">
+      <h3>Автосписание заказов со склада</h3>
+      <div class="muted" style="font-size:12px; margin-bottom:12px">
+        В выбранные дни и время CRM списывает все линии доски за дату доставки: техкарты
+        раскрываются в сырьё (через заготовки, с учётом уварки/граммовки) и уходят со склада.
+        Время — по Москве.
+      </div>
+      <label style="display:flex; gap:10px; align-items:center; cursor:pointer; font-weight:600">
+        <input type="checkbox" [ngModel]="woEnabled()" (ngModelChange)="woEnabled.set($event)"
+          [disabled]="woBusy()" style="width:18px; height:18px" />
+        <span>Включить автосписание по расписанию</span>
+      </label>
+
+      <div style="margin-top:14px">
+        <div class="muted" style="font-size:12px; margin-bottom:6px">Дни недели</div>
+        <div class="chips">
+          @for (d of WD; track d.n) {
+            <button type="button" class="wd" [class.on]="woWeekdays().has(d.n)" (click)="toggleWd(d.n)">{{ d.label }}</button>
+          }
+        </div>
+      </div>
+
+      <div style="margin-top:14px">
+        <div class="muted" style="font-size:12px; margin-bottom:6px">Время списания</div>
+        <div class="chips" style="align-items:center">
+          @for (t of woTimes(); track t) {
+            <span class="chip">{{ t }}<button type="button" class="x" (click)="removeTime(t)" title="Убрать">×</button></span>
+          }
+          <input type="time" [ngModel]="newTime()" (ngModelChange)="newTime.set($event)" style="width:120px" />
+          <button type="button" class="btn sm" (click)="addTime()">+ добавить</button>
+        </div>
+        @if (!woTimes().length) { <div class="muted" style="font-size:12px;margin-top:6px">Добавьте хотя бы одно время.</div> }
+      </div>
+
+      <div class="muted" style="font-size:12px; margin-top:12px">
+        @if (woEnabled() && woNext(); as nx) {
+          Ближайшее срабатывание: {{ nx.dateIso }} в {{ nx.time }}
+        } @else if (woEnabled()) {
+          Расписание неполное — выберите дни и время.
+        } @else {
+          Сейчас выключено.
+        }
+      </div>
+
+      <hr class="hr" />
+      <div class="row">
+        <button class="btn primary" (click)="saveWriteoff()" [disabled]="woBusy()">{{ woBusy() ? 'Сохраняем…' : 'Сохранить' }}</button>
+        <button class="btn" (click)="runWriteoffNow()" [disabled]="woRunning() || woBusy()">{{ woRunning() ? 'Списываем…' : 'Запустить сейчас' }}</button>
+      </div>
+      @if (woMsg()) { <div class="ok-msg" style="margin-top:10px">{{ woMsg() }}</div> }
+    </div>
+
+    <!-- Дни доставки -->
+    <div class="panel">
+      <h3>Дни доставки</h3>
+      <div class="muted" style="font-size:12px; margin-bottom:12px">
+        Отметьте дни недели, в которые у магазинов доставка. CRM по ним показывает
+        ближайшую дату доставки; после автосписания лист за дату закрывается для правок.
+      </div>
+      <div class="chips">
+        @for (d of WD; track d.n) {
+          <button type="button" class="wd" [class.on]="dvWeekdays().has(d.n)" (click)="toggleDv(d.n)">{{ d.label }}</button>
+        }
+      </div>
+      <div class="muted" style="font-size:12px; margin-top:12px">
+        @if (dvUpcoming().length) {
+          Ближайшие доставки: @for (dt of dvUpcoming(); track dt) { <span class="chip" style="margin:0 4px">{{ dt }}</span> }
+        } @else {
+          Дни не выбраны — ближайшая доставка не определена.
+        }
+      </div>
+      <hr class="hr" />
+      <div class="row">
+        <button class="btn primary" (click)="saveDelivery()" [disabled]="dvBusy()">{{ dvBusy() ? 'Сохраняем…' : 'Сохранить' }}</button>
+        <button class="btn" (click)="createDeliveryTab()" [disabled]="dvTabBusy()" title="Скопировать самый свежий лист на ближайшую дату доставки и обнулить количества точек">
+          {{ dvTabBusy() ? 'Создаём…' : 'Лист доставки в Google' }}
+        </button>
+      </div>
+      @if (dvMsg()) { <div class="ok-msg" style="margin-top:10px">{{ dvMsg() }}</div> }
+    </div>
+
+    <!-- Отчёт и архив автосписания -->
+    <div class="panel">
+      <h3>Отчёт по списанию</h3>
+      <div class="muted" style="font-size:12px; margin-bottom:12px">
+        Что выдали и какое сырьё списали по автосписанию за дату доставки.
+      </div>
+      <div class="row" style="align-items:center; gap:8px">
+        <input type="date" [ngModel]="repDate()" (ngModelChange)="repDate.set($event)" style="width:170px" />
+        <button class="btn sm primary" (click)="loadReport()" [disabled]="repBusy()">{{ repBusy() ? 'Считаем…' : 'Показать' }}</button>
+      </div>
+      @if (repMsg()) { <div class="err" style="margin-top:10px">{{ repMsg() }}</div> }
+      @if (rep(); as r) {
+        <div style="margin-top:14px">
+          @if (!r.goods.length) {
+            <div class="muted" style="font-size:13px">За {{ r.deliveryDate }} нет записей автосписания.</div>
+          } @else {
+            <div class="muted" style="font-size:12px; margin-bottom:4px">Выдана готовая продукция</div>
+            <table class="rep">
+              <thead><tr><th>Товар</th><th>Порции</th><th>Себестоимость</th></tr></thead>
+              <tbody>
+                @for (g of r.goods; track g.cardId) {
+                  <tr><td>{{ g.name }}</td><td class="num">{{ g.portions }}</td><td class="num">{{ g.costTotal }} ₽</td></tr>
+                }
+              </tbody>
+            </table>
+            <div class="muted" style="font-size:12px; margin:12px 0 4px">Списано сырьё</div>
+            <table class="rep">
+              <thead><tr><th>Позиция</th><th>Кол-во</th><th>Стоимость</th></tr></thead>
+              <tbody>
+                @for (rw of r.raw; track rw.productId) {
+                  <tr><td>{{ rw.name }}</td><td class="num">{{ rw.qty }} {{ rw.unitCode }}</td><td class="num">{{ rw.cost }} ₽</td></tr>
+                }
+              </tbody>
+            </table>
+            <div style="margin-top:10px; font-weight:600">Итого себестоимость: {{ r.totalCost }} ₽</div>
+          }
+        </div>
+      }
+
+      <div class="muted" style="font-size:12px; margin:18px 0 6px">Последние прогоны</div>
+      @if (!runs().length) {
+        <div class="muted" style="font-size:13px">Прогонов ещё не было.</div>
+      } @else {
+        <table class="rep">
+          <thead><tr><th>Дата</th><th>Слот</th><th>Статус</th><th>Строк</th><th>Партий</th><th>Автор</th><th></th></tr></thead>
+          <tbody>
+            @for (run of runs(); track run.id) {
+              <tr>
+                <td>{{ run.deliveryDate }}</td>
+                <td class="mono">{{ run.firedSlot }}</td>
+                <td><span class="badge" [class.green]="run.status === 'ok'" [class.red]="run.status === 'error'">{{ run.status }}</span></td>
+                <td class="num">{{ run.linesWritten }}</td>
+                <td class="num">{{ run.batches }}</td>
+                <td>{{ run.createdBy }}</td>
+                <td><button class="btn sm" (click)="openRun(run.deliveryDate)">отчёт</button></td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      }
     </div>
 
     <!-- Категории товаров: раскрывающееся дерево -->
@@ -194,6 +351,37 @@ export class SettingsComponent implements OnInit {
   viaProxy = false;
   proxyUrl = '';
 
+  // === Автосписание заказов ===
+  woEnabled = signal(false);
+  /** Выбранные дни недели (getDay: 0=Вс … 6=Сб). */
+  woWeekdays = signal<Set<number>>(new Set());
+  woTimes = signal<string[]>([]);
+  newTime = signal('');
+  woBusy = signal(false);
+  woRunning = signal(false);
+  woMsg = signal('');
+  woNext = signal<{ dateIso: string; time: string } | null>(null);
+  /** Порядок и подписи дней для чипов (getDay → локализованнаяabbr). */
+  readonly WD: { n: number; label: string }[] = [
+    { n: 1, label: 'Пн' }, { n: 2, label: 'Вт' }, { n: 3, label: 'Ср' }, { n: 4, label: 'Чт' },
+    { n: 5, label: 'Пт' }, { n: 6, label: 'Сб' }, { n: 0, label: 'Вс' },
+  ];
+
+  // === Дни доставки ===
+  /** Дни недели-доставки (getDay: 0=Вс … 6=Сб). */
+  dvWeekdays = signal<Set<number>>(new Set());
+  dvUpcoming = signal<string[]>([]);
+  dvBusy = signal(false);
+  dvTabBusy = signal(false);
+  dvMsg = signal('');
+
+  // === Отчёт / архив автосписания ===
+  repDate = signal('');
+  rep = signal<WriteOffReport | null>(null);
+  repBusy = signal(false);
+  repMsg = signal('');
+  runs = signal<WriteOffRun[]>([]);
+
   // === Категории (дерево: несколько узлов могут быть раскрыты независимо) ===
   cats = signal<CardCategory[]>([]);
   allCards = signal<CardRef[]>([]);
@@ -210,6 +398,7 @@ export class SettingsComponent implements OnInit {
   ngOnInit(): void {
     this.load();
     this.loadCats();
+    this.loadRuns();
   }
 
   // ---- GPT ----
@@ -221,6 +410,13 @@ export class SettingsComponent implements OnInit {
         this.viaProxy = s.gpt.viaProxy;
         this.proxyUrl = s.gpt.proxyUrl;
         this.test.set(null);
+        this.woEnabled.set(s.writeoff.enabled);
+        this.woWeekdays.set(new Set(s.writeoff.weekdays));
+        this.woTimes.set([...s.writeoff.times]);
+        this.woNext.set(s.writeoffNext ?? null);
+        this.dvWeekdays.set(new Set(s.delivery.weekdays));
+        this.dvUpcoming.set(s.deliveryUpcoming ?? []);
+        if (!this.repDate()) this.repDate.set(new Date().toISOString().slice(0, 10));
       },
       error: (e: unknown) => this.err.set(httpErr(e)),
     });
@@ -249,6 +445,128 @@ export class SettingsComponent implements OnInit {
       next: (r) => { this.testing.set(false); this.test.set(r); },
       error: (e: unknown) => { this.testing.set(false); this.err.set(httpErr(e)); },
     });
+  }
+
+  // ---- Автосписание ----
+  toggleWd(n: number): void {
+    const next = new Set(this.woWeekdays());
+    if (next.has(n)) next.delete(n);
+    else next.add(n);
+    this.woWeekdays.set(next);
+  }
+
+  addTime(): void {
+    const t = this.newTime().trim();
+    if (!/^([01]?\d|2[0-3]):([0-5]\d)$/.test(t)) return;
+    const canon = `${t.slice(0, t.indexOf(':')).padStart(2, '0')}:${t.slice(t.indexOf(':') + 1)}`;
+    if (this.woTimes().includes(canon)) { this.newTime.set(''); return; }
+    this.woTimes.set([...this.woTimes(), canon].sort());
+    this.newTime.set('');
+  }
+
+  removeTime(t: string): void {
+    this.woTimes.set(this.woTimes().filter((x) => x !== t));
+  }
+
+  saveWriteoff(): void {
+    this.woBusy.set(true);
+    this.woMsg.set('');
+    const body: WriteoffSettings = {
+      enabled: this.woEnabled(),
+      weekdays: [...this.woWeekdays()].sort((a, b) => a - b),
+      times: this.woTimes(),
+      tz: 'Europe/Moscow',
+    };
+    this.api.saveWriteoff$(body).subscribe({
+      next: (r) => {
+        this.woBusy.set(false);
+        this.woEnabled.set(r.writeoff.enabled);
+        this.woWeekdays.set(new Set(r.writeoff.weekdays));
+        this.woTimes.set([...r.writeoff.times]);
+        this.woNext.set(r.writeoffNext ?? null);
+        this.woMsg.set('Расписание сохранено');
+      },
+      error: (e: unknown) => { this.woBusy.set(false); this.woMsg.set(httpErr(e)); },
+    });
+  }
+
+  runWriteoffNow(): void {
+    if (!confirm('Списать со склада все линии доски за сегодняшнюю дату доставки?')) return;
+    this.woRunning.set(true);
+    this.woMsg.set('');
+    this.api.runWriteoffNow$().subscribe({
+      next: (r) => {
+        this.woRunning.set(false);
+        this.woMsg.set(
+          r.skipped
+            ? `Слот за ${r.deliveryDate} уже был закрыт`
+            : `Готово (${r.deliveryDate}): списано строк ${r.linesWritten}, партий ${r.batches}` + (r.error ? ` · ${r.error}` : '')
+        );
+        this.load(true);
+      },
+      error: (e: unknown) => { this.woRunning.set(false); this.woMsg.set(httpErr(e)); },
+    });
+  }
+
+  // ---- Дни доставки ----
+  toggleDv(n: number): void {
+    const next = new Set(this.dvWeekdays());
+    if (next.has(n)) next.delete(n);
+    else next.add(n);
+    this.dvWeekdays.set(next);
+  }
+
+  saveDelivery(): void {
+    this.dvBusy.set(true);
+    this.dvMsg.set('');
+    this.api.saveDelivery$({ weekdays: [...this.dvWeekdays()].sort((a, b) => a - b), tz: 'Europe/Moscow' }).subscribe({
+      next: (r) => {
+        this.dvBusy.set(false);
+        this.dvWeekdays.set(new Set(r.delivery.weekdays));
+        this.dvUpcoming.set(r.deliveryUpcoming ?? []);
+        this.dvMsg.set('Дни доставки сохранены');
+      },
+      error: (e: unknown) => { this.dvBusy.set(false); this.dvMsg.set(httpErr(e)); },
+    });
+  }
+
+  /** Завести в прод-таблице следующий обнулённый лист (ближайшая дата доставки). */
+  createDeliveryTab(): void {
+    this.dvTabBusy.set(true);
+    this.dvMsg.set('');
+    this.api.createDeliveryTab$().subscribe({
+      next: (r) => {
+        this.dvTabBusy.set(false);
+        this.dvMsg.set(
+          r.ok
+            ? (r.created ? `Лист «${r.sheetName}» создан и обнулён` : `Лист «${r.sheetName}» уже был — ${r.note ?? 'ok'}`)
+            : `Лист не создан: ${r.error ?? 'ошибка'}`
+        );
+      },
+      error: (e: unknown) => { this.dvTabBusy.set(false); this.dvMsg.set(httpErr(e)); },
+    });
+  }
+
+  // ---- Отчёт / архив ----
+  loadReport(): void {
+    this.repBusy.set(true);
+    this.repMsg.set('');
+    this.api.writeoffReport$(this.repDate() || undefined).subscribe({
+      next: (r) => { this.repBusy.set(false); this.rep.set(r); },
+      error: (e: unknown) => { this.repBusy.set(false); this.repMsg.set(httpErr(e)); },
+    });
+  }
+
+  loadRuns(): void {
+    this.api.writeoffRuns$().subscribe({
+      next: (r) => this.runs.set(r),
+      error: (e: unknown) => this.repMsg.set(httpErr(e)),
+    });
+  }
+
+  openRun(date: string): void {
+    this.repDate.set(date);
+    this.loadReport();
   }
 
   // ---- Категории ----

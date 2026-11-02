@@ -189,6 +189,36 @@ export class ApiService {
   }
   testGpt$(): Observable<M.GptTestResult> { return this.http.post<M.GptTestResult>(`${this.base}/settings/gpt/test`, {}); }
 
+  /** Расписание автосписания заказов (сохранение). */
+  saveWriteoff$(body: M.WriteoffSettings): Observable<{ ok: boolean; writeoff: M.WriteoffSettings; writeoffNext: { dateIso: string; time: string } | null }> {
+    return this.http.patch<{ ok: boolean; writeoff: M.WriteoffSettings; writeoffNext: { dateIso: string; time: string } | null }>(`${this.base}/settings/writeoff`, body);
+  }
+  /** Ручной прогон списания за дату доставки (по умолчанию — сегодняшняя). */
+  runWriteoffNow$(date?: string): Observable<{ ok: boolean; skipped: boolean; deliveryDate: string; firedSlot: string; linesWritten: number; batches: number; error?: string }> {
+    return this.http.post<{ ok: boolean; skipped: boolean; deliveryDate: string; firedSlot: string; linesWritten: number; batches: number; error?: string }>(
+      `${this.base}/settings/writeoff/run`, date ? { deliveryDate: date } : {}, {});
+  }
+
+  /** Расписание доставок (сохранение дней недели). */
+  saveDelivery$(body: M.DeliverySettings): Observable<{ ok: boolean; delivery: M.DeliverySettings; deliveryUpcoming: string[] }> {
+    return this.http.patch<{ ok: boolean; delivery: M.DeliverySettings; deliveryUpcoming: string[] }>(`${this.base}/settings/delivery`, body);
+  }
+  /** Завести следующий обнулённый лист доставки в прод-таблице (по умолчанию — ближайшая дата). */
+  createDeliveryTab$(date?: string): Observable<{ ok: boolean; date: string; skipped?: boolean; sheetName?: string; created?: boolean; note?: string; error?: string }> {
+    return this.http.post<{ ok: boolean; date: string; skipped?: boolean; sheetName?: string; created?: boolean; note?: string; error?: string }>(
+      `${this.base}/settings/delivery/tab`, date ? { date } : {}, {});
+  }
+  /** Отчёт по автосписанию за дату доставки (по умолчанию — сегодняшняя MSK). */
+  writeoffReport$(date?: string): Observable<M.WriteOffReport> {
+    let hp = new HttpParams();
+    if (date) hp = hp.set('date', date);
+    return this.http.get<M.WriteOffReport>(`${this.base}/settings/writeoff/report`, { params: hp });
+  }
+  /** Последние прогоны списания (архив). */
+  writeoffRuns$(): Observable<M.WriteOffRun[]> {
+    return this.http.get<M.WriteOffRun[]>(`${this.base}/settings/writeoff/runs`);
+  }
+
   // ---- категории товаров (в настройках, только админ) ----
   cardCategories$(): Observable<M.CardCategory[]> { return this.http.get<M.CardCategory[]>(`${this.base}/settings/categories`); }
   createCategory$(name: string): Observable<{ id: number; name: string }> {

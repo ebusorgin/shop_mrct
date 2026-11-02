@@ -92,9 +92,14 @@ async function doSync(full: boolean, onlyTab?: string): Promise<SyncSummary> {
       try {
         const cells = await withRetry(() => readSheet(sheetId, tab), 3);
         const parsed = parseSheet(cells, wantStores);
-        if (!parsed.rows.length) continue; // служебный/пустой лист — не ошибка
-        summary.tabsParsed += 1;
         const dateIso = dates.get(tab.name)!;
+        if (!parsed.rows.length) {
+          // пустой (обнулённый) лист — тоже живой: регистрируем, чтобы выталкивателю
+          // заказов было куда лечь до первой строки от магазина; применять дифф не к чему
+          await upsertTab(tab.name, dateIso, parsed.hash, 0);
+          continue;
+        }
+        summary.tabsParsed += 1;
         const tabId = await upsertTab(tab.name, dateIso, parsed.hash, parsed.rows.length);
         // «горячие» листы (сегодня + целевой по уведомлению) — куда позже выталкиваем БД
         if (writeBackActive() && (dateIso === todayIso || tab.name === onlyTab)) pushTargets.add(tabId);
@@ -182,8 +187,9 @@ async function categoryId(client: PoolClient, name: string): Promise<number | nu
  *   • лист != sheet_qty и БД не правилась  — правка человека → импортируем в БД + обновляем базлайн.
  * Строки только в БД (ручные/вытолкнутые) НЕ удаляем — их вытолкнет план записи; g_sheet-строки,
  * пропавшие из листа (и не правленные в CRM) — удаляем, как раньше.
+ * Экспортируется для тестов сведения «лист ↔ БД» на реальной схеме.
  */
-async function applyTab(
+export async function applyTab(
   tabId: number,
   dateIso: string,
   rows: SheetOrderRow[]

@@ -4,6 +4,7 @@ import { migrate } from './migrate';
 import { pool } from './db';
 import { startOrderSyncLoop } from './services/order-sync';
 import { startSheetWatch } from './services/sheet-watch';
+import { startWriteOffLoop } from './services/writeoff';
 import { ensureAdminUser, purgeExpiredSessions } from './services/auth';
 
 async function main(): Promise<void> {
@@ -16,6 +17,7 @@ async function main(): Promise<void> {
   });
   startOrderSyncLoop();
   startSheetWatch();
+  startWriteOffLoop();
 }
 
 main().catch(async (e: unknown) => {

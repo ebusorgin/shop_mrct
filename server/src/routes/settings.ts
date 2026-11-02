@@ -12,10 +12,21 @@ import {
   GPT_DEFAULTS,
   gptSettings,
   normalizeProxyUrl,
+  normalizeWriteoffSchedule,
+  normalizeDeliverySchedule,
+  deliverySettings,
+  saveDeliverySettings,
+  DELIVERY_DEFAULTS,
   proxyTarget,
   saveGptSettings,
+  saveWriteoffSettings,
   tcpProbe,
+  WRITEOFF_DEFAULTS,
+  writeoffSettings,
 } from '../services/settings';
+import { nextDue, runWriteOff, writeOffReport, recentWriteOffRuns } from '../services/writeoff';
+import { upcomingDeliveryDates, nextDeliveryDate } from '../services/delivery';
+import { ensureDeliveryTab } from '../services/sheet-tabs';
 import { createGptClient } from '../services/gpt-transport';
 
 export const settingsRouter = Router();
@@ -26,11 +37,19 @@ settingsRouter.get(
   wrap(async (_req, res) => {
     const gpt = await gptSettings();
     const target = proxyTarget(gpt.proxyUrl);
+    const writeoff = await writeoffSettings();
+    const delivery = await deliverySettings();
     res.json({
       gpt,
       defaults: GPT_DEFAULTS,
       openai: { keyConfigured: Boolean(config.openaiKey), model: config.openaiModel },
       proxy: { ...target, reachable: await tcpProbe(target.host, target.port) },
+      writeoff,
+      writeoffDefaults: WRITEOFF_DEFAULTS,
+      writeoffNext: nextDue(writeoff),
+      delivery,
+      deliveryDefaults: DELIVERY_DEFAULTS,
+      deliveryUpcoming: upcomingDeliveryDates(delivery, 4),
     });
   })
 );
@@ -93,6 +112,130 @@ settingsRouter.post(
           : '';
       res.json({ ok: false, ms: Date.now() - started, transport, error: (detail + hint).slice(0, 400) });
     }
+  })
+);
+
+// ============ РАСПИСАНИЕ АВТОСПИСАНИЯ ЗАКАЗОВ ============
+
+/** Сохранить расписание: вкл/выкл, дни недели, список времён, таймзона. */
+settingsRouter.patch(
+  '/writeoff',
+  wrap(async (req, res) => {
+    const before = await writeoffSettings();
+    const next = normalizeWriteoffSchedule(req.body ?? {});
+    const writeoff = await saveWriteoffSettings(next, req.user);
+    await audit(req.user, {
+      action: 'update',
+      entity: 'setting',
+      entityId: 'writeoff',
+      title: writeoff.enabled
+        ? `Автосписание: ${writeoff.weekdays.length} дн. × ${writeoff.times.join(', ') || '—'}`
+        : 'Автосписание выключено',
+      details: { from: before, to: writeoff },
+    });
+    res.json({ ok: true, writeoff, writeoffNext: nextDue(writeoff) });
+  })
+);
+
+/**
+ * Ручной прогон списания (админ): по умолчанию — за сегодняшнюю MSK-дату.
+ * firedSlot уникализируется временем запуска, чтобы не упираться в автослот.
+ */
+settingsRouter.post(
+  '/writeoff/run',
+  wrap(async (req, res) => {
+    const body = req.body ?? {};
+    const cfg = await writeoffSettings();
+    // дата доставки по таймзоне расписания (en-CA => YYYY-MM-DD); без тела — сегодняшняя
+    const msk = new Intl.DateTimeFormat('en-CA', { timeZone: cfg.tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+    const deliveryDate = typeof body.deliveryDate === 'string' && body.deliveryDate ? body.deliveryDate : msk;
+    const firedSlot =
+      typeof body.firedSlot === 'string' && body.firedSlot
+        ? body.firedSlot
+        : `manual-${new Date().toISOString().slice(11, 19).replace(/:/g, '')}`;
+    const result = await runWriteOff(deliveryDate, firedSlot, req.user);
+    await audit(req.user, {
+      action: 'post',
+      entity: 'setting',
+      entityId: `writeoff:${deliveryDate}`,
+      title: `Ручное автосписание ${deliveryDate} (${firedSlot})`,
+      details: { deliveryDate, firedSlot, skipped: result.skipped, linesWritten: result.linesWritten, batches: result.batches },
+    });
+    res.json({
+      ok: !result.error,
+      skipped: result.skipped,
+      deliveryDate,
+      firedSlot,
+      linesWritten: result.linesWritten,
+      batches: result.batches,
+      error: result.error,
+    });
+  })
+);
+
+// ============ РАСПИСАНИЕ ДОСТАВОК ============
+
+/** Сохранить дни доставки: какие дни недели + таймзона. */
+settingsRouter.patch(
+  '/delivery',
+  wrap(async (req, res) => {
+    const before = await deliverySettings();
+    const next = normalizeDeliverySchedule(req.body ?? {});
+    const delivery = await saveDeliverySettings(next, req.user);
+    await audit(req.user, {
+      action: 'update',
+      entity: 'setting',
+      entityId: 'delivery',
+      title: `Дни доставки: ${delivery.weekdays.length} дн.`,
+      details: { from: before, to: delivery },
+    });
+    res.json({ ok: true, delivery, deliveryUpcoming: upcomingDeliveryDates(delivery, 4) });
+  })
+);
+
+/**
+ * Завести следующий обнулённый лист доставки в прод-таблице (админ).
+ * Тело: { date?: 'YYYY-MM-DD' }; без даты — ближайшая доставка от сегодня.
+ * Требует рубильник GSHEET_WRITE_ENABLED; идемпотентно — существующий лист не трогает.
+ */
+settingsRouter.post(
+  '/delivery/tab',
+  wrap(async (req, res) => {
+    const body = req.body ?? {};
+    const cfg = await deliverySettings();
+    const date =
+      typeof body.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.date) ? body.date : nextDeliveryDate(cfg);
+    if (!date) return res.status(400).json({ error: 'Дата не задана, а расписание доставок пустое' });
+    const result = await ensureDeliveryTab(date);
+    await audit(req.user, {
+      action: 'post',
+      entity: 'setting',
+      entityId: `delivery-tab:${date}`,
+      title: `Лист доставки ${result.sheetName ?? date}: ${result.ok ? (result.created ? 'создан' : 'уже был') : 'не создан'}`,
+      details: { date, ...result },
+    });
+    res.status(result.ok ? 200 : 502).json({ date, ...result });
+  })
+);
+
+/** Отчёт по автосписанию за дату доставки (админ): готовая продукция + сырьё + стоимость. */
+settingsRouter.get(
+  '/writeoff/report',
+  wrap(async (req, res) => {
+    const cfg = await writeoffSettings();
+    const date =
+      typeof req.query.date === 'string' && req.query.date
+        ? req.query.date
+        : new Intl.DateTimeFormat('en-CA', { timeZone: cfg.tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+    res.json(await writeOffReport(date));
+  })
+);
+
+/** Последние прогоны списания (для журнала/архива). */
+settingsRouter.get(
+  '/writeoff/runs',
+  wrap(async (_req, res) => {
+    res.json(await recentWriteOffRuns());
   })
 );
 

@@ -149,7 +149,10 @@ ordersRouter.get(
       `select date_tab::text as date, count(*)::int as cnt,
               coalesce(max(tab_id), 0) as "tabId",
               bool_or(source = 'g_sheet') as synced,
-              bool_or(source = 'manual') as manual
+              bool_or(source = 'manual') as manual,
+              bool_or(exists (select 1 from order_tabs t
+                               where t.extract_date = orders.date_tab
+                                 and t.status in ('locked','archived'))) as locked
          from orders where store_id = $1 group by 1 order by 1 desc limit 400`,
       [store]
     );
@@ -424,6 +427,14 @@ ordersRouter.post(
       await asUser(client, req.user);
       const { rows: stRows } = await client.query('select id, name from stores where id = $1 and active', [store]);
       if (!stRows.length) throw new ApiError(404, 'Магазин не найден');
+      // лист закрыт после автосписания — магазинному сотруднику правки на закрытую доставку нет
+      if (ownStore(req) !== null) {
+        const { rows: lockRows } = await client.query(
+          `select 1 from order_tabs where extract_date = $1::date and status in ('locked','archived') limit 1`,
+          [date]
+        );
+        if (lockRows.length) throw new ApiError(409, 'Лист доставки закрыт (после списания) — заказ добавить нельзя');
+      }
 
       const created: { id: number; name: string; qty: number; unit: string }[] = [];
       const merged: number[] = [];
@@ -559,6 +570,12 @@ ordersRouter.patch(
       const scope = ownStore(req);
       if (scope !== null) {
         if (Number(rows[0].storeId) !== scope) throw new ApiError(404, 'Заказ не найден');
+        // закрытый после списания лист — магазинная правка уже бессмысленна (данные погашены на склад)
+        const { rows: lockRows } = await client.query(
+          `select 1 from order_tabs where extract_date = $1::date and status in ('locked','archived') limit 1`,
+          [rows[0].dateTab]
+        );
+        if (lockRows.length) throw new ApiError(409, 'Лист доставки закрыт (после списания) — править заказ нельзя');
         if (req.body.status !== undefined && String(req.body.status) !== 'cancelled') {
           throw new ApiError(403, 'Магазин может только отменить свой заказ');
         }

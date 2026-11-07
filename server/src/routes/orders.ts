@@ -21,6 +21,7 @@ import { requireOffice } from '../services/auth';
 import { broadcast } from '../services/live';
 import { generateOtpremniceDoc } from '../services/otpremnica';
 import { deliverySettings } from '../services/settings';
+import { currentDeliveryDate, closePastOrders } from '../services/delivery';
 import { mskNow } from '../services/tz';
 
 export const ordersRouter = Router();
@@ -66,7 +67,7 @@ async function getCombinedDates(storeId?: number | null) {
       tabId: Number(r.tabId),
       synced: Boolean(r.synced),
       manual: Boolean(r.manual),
-      locked: Boolean(r.locked),
+      locked: Boolean(r.locked) || r.date < todayIso,
     });
   }
 
@@ -75,7 +76,7 @@ async function getCombinedDates(storeId?: number | null) {
 
   for (const [date, info] of dbMap.entries()) {
     if (date >= todayIso) {
-      if (deliveryDatesSet.has(date)) {
+      if (deliveryDatesSet.has(date) || info.cnt > 0) {
         resultDatesMap.set(date, info);
       }
     } else {
@@ -96,6 +97,18 @@ async function getCombinedDates(storeId?: number | null) {
         });
       }
     }
+  }
+
+  const actualDelivery = currentDeliveryDate(delivery) || todayIso;
+  if (!resultDatesMap.has(actualDelivery)) {
+    resultDatesMap.set(actualDelivery, {
+      date: actualDelivery,
+      cnt: 0,
+      tabId: 0,
+      synced: false,
+      manual: false,
+      locked: false,
+    });
   }
 
   const sorted = [...resultDatesMap.values()].sort((a, b) => b.date.localeCompare(a.date));
@@ -334,19 +347,20 @@ ordersRouter.get(
     );
     const stores = storeRows as { id: number; code: string; name: string }[];
 
+    const delivery = await deliverySettings();
+    const todayIso = mskNow(delivery.tz).dateIso;
+    const actualDelivery = currentDeliveryDate(delivery) || todayIso;
+
+    // Закрываем все незакрытые заказы на прошедшие даты и блокируем листы доставки
+    await closePastOrders(delivery.tz);
+
     // список листов-дат с заказами у активных магазинов — для переключателя
     const dates = await getCombinedDates(scope);
 
-    // дата по умолчанию: самый свежий лист с позициями в работе, иначе просто самый свежий
+    // дата по умолчанию: запрошенная дата либо актуальная дата доставки
     let date = qDate;
     if (!date) {
-      const { rows: fresh } = await pool.query(
-        `select max(o.date_tab)::text as d
-           from orders o join stores st on st.id = o.store_id and st.active
-          where o.status in ('synced','placed')${scope ? ' and o.store_id = $1' : ''}`,
-        scope ? [scope] : []
-      );
-      date = fresh[0]?.d ?? dates[0]?.date ?? null;
+      date = actualDelivery;
     }
 
     const conds: string[] = ['st.active'];

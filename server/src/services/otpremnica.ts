@@ -3,10 +3,10 @@ import { productionSettings, ProductionDetails } from './settings';
 
 export { ProductionDetails };
 
-export async function generateOtpremniceDoc(date: string): Promise<Buffer> {
+export async function generateOtpremniceDoc(date: string, storeId?: number): Promise<Buffer> {
   const prod = await productionSettings();
 
-  const { rows: stores } = await pool.query(
+  let { rows: stores } = await pool.query(
     `select st.id, st.code, st.name, st.address, st.pib, st.mbr, st.account_no as "accountNo"
        from stores st
        join orders o on o.store_id = st.id
@@ -18,7 +18,12 @@ export async function generateOtpremniceDoc(date: string): Promise<Buffer> {
 
   const sections: string[] = [];
 
-  for (let i = 0; i < stores.length; i++) {
+  // Если указан storeId, оставляем только нужный магазин
+if (storeId !== undefined && storeId !== null) {
+  const filtered = stores.filter((s:any) => s.id === storeId);
+  stores = filtered;
+}
+for (let i = 0; i < stores.length; i++) {
     const st = stores[i];
     const { rows: items } = await pool.query(
       `select o.id, coalesce(tc.name, o.source_name) as name,

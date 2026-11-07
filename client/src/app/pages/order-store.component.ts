@@ -87,11 +87,15 @@ interface CartLine {
               </td>
               <td class="num" data-l="Кол-во">
                 @if (isEditing(it)) {
-                  <input type="number" min="0" step="0.01" style="width:84px;text-align:right"
-                         [ngModel]="editQty()" (ngModelChange)="editQty.set($event)" (keyup.enter)="saveQty(it)" />
-                  <select style="width:auto" [ngModel]="editUnit()" (ngModelChange)="onEditUnit($event, it)">
-                    @for (u of unitsFor(baseUnitOf(it)); track u) { <option [ngValue]="u">{{ u }}</option> }
-                  </select>
+                  <div class="row" style="gap:2px; align-items:center; justify-content:flex-end">
+                    <button type="button" class="btn sm" style="padding:1px 5px" (click)="bumpEdit(-1)">▼</button>
+                    <input type="number" min="0" step="0.01" style="width:72px;text-align:right"
+                           [ngModel]="editQty()" (ngModelChange)="editQty.set($event)" (keyup.enter)="saveQty(it)" />
+                    <button type="button" class="btn sm" style="padding:1px 5px" (click)="bumpEdit(1)">▲</button>
+                    <select style="width:auto" [ngModel]="editUnit()" (ngModelChange)="onEditUnit($event, it)">
+                      @for (u of unitsFor(baseUnitOf(it)); track u) { <option [ngValue]="u">{{ u }}</option> }
+                    </select>
+                  </div>
                 } @else { {{ fmtQty(it.qty, unitOf(it)) }} }
               </td>
               <td class="num" data-l="Мин.">
@@ -166,8 +170,12 @@ interface CartLine {
             <tr>
               <td>{{ l.name }}</td>
               <td class="num" data-l="Кол-во">
-                <input type="number" min="0" step="0.01" style="width:96px;text-align:right"
-                       [ngModel]="l.qty" (ngModelChange)="setQty(l.cardId, $event)" />
+                <div class="row" style="gap:2px; align-items:center; justify-content:flex-end">
+                  <button type="button" class="btn sm" style="padding:1px 5px" (click)="bumpCart(l, -1)">▼</button>
+                  <input type="number" min="0" step="0.01" style="width:80px;text-align:right"
+                         [ngModel]="l.qty" (ngModelChange)="setQty(l.cardId, $event)" />
+                  <button type="button" class="btn sm" style="padding:1px 5px" (click)="bumpCart(l, 1)">▲</button>
+                </div>
               </td>
               <td data-l="Ед.">
                 <select [ngModel]="l.unit" (ngModelChange)="setUnit(l.cardId, $event)">
@@ -466,6 +474,16 @@ export class OrderStoreComponent implements OnInit {
   }
   setQty(cardId: number, qty: number): void {
     this.cart.update((list) => list.map((l) => (l.cardId === cardId ? { ...l, qty: Number(qty) || 0 } : l)));
+  }
+  bumpCart(l: CartLine, delta: 1 | -1): void {
+    const step = l.baseUnit === 'г' || l.baseUnit === 'мл' ? 0.5 : 1;
+    const next = Math.max(0, Math.round((Number(l.qty || 0) + delta * step) * 1000) / 1000);
+    this.setQty(l.cardId, next);
+  }
+  bumpEdit(delta: 1 | -1): void {
+    const step = 1;
+    const next = Math.max(0, Math.round((Number(this.editQty() || 0) + delta * step) * 1000) / 1000);
+    this.editQty.set(next);
   }
   setUnit(cardId: number, unit: string): void {
     this.cart.update((list) => list.map((l) => (l.cardId === cardId ? { ...l, unit } : l)));

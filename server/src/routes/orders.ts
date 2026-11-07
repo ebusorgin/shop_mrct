@@ -20,6 +20,8 @@ import { asUser, audit, auditTx } from '../services/audit';
 import { requireOffice } from '../services/auth';
 import { broadcast } from '../services/live';
 import { generateOtpremniceDoc } from '../services/otpremnica';
+import { deliverySettings } from '../services/settings';
+import { mskNow } from '../services/tz';
 
 export const ordersRouter = Router();
 
@@ -31,11 +33,80 @@ function ownStore(req: Request): number | null {
   return req.user?.storeId ?? null;
 }
 
+async function getCombinedDates(storeId?: number | null) {
+  const delivery = await deliverySettings();
+  const todayIso = mskNow(delivery.tz).dateIso;
+
+  const query = storeId != null
+    ? `select date_tab::text as date, count(*)::int as cnt,
+              coalesce(max(tab_id), 0) as "tabId",
+              bool_or(source = 'g_sheet') as synced,
+              bool_or(source = 'manual') as manual,
+              bool_or(exists (select 1 from order_tabs t
+                               where t.extract_date = orders.date_tab
+                                 and t.status in ('locked','archived'))) as locked
+         from orders where store_id = $1 group by 1 order by 1 desc limit 400`
+    : `select o.date_tab::text as date, count(*)::int as cnt,
+              coalesce(max(o.tab_id), 0) as "tabId",
+              bool_or(o.source = 'g_sheet') as synced,
+              bool_or(o.source = 'manual') as manual,
+              bool_or(exists (select 1 from order_tabs t
+                               where t.extract_date = o.date_tab
+                                 and t.status in ('locked','archived'))) as locked
+         from orders o join stores st on st.id = o.store_id and st.active
+         ${storeId != null ? 'where o.store_id = $1' : ''}
+        group by 1 order by 1 desc limit 200`;
+
+  const { rows } = await pool.query(query, storeId != null ? [storeId] : []);
+  const dbMap = new Map<string, any>();
+  for (const r of rows) {
+    dbMap.set(r.date, {
+      date: r.date,
+      cnt: Number(r.cnt),
+      tabId: Number(r.tabId),
+      synced: Boolean(r.synced),
+      manual: Boolean(r.manual),
+      locked: Boolean(r.locked),
+    });
+  }
+
+  const deliveryDatesSet = new Set(delivery.dates || []);
+  const resultDatesMap = new Map<string, any>();
+
+  for (const [date, info] of dbMap.entries()) {
+    if (date >= todayIso) {
+      if (deliveryDatesSet.has(date)) {
+        resultDatesMap.set(date, info);
+      }
+    } else {
+      resultDatesMap.set(date, info);
+    }
+  }
+
+  for (const d of delivery.dates) {
+    if (d >= todayIso) {
+      if (!resultDatesMap.has(d)) {
+        resultDatesMap.set(d, {
+          date: d,
+          cnt: 0,
+          tabId: 0,
+          synced: false,
+          manual: false,
+          locked: false,
+        });
+      }
+    }
+  }
+
+  const sorted = [...resultDatesMap.values()].sort((a, b) => b.date.localeCompare(a.date));
+  return sorted;
+}
+
 const ORDER_SELECT = `
   select o.id, o.store_id as "storeId", st.name as "storeName", o.card_id as "cardId",
          coalesce(tc.name, o.source_name) as name, o.source_name as "sourceName",
          o.plu, oc.name as category, tcc.name as "cardCategory",
-         o.min_qty::float8 as "minQty",
+         coalesce(o.min_qty, tc.min_qty)::float8 as "minQty",
          o.quantity::float8 as qty, o.unit_code as "unitCode",
          u.code as "cardUnit", coalesce(tc.portion_qty::float8, 0) as "portionQty",
          o.ek_price::float8 as ek, o.vk_price::float8 as vk,
@@ -153,18 +224,8 @@ ordersRouter.get(
   wrap(async (req, res) => {
     const store = ownStore(req) ?? Number(req.query.store);
     if (!Number.isInteger(store)) throw new ApiError(400, 'store обязателен');
-    const { rows } = await pool.query(
-      `select date_tab::text as date, count(*)::int as cnt,
-              coalesce(max(tab_id), 0) as "tabId",
-              bool_or(source = 'g_sheet') as synced,
-              bool_or(source = 'manual') as manual,
-              bool_or(exists (select 1 from order_tabs t
-                               where t.extract_date = orders.date_tab
-                                 and t.status in ('locked','archived'))) as locked
-         from orders where store_id = $1 group by 1 order by 1 desc limit 400`,
-      [store]
-    );
-    res.json(rows);
+    const dates = await getCombinedDates(store);
+    res.json(dates);
   })
 );
 
@@ -274,17 +335,7 @@ ordersRouter.get(
     const stores = storeRows as { id: number; code: string; name: string }[];
 
     // список листов-дат с заказами у активных магазинов — для переключателя
-    const { rows: dateRows } = await pool.query(
-      `select o.date_tab::text as date, count(*)::int as cnt,
-              coalesce(max(o.tab_id), 0) as "tabId",
-              bool_or(o.source = 'g_sheet') as synced,
-              bool_or(o.source = 'manual') as manual
-         from orders o join stores st on st.id = o.store_id and st.active
-         ${scope ? 'where o.store_id = $1' : ''}
-        group by 1 order by 1 desc limit 200`,
-      scope ? [scope] : []
-    );
-    const dates = dateRows as { date: string; cnt: number; tabId: number; synced: boolean; manual: boolean }[];
+    const dates = await getCombinedDates(scope);
 
     // дата по умолчанию: самый свежий лист с позициями в работе, иначе просто самый свежий
     let date = qDate;
@@ -461,7 +512,7 @@ ordersRouter.post(
         let minQty: number | null = null;
         if (cardId !== null) {
           const { rows: cRows } = await client.query(
-            `select tc.name, tc.plu, u.code as "unitCode", coalesce(tc.portion_qty::float8, 0) as "portionQty"
+            `select tc.name, tc.plu, tc.min_qty::float8 as "minQty", u.code as "unitCode", coalesce(tc.portion_qty::float8, 0) as "portionQty"
                from tech_cards tc
                join units u on u.id = tc.portion_unit_id where tc.id = $1`,
             [cardId]
@@ -471,28 +522,16 @@ ordersRouter.post(
           baseUnit = cRows[0].unitCode;
           unit = inputUnit ?? baseUnit;
           baseQty = toBase(printed, unit, baseUnit, cRows[0].portionQty);
+          minQty = cRows[0].minQty ?? null;
         } else {
           name = String(raw.name ?? '').trim();
           if (!name) throw new ApiError(400, 'Для позиции без cardId нужно name');
           unit = inputUnit ?? 'кг';
           baseUnit = unit === 'шт' ? 'шт' : unit === 'л' ? 'мл' : unit === 'кг' ? 'г' : unit;
           baseQty = toBase(printed, unit, baseUnit);
+          minQty = null;
         }
 
-        // Минимум берём из СВЕЖЕЙ строки источника (последний лист по дате), а не max по всей
-        // истории — иначе единичный выброс в глубоком прошлом завышает требование. Ищем по card_id
-        // (у ручных позиций он есть), иначе по имени — это связывает «Борщ (порция)» с листовой строкой.
-        const { rows: minRows } = await client.query(
-          `select min_qty::float8 as mn
-             from orders
-            where min_qty is not null
-              and ( ($1::int is not null and card_id = $1)
-                    or ($1::int is null and source_name = $2) )
-            order by date_tab desc nulls last, id desc
-            limit 1`,
-          [cardId, name]
-        );
-        minQty = minRows[0]?.mn ?? null;
         if (!force && minQty !== null && baseQty < minQty - 1e-6) {
           violations.push({ name, qty: baseQty, minQty, unit: baseUnit });
           continue;

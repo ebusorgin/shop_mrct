@@ -19,6 +19,7 @@ interface CardDraft {
   note: string;
   portionQty: number | null;
   portionUnitId: number | null;
+  minQty: number | null;
   items: CardDraftItem[];
 }
 
@@ -108,6 +109,7 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
                 @for (u of units(); track u.id) { <option [ngValue]="u.id">{{ u.code }}</option> }
               </select>
             </label>
+            <label class="f">Мин. заказ<input type="number" step="0.1" [(ngModel)]="d.minQty" placeholder="по умолч." /></label>
             <label class="f" style="flex:1">Примечание<input [(ngModel)]="d.note" /></label>
           </div>
           <hr class="hr" />
@@ -368,6 +370,7 @@ export class CardsComponent implements OnInit {
     this.draft.set({
       id: null, name: '', note: '', portionQty: 400,
       portionUnitId: this.units().find((u) => u.code === 'г')?.id ?? null,
+      minQty: null,
       items: [],
     });
     this.buildDiagram();
@@ -380,7 +383,7 @@ export class CardsComponent implements OnInit {
     this.preview.set([]);
     this.draft.set({
       id: c.id, name: c.name, note: c.note,
-      portionQty: c.portionQty, portionUnitId: c.portionUnitId,
+      portionQty: c.portionQty, portionUnitId: c.portionUnitId, minQty: c.minQty ?? null,
       items: c.items.map((i) => ({ sourceType: i.sourceType, refId: i.refId, qty: i.qty, unitId: i.unitId })),
     });
     this.buildDiagram();
@@ -433,7 +436,7 @@ export class CardsComponent implements OnInit {
       this.err.set('Добавьте хотя бы одну позицию состава');
       return;
     }
-    const body = { name: d.name.trim(), note: d.note, portionQty: d.portionQty, portionUnitId: d.portionUnitId, items };
+    const body = { name: d.name.trim(), note: d.note, portionQty: d.portionQty, portionUnitId: d.portionUnitId, minQty: d.minQty, items };
     const sub = {
       next: () => {
         this.msg.set(`Техкарта «${d.name}» сохранена ✓`);

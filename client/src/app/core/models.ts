@@ -258,6 +258,7 @@ export interface TechCard {
   portionQty: number;
   portionUnitId: number;
   portionUnitCode: string;
+  minQty?: number | null;
   /** категория техкарты (для группировки списка) */
   category: string | null;
   categoryId?: number | null;

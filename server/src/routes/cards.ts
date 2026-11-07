@@ -32,6 +32,7 @@ function parseItems(raw: unknown): CardItemDto[] {
 const CARD_SQL = `
   select tc.id, tc.name, tc.note, tc.portion_qty as "portionQty",
          tc.portion_unit_id as "portionUnitId", pu.code as "portionUnitCode",
+         tc.min_qty::float8 as "minQty",
          tc.category_id as "categoryId", tcc.name as category,
          coalesce(
            jsonb_agg(
@@ -55,6 +56,7 @@ const CARD_SQL = `
 const decode = (r: Record<string, unknown>) => ({
   ...r,
   portionQty: Number(r.portionQty),
+  minQty: r.minQty === null || r.minQty === undefined ? null : Number(r.minQty),
   items: typeof r.items === 'string' ? JSON.parse(r.items) : r.items,
 });
 
@@ -103,14 +105,15 @@ cardsRouter.post(
     const name = reqStr(req.body, 'name');
     const portionQty = reqNum(req.body, 'portionQty');
     const portionUnitId = reqInt(req.body, 'portionUnitId');
+    const minQty = req.body.minQty === undefined || req.body.minQty === null || req.body.minQty === '' ? null : Number(req.body.minQty);
     const note = typeof req.body.note === 'string' ? req.body.note : '';
     const items = parseItems(reqArr(req.body, 'items'));
     const id = await tx(async (client) => {
       await assertBaseUnit(client, portionUnitId, 'Техкарта');
       const { rows } = await client.query(
-        `insert into tech_cards (name, portion_qty, portion_unit_id, note, created_by, updated_by)
-         values ($1,$2,$3,$4,$5,$5) returning id`,
-        [name, portionQty, portionUnitId, note, req.user?.id ?? null]
+        `insert into tech_cards (name, portion_qty, portion_unit_id, note, min_qty, created_by, updated_by)
+         values ($1,$2,$3,$4,$5,$6,$6) returning id`,
+        [name, portionQty, portionUnitId, note, minQty, req.user?.id ?? null]
       );
       await saveItems(client, rows[0].id, items);
       await auditTx(client, req.user, {
@@ -118,7 +121,7 @@ cardsRouter.post(
         entity: 'tech_card',
         entityId: rows[0].id as number,
         title: `Техкарта «${name}»`,
-        details: { portionQty, portionUnitId, items: items.length },
+        details: { portionQty, portionUnitId, minQty, items: items.length },
       });
       return rows[0].id as number;
     });
@@ -133,19 +136,20 @@ cardsRouter.patch(
     const name = reqStr(req.body, 'name');
     const portionQty = reqNum(req.body, 'portionQty');
     const portionUnitId = reqInt(req.body, 'portionUnitId');
+    const minQty = req.body.minQty === undefined || req.body.minQty === null || req.body.minQty === '' ? null : Number(req.body.minQty);
     const note = typeof req.body.note === 'string' ? req.body.note : '';
     const items = parseItems(reqArr(req.body, 'items'));
     await tx(async (client) => {
       await assertBaseUnit(client, portionUnitId, 'Техкарта');
       const { rows: before } = await client.query(
-        'select name, portion_qty::float8 as portion_qty, portion_unit_id, note from tech_cards where id = $1',
+        'select name, portion_qty::float8 as portion_qty, portion_unit_id, note, min_qty::float8 as min_qty from tech_cards where id = $1',
         [id]
       );
       if (!before.length) throw new ApiError(404, 'Техкарта не найдена');
       const { rows: beforeItems } = await client.query('select count(*)::int as n from tech_card_items where card_id = $1', [id]);
       await client.query(
-        'update tech_cards set name=$2, portion_qty=$3, portion_unit_id=$4, note=$5, updated_by=$6 where id=$1',
-        [id, name, portionQty, portionUnitId, note, req.user?.id ?? null]
+        'update tech_cards set name=$2, portion_qty=$3, portion_unit_id=$4, note=$5, min_qty=$6, updated_by=$7 where id=$1',
+        [id, name, portionQty, portionUnitId, note, minQty, req.user?.id ?? null]
       );
       await client.query('delete from tech_card_items where card_id = $1', [id]);
       await saveItems(client, id, items);
@@ -156,7 +160,7 @@ cardsRouter.patch(
         title: `Техкарта «${name}»`,
         details: diff(
           { ...before[0], items: beforeItems[0].n },
-          { name, portion_qty: portionQty, portion_unit_id: portionUnitId, note, items: items.length }
+          { name, portion_qty: portionQty, portion_unit_id: portionUnitId, min_qty: minQty, note, items: items.length }
         ),
       });
     });

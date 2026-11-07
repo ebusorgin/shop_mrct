@@ -18,7 +18,6 @@ import type { Actor } from './audit';
 import { writeoffSettings, deliverySettings, type WriteoffSettings } from './settings';
 import { mskNow, type TzNow } from './tz';
 import { nextDeliveryDate } from './delivery';
-import { ensureDeliveryTab, type NewTabResult } from './sheet-tabs';
 
 // часы по таймзоне живут в tz (общий для delivery/sheet-tabs); реэкспорт — прежние импортеры
 export { mskNow } from './tz';
@@ -28,21 +27,19 @@ const round3 = (n: number): number => Math.round(n * 1000) / 1000;
 
 /** Пора ли гасить списание в этот момент? */
 export function isSlotDue(now: TzNow, cfg: WriteoffSettings): boolean {
-  return cfg.enabled && cfg.dates.includes(now.dateIso) && cfg.times.includes(now.hhmm);
+  return cfg.enabled && cfg.dates.includes(now.dateIso) && now.hhmm === cfg.time;
 }
 
 /** Ближайший срабатывающий слот для превью на странице настроек. */
 export function nextDue(cfg: WriteoffSettings, at: Date = new Date()): { dateIso: string; time: string } | null {
-  if (!cfg.enabled || !cfg.dates.length || !cfg.times.length) return null;
+  if (!cfg.enabled || !cfg.dates.length || !cfg.time) return null;
   const now = mskNow(cfg.tz, at);
-  const times = [...cfg.times].sort();
   if (cfg.dates.includes(now.dateIso)) {
-    const later = times.find((t) => t > now.hhmm);
-    if (later) return { dateIso: now.dateIso, time: later };
+    if (cfg.time > now.hhmm) return { dateIso: now.dateIso, time: cfg.time };
   }
   const futureDates = cfg.dates.filter((d) => d > now.dateIso);
   if (futureDates.length > 0) {
-    return { dateIso: futureDates[0], time: times[0] };
+    return { dateIso: futureDates[0], time: cfg.time };
   }
   return null;
 }
@@ -193,12 +190,12 @@ export function startWriteOffLoop(intervalMs = 60_000): NodeJS.Timeout {
   const tick = async (): Promise<void> => {
     try {
       const cfg = await writeoffSettings();
-      if (!cfg.enabled || !cfg.weekdays.length || !cfg.times.length) return;
+      if (!cfg.enabled || !cfg.dates.length || !cfg.time) return;
       const now = mskNow(cfg.tz);
       if (!isSlotDue(now, cfg)) return;
-      const res = await runWriteOff(now.dateIso, now.hhmm, null);
+      const res = await runWriteOff(now.dateIso, cfg.time, null);
       console.log(
-        `[writeoff] слот ${now.dateIso} ${now.hhmm}: списано строк ${res.linesWritten}, партий ${res.batches}` +
+        `[writeoff] слот ${now.dateIso} ${cfg.time}: списано строк ${res.linesWritten}, партий ${res.batches}` +
           (res.skipped ? ' (слот уже был закрыт)' : '')
       );
     } catch (e) {

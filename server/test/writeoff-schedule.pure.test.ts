@@ -8,22 +8,20 @@ import assert from 'node:assert/strict';
 import { normalizeDeliverySchedule, DELIVERY_DEFAULTS, type DeliverySettings } from '../src/services/settings';
 import { mskNow, isSlotDue, nextDue } from '../src/services/writeoff';
 import { nextDeliveryDate, upcomingDeliveryDates } from '../src/services/delivery';
-import { tabNameForDate } from '../src/services/sheet-tabs';
-import { tabToDate } from '../src/services/gsheet';
 
 const dcfg = (over: Partial<DeliverySettings>): DeliverySettings => ({ ...DELIVERY_DEFAULTS, ...over });
 
 // ==================== normalizeDeliverySchedule ====================
 
-test('normalize: enabled, dates, times, tz', () => {
+test('normalize: enabled, dates, time, tz', () => {
   const r = normalizeDeliverySchedule({
     enabled: true,
     dates: ['2026-11-05', '2026-11-02', '2026-11-02', 'invalid', '2026-13-40'],
-    times: ['18:00', '9:30', '18:00'],
+    time: '18:30',
   });
   assert.equal(r.enabled, true);
   assert.deepEqual(r.dates, ['2026-11-02', '2026-11-05']);
-  assert.deepEqual(r.times, ['09:30', '18:00']);
+  assert.equal(r.time, '18:30');
   assert.equal(r.tz, 'Europe/Moscow');
 });
 
@@ -34,9 +32,9 @@ test('normalize: enabled принимает true/"true", не принимает
 });
 
 test('normalize: кривое время и кривая таймзона — ApiError(400)', () => {
-  assert.throws(() => normalizeDeliverySchedule({ times: ['25:00'] }), /Время/);
-  assert.throws(() => normalizeDeliverySchedule({ times: ['9:5'] }), /Время/);
-  assert.throws(() => normalizeDeliverySchedule({ times: ['abc'] }), /Время/);
+  assert.throws(() => normalizeDeliverySchedule({ time: '25:00' }), /Время/);
+  assert.throws(() => normalizeDeliverySchedule({ time: '9:5' }), /Время/);
+  assert.throws(() => normalizeDeliverySchedule({ time: 'abc' }), /Время/);
   assert.throws(() => normalizeDeliverySchedule({ tz: 'Mars/Olympus' }), /часовой пояс/);
 });
 
@@ -53,28 +51,28 @@ test('mskNow: UTC→MSK (+3), переход через полночь сдви�
 
 test('isSlotDue: нужен совпавший день доставки И время, и чтобы расписание было включено', () => {
   const now = { dateIso: '2026-11-02', weekday: 1, hhmm: '10:30' };
-  assert.equal(isSlotDue(now, dcfg({ enabled: true, dates: ['2026-11-02'], times: ['10:30'] })), true);
-  assert.equal(isSlotDue(now, dcfg({ enabled: true, dates: ['2026-11-03'], times: ['10:30'] })), false, 'не та дата');
-  assert.equal(isSlotDue(now, dcfg({ enabled: true, dates: ['2026-11-02'], times: ['09:00'] })), false, 'не то время');
-  assert.equal(isSlotDue(now, dcfg({ enabled: false, dates: ['2026-11-02'], times: ['10:30'] })), false, 'выключено');
+  assert.equal(isSlotDue(now, dcfg({ enabled: true, dates: ['2026-11-02'], time: '10:30' })), true);
+  assert.equal(isSlotDue(now, dcfg({ enabled: true, dates: ['2026-11-03'], time: '10:30' })), false, 'не та дата');
+  assert.equal(isSlotDue(now, dcfg({ enabled: true, dates: ['2026-11-02'], time: '09:00' })), false, 'не то время');
+  assert.equal(isSlotDue(now, dcfg({ enabled: false, dates: ['2026-11-02'], time: '10:30' })), false, 'выключено');
 });
 
-test('nextDue: сегодня ещё есть поздний слот -> сегодня; иначе — ближайшая будущая дата доставки', () => {
+test('nextDue: сегодня ещё время впереди -> сегодня; иначе — ближайшая будущая дата доставки', () => {
   const at = new Date(Date.UTC(2026, 10, 2, 7, 0)); // понедельник 10:00 MSK
-  const schedule = dcfg({ enabled: true, dates: ['2026-11-02', '2026-11-05'], times: ['09:00', '18:00'] });
+  const schedule = dcfg({ enabled: true, dates: ['2026-11-02', '2026-11-05'], time: '18:00' });
   const laterToday = nextDue(schedule, at);
-  assert.deepEqual(laterToday, { dateIso: '2026-11-02', time: '18:00' }, '09:00 уже прошёл, 18:00 — впереди');
+  assert.deepEqual(laterToday, { dateIso: '2026-11-02', time: '18:00' }, 'время ещё не наступило');
 
-  // после последнего слота сегодняшнего дня -> следующая дата доставки, раннее время
+  // после времени списания сегодняшнего дня -> следующая дата доставки
   const afterLast = new Date(Date.UTC(2026, 10, 2, 16, 0)); // 19:00 MSK
-  assert.deepEqual(nextDue(schedule, afterLast), { dateIso: '2026-11-05', time: '09:00' });
+  assert.deepEqual(nextDue(schedule, afterLast), { dateIso: '2026-11-05', time: '18:00' });
 });
 
 test('nextDue: пусто, если выключено или расписание неполное', () => {
   const at = new Date(Date.UTC(2026, 10, 2, 7, 0));
-  assert.equal(nextDue(dcfg({ enabled: false, dates: ['2026-11-02'], times: ['10:00'] }), at), null);
-  assert.equal(nextDue(dcfg({ enabled: true, dates: [], times: ['10:00'] }), at), null);
-  assert.equal(nextDue(dcfg({ enabled: true, dates: ['2026-11-02'], times: [] }), at), null);
+  assert.equal(nextDue(dcfg({ enabled: false, dates: ['2026-11-02'], time: '10:00' }), at), null);
+  assert.equal(nextDue(dcfg({ enabled: true, dates: [], time: '10:00' }), at), null);
+  assert.equal(nextDue(dcfg({ enabled: true, dates: ['2026-11-02'], time: '' }), at), null);
 });
 
 // ==================== nextDeliveryDate / upcomingDeliveryDates ====================
@@ -92,15 +90,4 @@ test('upcomingDeliveryDates: будущие даты доставки без д�
   const list = upcomingDeliveryDates(dcfg({ dates: ['2026-10-30', '2026-11-02', '2026-11-04', '2026-11-06'] }), 4, at);
   assert.deepEqual(list, ['2026-11-02', '2026-11-04', '2026-11-06']);
   assert.equal(upcomingDeliveryDates(dcfg({ dates: [] }), 4, at).length, 0);
-});
-
-// ==================== Имя вкладки следующего листа ====================
-
-test('tabNameForDate: YYYY-MM-DD -> dd.MM с нулями; имя понимает tabToDate из gsheet', () => {
-  assert.equal(tabNameForDate('2026-11-05'), '05.11');
-  assert.equal(tabNameForDate('2026-11-12'), '12.11');
-  assert.equal(tabNameForDate('2027-01-02'), '02.01');
-  assert.equal(tabNameForDate('05.11'), null);
-  assert.equal(tabNameForDate(''), null);
-  assert.deepEqual(tabToDate(tabNameForDate('2026-11-05')!), { dd: 5, mm: 11 });
 });

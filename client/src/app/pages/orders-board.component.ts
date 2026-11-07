@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { ApiService } from '../core/api.service';
 import { OrdersService } from '../core/orders.service';
 import { LiveService } from '../core/live.service';
+import { httpErr } from '../core/format';
 import type { BoardRow, OrderDate } from '../core/models';
 import { OrdersNavComponent } from './orders-nav.component';
 
@@ -104,6 +105,9 @@ import { OrdersNavComponent } from './orders-nav.component';
           @if (!isFresh() && date()) {
             <button class="btn sm fresh-btn" (click)="goFresh()">К свежему</button>
           }
+          <button class="btn sm" (click)="exportOtpremnice()" [disabled]="!date() || exporting()" title="Выгрузить отпремницы (.doc)">
+            {{ exporting() ? 'Экспорт…' : '📦 Выгрузить отпремницы (.doc)' }}
+          </button>
         </div>
         <div class="tb-group right">
           <select class="minw0" [ngModel]="category()" (ngModelChange)="category.set($event)">
@@ -219,6 +223,7 @@ export class OrdersBoardComponent implements OnInit {
   protected category = signal<string | null>(null);
   protected q = signal('');
   protected loading = signal(true);
+  protected exporting = signal(false);
   protected err = signal('');
 
   /** Самый свежий лист (как его видит сервер по умолчанию) — для подсветки кнопки «К свежему». */
@@ -302,6 +307,28 @@ export class OrdersBoardComponent implements OnInit {
       error: (e) => {
         this.err.set(e?.error?.message ?? 'Не удалось загрузить доску заказов');
         this.loading.set(false);
+      },
+    });
+  }
+
+  protected exportOtpremnice(): void {
+    const d = this.date();
+    if (!d) return;
+    this.exporting.set(true);
+    this.err.set('');
+    this.api.exportOtpremnice$(d).subscribe({
+      next: (blob) => {
+        this.exporting.set(false);
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `otpremnice_${d}.doc`;
+        a.click();
+        window.URL.revokeObjectURL(url);
+      },
+      error: (e: unknown) => {
+        this.exporting.set(false);
+        this.err.set(httpErr(e));
       },
     });
   }

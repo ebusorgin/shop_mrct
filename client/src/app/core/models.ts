@@ -351,6 +351,9 @@ export interface Store {
   email?: string;
   contactPerson?: string;
   openingHours?: string;
+  pib?: string;
+  mbr?: string;
+  accountNo?: string;
   note?: string;
   createdAt?: string;
   updatedAt?: string;
@@ -664,6 +667,9 @@ export interface MyStore {
   todayLines: number;
   /** Активных сотрудников точки. */
   employees: number;
+  deliveryNext?: { dateIso: string; time: string } | null;
+  deliveryUpcoming?: string[];
+  deliveryEnabled?: boolean;
 }
 
 // ================= ЖУРНАЛ ДЕЙСТВИЙ =================
@@ -727,6 +733,17 @@ export interface AppSettings {
   writeoff: DeliverySettings;
   writeoffDefaults: DeliverySettings;
   writeoffNext: { dateIso: string; time: string } | null;
+  production: ProductionDetails;
+  productionDefaults: ProductionDetails;
+}
+
+/** Реквизиты производства (Dobavljač). */
+export interface ProductionDetails {
+  name: string;
+  address: string;
+  pib: string;
+  mbr: string;
+  accountNo: string;
 }
 
 /** Расписание доставок и закрытия заказов: включено, даты, время, таймзона. */
@@ -734,8 +751,8 @@ export interface DeliverySettings {
   enabled: boolean;
   /** Даты доставок в формате YYYY-MM-DD. */
   dates: string[];
-  /** Время (или времена) закрытия/списания 'HH:MM'. */
-  times: string[];
+  /** Время закрытия/списания 'HH:MM'. */
+  time: string;
   /** IANA-таймзона, по умолчанию Europe/Moscow. */
   tz: string;
 }

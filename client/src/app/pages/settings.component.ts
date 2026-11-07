@@ -2,7 +2,7 @@ import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } 
 import { FormsModule } from '@angular/forms';
 import { CommonModule } from '@angular/common';
 import { ApiService } from '../core/api.service';
-import { AppSettings, CardCategory, CardRef, GptTestResult, DeliverySettings, WriteOffReport, WriteOffRun } from '../core/models';
+import { AppSettings, CardCategory, CardRef, GptTestResult, DeliverySettings } from '../core/models';
 import { httpErr } from '../core/format';
 
 /**
@@ -67,11 +67,6 @@ import { httpErr } from '../core/format';
     .cal-day.other-month { opacity: 0.35; }
     .cal-day.today { border-color: var(--accent); font-weight: bold; }
     .cal-day.selected { background: #e8f0fe; border-color: #1a73e8; color: #1a73e8; font-weight: 600; }
-    /* таблица отчёта по списанию */
-    .rep { border-collapse: collapse; width: 100%; max-width: 640px; font-size: 13px; }
-    .rep th, .rep td { border-bottom: 1px solid var(--border); padding: 5px 8px; text-align: left; }
-    .rep th { color: var(--muted); font-weight: 600; font-size: 12px; }
-    .rep .num { text-align: right; font-variant-numeric: tabular-nums; }
   `],
   template: `
     <div class="bar">
@@ -144,15 +139,11 @@ import { httpErr } from '../core/format';
       </label>
 
       <div style="margin-bottom:16px">
-        <div class="muted" style="font-size:12px; margin-bottom:6px">Время закрытия заказов</div>
-        <div class="chips" style="align-items:center">
-          @for (t of dvTimes(); track t) {
-            <span class="chip">{{ t }}<button type="button" class="x" (click)="removeTime(t)" title="Убрать">×</button></span>
-          }
-          <input type="time" [ngModel]="newTime()" (ngModelChange)="newTime.set($event)" style="width:120px" />
-          <button type="button" class="btn sm" (click)="addTime()">+ добавить</button>
+        <div class="muted" style="font-size:12px; margin-bottom:6px">Время закрытия заказов и списания (устанавливается 1 раз)</div>
+        <div style="display:flex; align-items:center; gap:10px;">
+          <input type="time" [ngModel]="dvTime()" (ngModelChange)="dvTime.set($event)" [disabled]="dvBusy()" style="width:140px" />
+          <span class="muted" style="font-size:12px">В выделенные дни скрипт запустится в этом времени (по Москве).</span>
         </div>
-        @if (!dvTimes().length) { <div class="muted" style="font-size:12px;margin-top:6px">Добавьте хотя бы одно время.</div> }
       </div>
 
       <div style="font-weight:600; font-size:13px; margin-bottom:8px">Календарь дат доставок</div>
@@ -205,74 +196,29 @@ import { httpErr } from '../core/format';
       <hr class="hr" />
       <div class="row">
         <button class="btn primary" (click)="saveDelivery()" [disabled]="dvBusy()">{{ dvBusy() ? 'Сохраняем…' : 'Сохранить' }}</button>
-        <button class="btn" (click)="createDeliveryTab()" [disabled]="dvTabBusy()" title="Скопировать самый свежий лист на ближайшую дату доставки и обнулить количества точек">
-          {{ dvTabBusy() ? 'Создаём…' : 'Лист доставки в Google' }}
-        </button>
         <button class="btn" (click)="runWriteoffNow()" [disabled]="woRunning() || dvBusy()">{{ woRunning() ? 'Списываем…' : 'Запустить списание сейчас' }}</button>
       </div>
       @if (dvMsg()) { <div class="ok-msg" style="margin-top:10px">{{ dvMsg() }}</div> }
     </div>
 
-    <!-- Отчёт и архив автосписания -->
+    <!-- Реквизиты производства -->
     <div class="panel">
-      <h3>Отчёт по списанию</h3>
+      <h3>Реквизиты производства (Dobavljač для отпремниц)</h3>
       <div class="muted" style="font-size:12px; margin-bottom:12px">
-        Что выдали и какое сырьё списали по автосписанию за дату доставки.
+        Укажите реквизиты компании-производителя, которые автоматически подставляются в шапку отпремниц (.doc).
       </div>
-      <div class="row" style="align-items:center; gap:8px">
-        <input type="date" [ngModel]="repDate()" (ngModelChange)="repDate.set($event)" style="width:170px" />
-        <button class="btn sm primary" (click)="loadReport()" [disabled]="repBusy()">{{ repBusy() ? 'Считаем…' : 'Показать' }}</button>
-      </div>
-      @if (repMsg()) { <div class="err" style="margin-top:10px">{{ repMsg() }}</div> }
-      @if (rep(); as r) {
-        <div style="margin-top:14px">
-          @if (!r.goods.length) {
-            <div class="muted" style="font-size:13px">За {{ r.deliveryDate }} нет записей автосписания.</div>
-          } @else {
-            <div class="muted" style="font-size:12px; margin-bottom:4px">Выдана готовая продукция</div>
-            <table class="rep">
-              <thead><tr><th>Товар</th><th>Порции</th><th>Себестоимость</th></tr></thead>
-              <tbody>
-                @for (g of r.goods; track g.cardId) {
-                  <tr><td>{{ g.name }}</td><td class="num">{{ g.portions }}</td><td class="num">{{ g.costTotal }} ₽</td></tr>
-                }
-              </tbody>
-            </table>
-            <div class="muted" style="font-size:12px; margin:12px 0 4px">Списано сырьё</div>
-            <table class="rep">
-              <thead><tr><th>Позиция</th><th>Кол-во</th><th>Стоимость</th></tr></thead>
-              <tbody>
-                @for (rw of r.raw; track rw.productId) {
-                  <tr><td>{{ rw.name }}</td><td class="num">{{ rw.qty }} {{ rw.unitCode }}</td><td class="num">{{ rw.cost }} ₽</td></tr>
-                }
-              </tbody>
-            </table>
-            <div style="margin-top:10px; font-weight:600">Итого себестоимость: {{ r.totalCost }} ₽</div>
-          }
+      <div style="display:flex; flex-direction:column; gap:12px; max-width:500px">
+        <label class="f">Название компании <input [(ngModel)]="prodName" [disabled]="prodBusy()" placeholder="MIX Markt Production DOO" /></label>
+        <label class="f">Адрес <input [(ngModel)]="prodAddress" [disabled]="prodBusy()" placeholder="Industrijska bb, Beograd" /></label>
+        <div class="cols" style="display:grid; grid-template-columns:1fr 1fr; gap:12px">
+          <label class="f">PIB <input [(ngModel)]="prodPib" [disabled]="prodBusy()" placeholder="109876543" /></label>
+          <label class="f">MBR <input [(ngModel)]="prodMbr" [disabled]="prodBusy()" placeholder="21543210" /></label>
         </div>
-      }
-
-      <div class="muted" style="font-size:12px; margin:18px 0 6px">Последние прогоны</div>
-      @if (!runs().length) {
-        <div class="muted" style="font-size:13px">Прогонов ещё не было.</div>
-      } @else {
-        <table class="rep">
-          <thead><tr><th>Дата</th><th>Слот</th><th>Статус</th><th>Строк</th><th>Партий</th><th>Автор</th><th></th></tr></thead>
-          <tbody>
-            @for (run of runs(); track run.id) {
-              <tr>
-                <td>{{ run.deliveryDate }}</td>
-                <td class="mono">{{ run.firedSlot }}</td>
-                <td><span class="badge" [class.green]="run.status === 'ok'" [class.red]="run.status === 'error'">{{ run.status }}</span></td>
-                <td class="num">{{ run.linesWritten }}</td>
-                <td class="num">{{ run.batches }}</td>
-                <td>{{ run.createdBy }}</td>
-                <td><button class="btn sm" (click)="openRun(run.deliveryDate)">отчёт</button></td>
-              </tr>
-            }
-          </tbody>
-        </table>
-      }
+        <label class="f">Tekući račun (Broj računa) <input [(ngModel)]="prodAccountNo" [disabled]="prodBusy()" placeholder="160-0000000000000-00" /></label>
+        <div>
+          <button class="btn primary" (click)="saveProduction()" [disabled]="prodBusy()">{{ prodBusy() ? 'Сохраняем…' : 'Сохранить реквизиты' }}</button>
+        </div>
+      </div>
     </div>
 
     <!-- Категории товаров: раскрывающееся дерево -->
@@ -367,15 +313,13 @@ export class SettingsComponent implements OnInit {
   // === Дни и закрытие доставок ===
   dvEnabled = signal(false);
   dvDates = signal<Set<string>>(new Set());
-  dvTimes = signal<string[]>([]);
-  newTime = signal('');
+  dvTime = signal('18:00');
   dvNext = signal<{ dateIso: string; time: string } | null>(null);
   calYear = signal<number>(new Date().getFullYear());
   calMonth = signal<number>(new Date().getMonth());
   calMonthNames = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
   dvUpcoming = signal<string[]>([]);
   dvBusy = signal(false);
-  dvTabBusy = signal(false);
   woRunning = signal(false);
   dvMsg = signal('');
 
@@ -462,30 +406,27 @@ export class SettingsComponent implements OnInit {
     return result;
   });
 
-  // === Отчёт / архив автосписания ===
-  repDate = signal('');
-  rep = signal<WriteOffReport | null>(null);
-  repBusy = signal(false);
-  repMsg = signal('');
-  runs = signal<WriteOffRun[]>([]);
-
-  // === Категории (дерево: несколько узлов могут быть раскрыты независимо) ===
+  // === Категории товаров ===
   cats = signal<CardCategory[]>([]);
   allCards = signal<CardRef[]>([]);
-  /** Множество id раскрытых категорий. */
   expandedIds = signal<Set<number>>(new Set());
-  /** Кэш товаров раскрытых категорий: catId → карточки. */
   cardsByCat = signal<Map<number, CardRef[]>>(new Map());
-  /** Черновик выбранного товара для добавления: catId → cardId. */
   pickByCat = signal<Map<number, number | null>>(new Map());
   newCatName = signal('');
   editingCat = signal<number | null>(null);
   editCatName = signal('');
 
+  // === Реквизиты производства ===
+  prodName = signal('');
+  prodAddress = signal('');
+  prodPib = signal('');
+  prodMbr = signal('');
+  prodAccountNo = signal('');
+  prodBusy = signal(false);
+
   ngOnInit(): void {
     this.load();
     this.loadCats();
-    this.loadRuns();
   }
 
   // ---- GPT ----
@@ -499,10 +440,16 @@ export class SettingsComponent implements OnInit {
         this.test.set(null);
         this.dvEnabled.set(s.delivery.enabled);
         this.dvDates.set(new Set(s.delivery.dates));
-        this.dvTimes.set([...s.delivery.times]);
+        this.dvTime.set(s.delivery.time ?? '18:00');
         this.dvUpcoming.set(s.deliveryUpcoming ?? []);
         this.dvNext.set(s.deliveryNext ?? null);
-        if (!this.repDate()) this.repDate.set(new Date().toISOString().slice(0, 10));
+        if (s.production) {
+          this.prodName.set(s.production.name ?? '');
+          this.prodAddress.set(s.production.address ?? '');
+          this.prodPib.set(s.production.pib ?? '');
+          this.prodMbr.set(s.production.mbr ?? '');
+          this.prodAccountNo.set(s.production.accountNo ?? '');
+        }
       },
       error: (e: unknown) => this.err.set(httpErr(e)),
     });
@@ -524,6 +471,35 @@ export class SettingsComponent implements OnInit {
     });
   }
 
+  saveProduction(): void {
+    this.prodBusy.set(true);
+    this.err.set('');
+    this.msg.set('');
+    this.api.saveProductionSettings$({
+      name: this.prodName().trim(),
+      address: this.prodAddress().trim(),
+      pib: this.prodPib().trim(),
+      mbr: this.prodMbr().trim(),
+      accountNo: this.prodAccountNo().trim(),
+    }).subscribe({
+      next: (r) => {
+        this.prodBusy.set(false);
+        this.msg.set('Реквизиты производства сохранены');
+        if (r.production) {
+          this.prodName.set(r.production.name);
+          this.prodAddress.set(r.production.address);
+          this.prodPib.set(r.production.pib);
+          this.prodMbr.set(r.production.mbr);
+          this.prodAccountNo.set(r.production.accountNo);
+        }
+      },
+      error: (e: unknown) => {
+        this.prodBusy.set(false);
+        this.err.set(httpErr(e));
+      },
+    });
+  }
+
   runTest(): void {
     this.testing.set(true);
     this.err.set('');
@@ -534,19 +510,6 @@ export class SettingsComponent implements OnInit {
   }
 
   // ---- Дни и закрытие доставок ----
-  addTime(): void {
-    const t = this.newTime().trim();
-    if (!/^([01]?\d|2[0-3]):([0-5]\d)$/.test(t)) return;
-    const canon = `${t.slice(0, t.indexOf(':')).padStart(2, '0')}:${t.slice(t.indexOf(':') + 1)}`;
-    if (this.dvTimes().includes(canon)) { this.newTime.set(''); return; }
-    this.dvTimes.set([...this.dvTimes(), canon].sort());
-    this.newTime.set('');
-  }
-
-  removeTime(t: string): void {
-    this.dvTimes.set(this.dvTimes().filter((x) => x !== t));
-  }
-
   toggleDvDate(dateIso: string): void {
     const next = new Set(this.dvDates());
     if (next.has(dateIso)) next.delete(dateIso);
@@ -560,7 +523,7 @@ export class SettingsComponent implements OnInit {
     const body: DeliverySettings = {
       enabled: this.dvEnabled(),
       dates: [...this.dvDates()].sort(),
-      times: this.dvTimes(),
+      time: this.dvTime().trim() || '18:00',
       tz: 'Europe/Moscow',
     };
     this.api.saveDelivery$(body).subscribe({
@@ -568,7 +531,7 @@ export class SettingsComponent implements OnInit {
         this.dvBusy.set(false);
         this.dvEnabled.set(r.delivery.enabled);
         this.dvDates.set(new Set(r.delivery.dates));
-        this.dvTimes.set([...r.delivery.times]);
+        this.dvTime.set(r.delivery.time);
         this.dvUpcoming.set(r.deliveryUpcoming ?? []);
         this.dvNext.set(r.deliveryNext ?? null);
         this.dvMsg.set('Дни и закрытие доставок сохранены');
@@ -593,45 +556,6 @@ export class SettingsComponent implements OnInit {
       },
       error: (e: unknown) => { this.woRunning.set(false); this.dvMsg.set(httpErr(e)); },
     });
-  }
-
-  /** Завести в прод-таблице следующий обнулённый лист (ближайшая дата доставки). */
-  createDeliveryTab(): void {
-    this.dvTabBusy.set(true);
-    this.dvMsg.set('');
-    this.api.createDeliveryTab$().subscribe({
-      next: (r) => {
-        this.dvTabBusy.set(false);
-        this.dvMsg.set(
-          r.ok
-            ? (r.created ? `Лист «${r.sheetName}» создан и обнулён` : `Лист «${r.sheetName}» уже был — ${r.note ?? 'ok'}`)
-            : `Лист не создан: ${r.error ?? 'ошибка'}`
-        );
-      },
-      error: (e: unknown) => { this.dvTabBusy.set(false); this.dvMsg.set(httpErr(e)); },
-    });
-  }
-
-  // ---- Отчёт / архив ----
-  loadReport(): void {
-    this.repBusy.set(true);
-    this.repMsg.set('');
-    this.api.writeoffReport$(this.repDate() || undefined).subscribe({
-      next: (r) => { this.repBusy.set(false); this.rep.set(r); },
-      error: (e: unknown) => { this.repBusy.set(false); this.repMsg.set(httpErr(e)); },
-    });
-  }
-
-  loadRuns(): void {
-    this.api.writeoffRuns$().subscribe({
-      next: (r) => this.runs.set(r),
-      error: (e: unknown) => this.repMsg.set(httpErr(e)),
-    });
-  }
-
-  openRun(date: string): void {
-    this.repDate.set(date);
-    this.loadReport();
   }
 
   // ---- Категории ----

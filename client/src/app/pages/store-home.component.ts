@@ -39,6 +39,20 @@ import { OrdersBoardComponent } from './orders-board.component';
     @if (msg()) { <div class="ok-msg">{{ msg() }}</div> }
 
     @if (store(); as s) {
+      @if (s.deliveryEnabled && s.deliveryNext; as nx) {
+        <div class="panel" style="background:#f4f8fb; border-color:#d0e1f9; margin-bottom:14px; padding:12px 16px;">
+          <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+            <span style="font-weight:600; color:#1a73e8;">🚚 Ближайшая дата и время списания:</span>
+            <span class="badge blue" style="font-size:14px; padding:4px 10px;">{{ fmtDate(nx.dateIso) }} в {{ nx.time }}</span>
+            @if (s.deliveryUpcoming && s.deliveryUpcoming.length > 1) {
+              <span class="muted small" style="margin-left:auto;">
+                Далее: @for (dt of s.deliveryUpcoming.slice(1, 4); track dt) { <span class="chip" style="margin:0 2px">{{ fmtDate(dt) }}</span> }
+              </span>
+            }
+          </div>
+        </div>
+      }
+
       <div class="kpis">
         <div class="kpi"><div class="v">{{ s.todayLines }}</div><div class="l">позиций в заказе сегодня</div></div>
         <div class="kpi"><div class="v" [class.red]="s.openLines > 0">{{ s.openLines }}</div><div class="l">в работе (ждёт производства)</div></div>

@@ -18,7 +18,6 @@ import { RouterLink, RouterLinkActive } from '@angular/router';
   template: `
     <nav class="ontabs">
       <a class="ontab" routerLink="/orders" routerLinkActive="on" [routerLinkActiveOptions]="{ exact: true }">📋 Доска</a>
-      <a class="ontab" routerLink="/orders/sync" routerLinkActive="on">🔄 Синхронизация</a>
       <a class="ontab" routerLink="/points" routerLinkActive="on">🏬 Магазины и точки</a>
       <a class="ontab" routerLink="/orders/journal" routerLinkActive="on">📜 Журнал</a>
     </nav>

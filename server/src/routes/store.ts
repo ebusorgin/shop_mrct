@@ -12,6 +12,9 @@ import { pool } from '../db';
 import { ApiError, wrap } from '../http';
 import { requireStore } from '../services/auth';
 import { audit, diff } from '../services/audit';
+import { deliverySettings } from '../services/settings';
+import { nextDue } from '../services/writeoff';
+import { upcomingDeliveryDates } from '../services/delivery';
 
 export const storeRouter = Router();
 
@@ -49,7 +52,15 @@ storeRouter.get(
     const storeId = req.user?.storeId as number;
     const { rows } = await pool.query(CARD_SQL, [storeId]);
     if (!rows.length) throw new ApiError(404, 'Магазин не найден');
-    res.json(rows[0]);
+    const delivery = await deliverySettings();
+    const deliveryNext = nextDue(delivery);
+    const deliveryUpcoming = upcomingDeliveryDates(delivery, 4);
+    res.json({
+      ...rows[0],
+      deliveryNext,
+      deliveryUpcoming,
+      deliveryEnabled: delivery.enabled,
+    });
   })
 );
 

@@ -111,8 +111,8 @@ export interface DeliverySettings {
   enabled: boolean;
   /** Список дат доставок в формате YYYY-MM-DD. */
   dates: string[];
-  /** Время (или времена) закрытия и списания на дату доставки, например ['18:00']. */
-  times: string[];
+  /** Время закрытия и списания на дату доставки, например '18:00' (устанавливается 1 раз). */
+  time: string;
   /** IANA-таймзона; по умолчанию Европа/Москва. */
   tz: string;
 }
@@ -120,7 +120,7 @@ export interface DeliverySettings {
 export const DELIVERY_DEFAULTS: DeliverySettings = {
   enabled: false,
   dates: [],
-  times: [],
+  time: '18:00',
   tz: 'Europe/Moscow',
 };
 
@@ -163,13 +163,15 @@ function normalizeDates(raw: unknown): string[] {
 /** Чистит и валидирует расписание доставок и закрытия (кривая таймзона — ApiError(400)). */
 export function normalizeDeliverySchedule(raw: Partial<DeliverySettings> | null | undefined): DeliverySettings {
   const src = raw ?? {};
-  const times = Array.isArray(src.times)
-    ? [...new Set(src.times.map(normalizeTime))].sort()
-    : [];
+  let timeStr = src.time;
+  if (!timeStr && Array.isArray((src as any).times) && (src as any).times.length) {
+    timeStr = (src as any).times[0];
+  }
+  const time = timeStr !== undefined ? normalizeTime(timeStr) : DELIVERY_DEFAULTS.time;
   return {
     enabled: src.enabled === true || (src.enabled as unknown) === 'true',
     dates: normalizeDates(src.dates),
-    times,
+    time,
     tz: normalizeTz(src.tz),
   };
 }
@@ -179,13 +181,15 @@ let deliveryCache: { value: DeliverySettings; at: number } | null = null;
 export async function deliverySettings(): Promise<DeliverySettings> {
   if (deliveryCache && Date.now() - deliveryCache.at < CACHE_MS) return deliveryCache.value;
   const { rows } = await pool.query('select value from app_settings where key = $1', [DELIVERY_KEY]);
-  const raw = (rows[0]?.value ?? {}) as Partial<DeliverySettings>;
+  const raw = (rows[0]?.value ?? {}) as Partial<DeliverySettings> & { times?: string[] };
+  let timeStr = raw.time;
+  if (!timeStr && Array.isArray(raw.times) && raw.times.length) {
+    timeStr = raw.times[0];
+  }
   const value: DeliverySettings = {
     enabled: Boolean(raw.enabled),
     dates: normalizeDates(raw.dates),
-    times: Array.isArray(raw.times)
-      ? [...new Set(raw.times.map((t) => String(t)).filter((t) => TIME_RE.test(String(t))))].sort()
-      : [],
+    time: typeof timeStr === 'string' && TIME_RE.test(timeStr) ? timeStr : (timeStr ? normalizeTime(timeStr) : DELIVERY_DEFAULTS.time),
     tz: typeof raw.tz === 'string' && raw.tz ? raw.tz : DELIVERY_DEFAULTS.tz,
   };
   deliveryCache = { value, at: Date.now() };
@@ -211,3 +215,59 @@ export const WRITEOFF_DEFAULTS = DELIVERY_DEFAULTS;
 export const normalizeWriteoffSchedule = normalizeDeliverySchedule;
 export const writeoffSettings = deliverySettings;
 export const saveWriteoffSettings = saveDeliverySettings;
+
+// ============ РЕКВИЗИТЫ ПРОИЗВОДСТВА (ДОБАВЛЯЧ) ============
+
+export const PRODUCTION_KEY = 'production_details';
+
+export interface ProductionDetails {
+  name: string;
+  address: string;
+  pib: string;
+  mbr: string;
+  accountNo: string;
+}
+
+export const PRODUCTION_DEFAULTS: ProductionDetails = {
+  name: 'MIX Markt Production DOO',
+  address: 'Industrijska bb, Beograd',
+  pib: '109876543',
+  mbr: '21543210',
+  accountNo: '160-0000000000000-00',
+};
+
+let productionCache: { value: ProductionDetails; at: number } | null = null;
+
+export async function productionSettings(): Promise<ProductionDetails> {
+  if (productionCache && Date.now() - productionCache.at < CACHE_MS) return productionCache.value;
+  const { rows } = await pool.query('select value from app_settings where key = $1', [PRODUCTION_KEY]);
+  const raw = (rows[0]?.value ?? {}) as Partial<ProductionDetails>;
+  const value: ProductionDetails = {
+    name: String(raw.name || PRODUCTION_DEFAULTS.name).trim(),
+    address: String(raw.address || PRODUCTION_DEFAULTS.address).trim(),
+    pib: String(raw.pib || PRODUCTION_DEFAULTS.pib).trim(),
+    mbr: String(raw.mbr || PRODUCTION_DEFAULTS.mbr).trim(),
+    accountNo: String(raw.accountNo || PRODUCTION_DEFAULTS.accountNo).trim(),
+  };
+  productionCache = { value, at: Date.now() };
+  return value;
+}
+
+export async function saveProductionSettings(next: ProductionDetails, actor: Actor): Promise<ProductionDetails> {
+  const cleaned: ProductionDetails = {
+    name: String(next.name || PRODUCTION_DEFAULTS.name).trim(),
+    address: String(next.address || PRODUCTION_DEFAULTS.address).trim(),
+    pib: String(next.pib || PRODUCTION_DEFAULTS.pib).trim(),
+    mbr: String(next.mbr || PRODUCTION_DEFAULTS.mbr).trim(),
+    accountNo: String(next.accountNo || PRODUCTION_DEFAULTS.accountNo).trim(),
+  };
+  await pool.query(
+    `insert into app_settings (key, value, updated_at, updated_by)
+     values ($1, $2::jsonb, now(), $3)
+     on conflict (key) do update
+        set value = excluded.value, updated_at = now(), updated_by = excluded.updated_by`,
+    [PRODUCTION_KEY, JSON.stringify(cleaned), actor?.login ?? 'system']
+  );
+  productionCache = { value: cleaned, at: Date.now() };
+  return cleaned;
+}

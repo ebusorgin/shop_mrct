@@ -14,16 +14,12 @@
  */
 import { Router, Request } from 'express';
 import { pool, tx } from '../db';
-import { config } from '../config';
 import { ApiError, reqArr, reqNum, wrap } from '../http';
-import { runOrderSync, lastSyncSummary, SyncSummary } from '../services/order-sync';
-import { watchState } from '../services/sheet-watch';
 import { toBase, printedQty } from '../services/order-match';
 import { asUser, audit, auditTx } from '../services/audit';
 import { requireOffice } from '../services/auth';
-import { pushManualForStore, planWriteForTab, writeBackActive, writeBackConfigured } from '../services/gsheet-write';
 import { broadcast } from '../services/live';
-import { postToWebApp, readWebAppJson } from '../services/webapp';
+import { generateOtpremniceDoc } from '../services/otpremnica';
 
 export const ordersRouter = Router();
 
@@ -129,6 +125,18 @@ interface BoardPivotRow {
 }
 
 const round3 = (n: number): number => Math.round(n * 1000) / 1000;
+
+ordersRouter.get(
+  '/export-otpremnice',
+  requireOffice,
+  wrap(async (req, res) => {
+    const date = typeof req.query.date === 'string' && req.query.date ? req.query.date : new Date().toISOString().slice(0, 10);
+    const buf = await generateOtpremniceDoc(date);
+    res.setHeader('Content-Type', 'application/msword');
+    res.setHeader('Content-Disposition', `attachment; filename="otpremnice_${date}.doc"`);
+    res.send(buf);
+  })
+);
 
 ordersRouter.get(
   '/stores',
@@ -534,12 +542,7 @@ ordersRouter.post(
     });
 
     res.status(201).json({ ok: true, ...result, message: `Заказ оформлен: ${result.created.length} позиц.` });
-    // best-effort: вытолкнуть заказ в таблицу и разослать обновление магазинам; сбой
-    // записи в Google не должен ломать ответ — БД уже истина, синк повторит.
     broadcast('orders-changed', { store, date, at: new Date().toISOString() });
-    void pushManualForStore(store, date)
-      .then((p) => p.pushed && broadcast('orders-pushed', { store, date, pushed: p.pushed, at: new Date().toISOString() }))
-      .catch(() => undefined);
   })
 );
 
@@ -640,10 +643,8 @@ ordersRouter.patch(
         : { note: req.body.note, qty: req.body.qty },
     });
     res.json({ ok: true });
-    // вытолкнуть изменённую линию в таблицу (best-effort) + сигнал обновиться
     if (item.storeId && item.dateTab) {
       broadcast('orders-changed', { store: Number(item.storeId), date: String(item.dateTab), at: new Date().toISOString() });
-      void pushManualForStore(Number(item.storeId), String(item.dateTab)).catch(() => undefined);
     }
   })
 );
@@ -686,91 +687,7 @@ ordersRouter.get(
   })
 );
 
-// ---------- синхронизатор ----------
-ordersRouter.get(
-  '/sync',
-  requireOffice,
-  wrap(async (_req, res) => {
-    const { rows } = await pool.query('select * from order_sync_run where id = 1');
-    const { rows: tabs } = await pool.query(
-      `select sheet_name as "sheetName", extract_date::text as date, row_count as "rowCount",
-              last_sync_at as "lastSyncAt", last_error as "lastError"
-         from order_tabs order by extract_date desc nulls last limit 30`
-    );
-    // ссылка на документ-источник, из которого идёт парсинг (показываем на «Синхронизации»)
-    res.json({
-      state: rows[0] ?? null,
-      summary: lastSyncSummary(),
-      tabs,
-      watch: watchState(),
-      sheetUrl: `https://docs.google.com/spreadsheets/d/${config.gsheetId}/edit`,
-      // кнопка «Прод → тест» имеет смысл только когда настроено веб-приложение-копир и есть секрет
-      copyConfigured: !!(config.sheetCopyUrl && config.sheetHookToken),
-      // обратная запись заказов в таблицу: настроенно/включено/каким точкам (для индикатора на «Синхронизации»)
-      write: {
-        configured: writeBackConfigured(),
-        enabled: config.sheetWriteEnabled,
-        active: writeBackActive(),
-        stores: config.sheetWriteStores,
-      },
-    });
-  })
-);
-
-/**
- * POST в Apps Script Web App с ручным проходом редиректа — вынесен в services/webapp.ts
- * (нужен и копиру, и обратной записи заказов).
- */
-// копирование прод-таблицы в тестовую (кнопка на «Синхронизации»; прод не трогаем)
-ordersRouter.post(
-  '/sheet-copy',
-  requireOffice,
-  wrap(async (req, res) => {
-    if (!config.sheetCopyUrl || !config.sheetHookToken) {
-      throw new ApiError(400, 'Копирование не настроено: задайте GSHEET_COPY_WEBAPP_URL в server/.env');
-    }
-    void audit(req.user, { action: 'sync', entity: 'sheet', title: 'Копирование прод-таблицы в тестовую' });
-    let r: Response;
-    try {
-      r = await postToWebApp(config.sheetCopyUrl, { action: 'copy_to_test', token: config.sheetHookToken });
-    } catch (e) {
-      throw new ApiError(502, `Веб-приложение недоступно: ${(e as Error).message || e}`);
-    }
-    const out = await readWebAppJson<{ ok?: boolean; error?: string; tabsCopied?: number; tabsCreated?: number; tabsRemoved?: number }>(r);
-    if (!r.ok || !out.ok) throw new ApiError(502, `Копирование не удалось: ${out.error || `HTTP ${r.status}`}`);
-    // копию засчитаем сразу, не дожидаясь очередного цикла
-    void runOrderSync().catch(() => undefined);
-    res.json({ ok: true, tabsCopied: out.tabsCopied ?? 0, tabsCreated: out.tabsCreated ?? 0, tabsRemoved: out.tabsRemoved ?? 0 });
-  })
-);
-
-ordersRouter.post(
-  '/sync',
-  requireOffice,
-  wrap(async (req, res) => {
-    const full = req.query.full === '1';
-    // не ждём полного прогона — фр опрашивает /sync для прогресса
-    runOrderSync({ full }).catch(() => undefined);
-    void audit(req.user, { action: 'sync', entity: 'sheet', title: `Синхронизация Google Таблицы${full ? ' (все листы)' : ''}`, details: { full } });
-    res.status(202).json({ ok: true, started: true, full });
-  })
-);
-
-// ручное выталкивание БД→таблица для текущего (самого свежего) листа — отладка/аварийный синк
-ordersRouter.post(
-  '/sheet-push',
-  requireOffice,
-  wrap(async (req, res) => {
-    if (!writeBackActive()) throw new ApiError(400, 'Обратная запись не активна: включите GSHEET_WRITE_ENABLED и задайте GSHEET_WRITE_WEBAPP_URL');
-    const { rows } = await pool.query(`select id from order_tabs order by extract_date desc nulls last limit 1`);
-    if (!rows.length) throw new ApiError(404, 'Нет ни одного синхронизированного листа');
-    const r = await planWriteForTab(Number(rows[0].id));
-    void audit(req.user, { action: 'sync', entity: 'sheet', title: 'Выталкивание заказов в таблицу', details: { pushed: r.pushed, failed: r.failed } });
-    res.json({ ok: true, pushed: r.pushed, failed: r.failed, error: r.error ?? null });
-  })
-);
-
-// ---------- одна позиция (после литеральных маршрутов, чтобы не перехватывать /sync, /journal) ----------
+// ---------- одна позиция ----------
 ordersRouter.get('/:id', wrap(async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id)) throw new ApiError(404, 'Заказ не найден');

@@ -19,7 +19,6 @@ import { auditRouter } from './routes/audit';
 import { authRouter } from './routes/auth';
 import { storeRouter } from './routes/store';
 import { eventsRouter } from './routes/events';
-import { hooksRouter } from './routes/hooks';
 import { settingsRouter } from './routes/settings';
 import { aiRouter } from './routes/ai';
 import { requireAdmin, requireAuth, requireOffice } from './services/auth';
@@ -34,8 +33,6 @@ export function createApp(): express.Express {
   app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'mixmarkt-crm' }));
   // вход/выход и управление пользователями — свои проверки внутри роутера
   app.use('/api/auth', authRouter);
-  // вебхук Google Таблицы: Google не приносит cookie — авторизация по секрету внутри роутера
-  app.use('/api/hooks', hooksRouter);
   // всё остальное API — только с действующей сессией
   app.use('/api', requireAuth);
   // страница своего магазина — только для магазинных сотрудников

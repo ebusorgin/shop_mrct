@@ -44,6 +44,9 @@ interface PointCard {
   email: string;
   contactPerson: string;
   openingHours: string;
+  pib: string;
+  mbr: string;
+  accountNo: string;
   note: string;
   createdAt: string;
   updatedAt: string;
@@ -198,7 +201,7 @@ async function loadCards(): Promise<PointCard[]> {
   const { rows } = await pool.query(`
     select s.id, s.code, s.name, s.active, s.position,
            s.address, s.phone, s.email, s.contact_person as "contactPerson",
-           s.opening_hours as "openingHours", s.note,
+           s.opening_hours as "openingHours", s.pib, s.mbr, s.account_no as "accountNo", s.note,
            to_char(s.created_at, 'YYYY-MM-DD') as "createdAt",
            to_char(s.updated_at, 'YYYY-MM-DD') as "updatedAt",
            cu.login as "createdByLogin", uu.login as "updatedByLogin",
@@ -231,6 +234,9 @@ async function loadCards(): Promise<PointCard[]> {
       email: r.email ?? '',
       contactPerson: r.contactPerson ?? '',
       openingHours: r.openingHours ?? '',
+      pib: r.pib ?? '',
+      mbr: r.mbr ?? '',
+      accountNo: r.accountNo ?? '',
       note: r.note ?? '',
       createdAt: r.createdAt ?? '',
       updatedAt: r.updatedAt ?? '',
@@ -357,12 +363,14 @@ pointsRouter.post(
     const active = req.body.active === undefined ? true : Boolean(req.body.active);
 
     await pool.query(
-      `insert into stores (id, code, name, active, position, address, phone, email, contact_person, opening_hours, note, created_by, updated_by)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12)`,
+      `insert into stores (id, code, name, active, position, address, phone, email, contact_person, opening_hours, pib, mbr, account_no, note, created_by, updated_by)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15)`,
       [
         id, code, name, active, position,
         optStr(req.body, 'address'), optStr(req.body, 'phone'), optStr(req.body, 'email'),
-        optStr(req.body, 'contactPerson'), optStr(req.body, 'openingHours'), optStr(req.body, 'note'),
+        optStr(req.body, 'contactPerson'), optStr(req.body, 'openingHours'),
+        optStr(req.body, 'pib'), optStr(req.body, 'mbr'), optStr(req.body, 'accountNo'),
+        optStr(req.body, 'note'),
         req.user?.id ?? null,
       ]
     );
@@ -384,7 +392,7 @@ pointsRouter.patch(
     const name = String(req.body.name ?? '').trim();
     if (!name) throw new ApiError(400, 'Поле «name» обязательно');
     const { rows: cur } = await pool.query(
-      'select id, code, name, active, position, address, phone, email, contact_person, opening_hours, note from stores where id = $1',
+      'select id, code, name, active, position, address, phone, email, contact_person, opening_hours, pib, mbr, account_no as "accountNo", note from stores where id = $1',
       [id]
     );
     if (!cur.length) throw new ApiError(404, 'Точка не найдена');
@@ -398,12 +406,14 @@ pointsRouter.patch(
 
     await pool.query(
       `update stores set code=$2, name=$3, active=$4, position=$5, address=$6, phone=$7, email=$8,
-              contact_person=$9, opening_hours=$10, note=$11, updated_at=now(), updated_by=$12
+              contact_person=$9, opening_hours=$10, pib=$11, mbr=$12, account_no=$13, note=$14, updated_at=now(), updated_by=$15
         where id=$1`,
       [
         id, code, name, active, position,
         optStr(req.body, 'address'), optStr(req.body, 'phone'), optStr(req.body, 'email'),
-        optStr(req.body, 'contactPerson'), optStr(req.body, 'openingHours'), optStr(req.body, 'note'),
+        optStr(req.body, 'contactPerson'), optStr(req.body, 'openingHours'),
+        optStr(req.body, 'pib'), optStr(req.body, 'mbr'), optStr(req.body, 'accountNo'),
+        optStr(req.body, 'note'),
         req.user?.id ?? null,
       ]
     );
@@ -416,6 +426,7 @@ pointsRouter.patch(
         code, name, active, position,
         address: optStr(req.body, 'address'), phone: optStr(req.body, 'phone'), email: optStr(req.body, 'email'),
         contact_person: optStr(req.body, 'contactPerson'), opening_hours: optStr(req.body, 'openingHours'),
+        pib: optStr(req.body, 'pib'), mbr: optStr(req.body, 'mbr'), accountNo: optStr(req.body, 'accountNo'),
         note: optStr(req.body, 'note'),
       }),
     });

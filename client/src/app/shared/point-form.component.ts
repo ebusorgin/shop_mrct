@@ -16,6 +16,9 @@ interface Draft {
   email: string;
   contactPerson: string;
   openingHours: string;
+  pib: string;
+  mbr: string;
+  accountNo: string;
   position: string;
   active: boolean;
   note: string;
@@ -23,7 +26,8 @@ interface Draft {
 
 const blankDraft = (): Draft => ({
   id: '', code: '', name: '', address: '', phone: '', email: '',
-  contactPerson: '', openingHours: '', position: '', active: true, note: '',
+  contactPerson: '', openingHours: '', pib: '', mbr: '', accountNo: '',
+  position: '', active: true, note: '',
 });
 
 /**
@@ -60,6 +64,13 @@ const blankDraft = (): Draft => ({
           <label class="f">Email <input name="email" [(ngModel)]="draft().email" /></label>
           <label class="f">Режим работы <input name="openingHours" [(ngModel)]="draft().openingHours" placeholder="Пн–Сб 07–21" /></label>
         </div>
+        <div class="cols">
+          <label class="f">PIB <input name="pib" [(ngModel)]="draft().pib" placeholder="напр. 109876543" /></label>
+          <label class="f">MBR <input name="mbr" [(ngModel)]="draft().mbr" placeholder="напр. 21543210" /></label>
+        </div>
+        <label class="f">Tekući račun (Broj računa)
+          <input name="accountNo" [(ngModel)]="draft().accountNo" placeholder="напр. 160-0000000000000-00" />
+        </label>
         <div class="cols">
           <label class="f">Порядок <small class="muted">(сортировка)</small>
             <input name="position" [(ngModel)]="draft().position" placeholder="авто" />
@@ -115,6 +126,9 @@ export class PointFormComponent implements OnInit {
         email: p.email,
         contactPerson: p.contactPerson,
         openingHours: p.openingHours,
+        pib: p.pib ?? '',
+        mbr: p.mbr ?? '',
+        accountNo: p.accountNo ?? '',
         position: p.position != null ? String(p.position) : '',
         active: p.active,
         note: p.note,
@@ -132,6 +146,9 @@ export class PointFormComponent implements OnInit {
       email: d.email.trim(),
       contactPerson: d.contactPerson.trim(),
       openingHours: d.openingHours.trim(),
+      pib: d.pib.trim(),
+      mbr: d.mbr.trim(),
+      accountNo: d.accountNo.trim(),
       note: d.note.trim(),
       active: d.active,
     };

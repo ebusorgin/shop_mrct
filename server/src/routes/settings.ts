@@ -23,11 +23,14 @@ import {
   tcpProbe,
   WRITEOFF_DEFAULTS,
   writeoffSettings,
+  productionSettings,
+  saveProductionSettings,
+  PRODUCTION_DEFAULTS,
 } from '../services/settings';
 import { nextDue, runWriteOff, writeOffReport, recentWriteOffRuns } from '../services/writeoff';
 import { upcomingDeliveryDates, nextDeliveryDate } from '../services/delivery';
-import { ensureDeliveryTab } from '../services/sheet-tabs';
 import { createGptClient } from '../services/gpt-transport';
+import { diff } from '../services/audit';
 
 export const settingsRouter = Router();
 
@@ -38,6 +41,7 @@ settingsRouter.get(
     const gpt = await gptSettings();
     const target = proxyTarget(gpt.proxyUrl);
     const delivery = await deliverySettings();
+    const production = await productionSettings();
     res.json({
       gpt,
       defaults: GPT_DEFAULTS,
@@ -50,6 +54,8 @@ settingsRouter.get(
       writeoff: delivery,
       writeoffDefaults: DELIVERY_DEFAULTS,
       writeoffNext: nextDue(delivery),
+      production,
+      productionDefaults: PRODUCTION_DEFAULTS,
     });
   })
 );
@@ -75,6 +81,33 @@ settingsRouter.patch(
       details: { from: before, to: gpt },
     });
     res.json({ ok: true, gpt });
+  })
+);
+
+/** Сохранить реквизиты производства (Dobavljač). */
+settingsRouter.patch(
+  '/production',
+  wrap(async (req, res) => {
+    const body = req.body ?? {};
+    const before = await productionSettings();
+    const production = await saveProductionSettings(
+      {
+        name: String(body.name ?? ''),
+        address: String(body.address ?? ''),
+        pib: String(body.pib ?? ''),
+        mbr: String(body.mbr ?? ''),
+        accountNo: String(body.accountNo ?? body.account_no ?? ''),
+      },
+      req.user
+    );
+    await audit(req.user, {
+      action: 'update',
+      entity: 'setting',
+      entityId: 'production',
+      title: 'Реквизиты производства',
+      details: diff(before as Record<string, unknown>, production as Record<string, unknown>),
+    });
+    res.json({ ok: true, production });
   })
 );
 
@@ -190,31 +223,6 @@ settingsRouter.patch(
       details: { from: before, to: delivery },
     });
     res.json({ ok: true, delivery, deliveryUpcoming: upcomingDeliveryDates(delivery, 4), deliveryNext: nextDue(delivery) });
-  })
-);
-
-/**
- * Завести следующий обнулённый лист доставки в прод-таблице (админ).
- * Тело: { date?: 'YYYY-MM-DD' }; без даты — ближайшая доставка от сегодня.
- * Требует рубильник GSHEET_WRITE_ENABLED; идемпотентно — существующий лист не трогает.
- */
-settingsRouter.post(
-  '/delivery/tab',
-  wrap(async (req, res) => {
-    const body = req.body ?? {};
-    const cfg = await deliverySettings();
-    const date =
-      typeof body.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.date) ? body.date : nextDeliveryDate(cfg);
-    if (!date) return res.status(400).json({ error: 'Дата не задана, а расписание доставок пустое' });
-    const result = await ensureDeliveryTab(date);
-    await audit(req.user, {
-      action: 'post',
-      entity: 'setting',
-      entityId: `delivery-tab:${date}`,
-      title: `Лист доставки ${result.sheetName ?? date}: ${result.ok ? (result.created ? 'создан' : 'уже был') : 'не создан'}`,
-      details: { date, ...result },
-    });
-    res.status(result.ok ? 200 : 502).json({ date, ...result });
   })
 );
 

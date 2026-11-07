@@ -126,23 +126,11 @@ export class ApiService {
     Object.entries(params).forEach(([k, v]) => (hp = hp.set(k, v)));
     return this.http.get<M.OrderJournal>(`${this.base}/orders/journal`, { params: hp });
   }
-  orderSync$(): Observable<M.OrderSyncState> { return this.http.get<M.OrderSyncState>(`${this.base}/orders/sync`); }
-  runOrderSync$(full: boolean): Observable<{ ok: boolean; started: boolean; full: boolean }> {
-    return this.http.post<{ ok: boolean; started: boolean; full: boolean }>(`${this.base}/orders/sync`, {}, {
-      params: full ? new HttpParams().set('full', '1') : new HttpParams(),
+  exportOtpremnice$(date: string): Observable<Blob> {
+    return this.http.get(`${this.base}/orders/export-otpremnice`, {
+      params: new HttpParams().set('date', date),
+      responseType: 'blob',
     });
-  }
-  /** скопировать листы прод-таблицы в тестовую (долго: все вкладки, до минут) */
-  copySheetToTest$(): Observable<{ ok: boolean; tabsCopied: number; tabsCreated: number; tabsRemoved: number }> {
-    return this.http.post<{ ok: boolean; tabsCopied: number; tabsCreated: number; tabsRemoved: number }>(
-      `${this.base}/orders/sheet-copy`, {}, {}
-    );
-  }
-  /** вручную вытолкнуть расхождения БД→таблица по текущему листу (офис; рубильник GSHEET_WRITE_ENABLED) */
-  sheetPush$(): Observable<{ ok: boolean; pushed: number; failed: number; error: string | null }> {
-    return this.http.post<{ ok: boolean; pushed: number; failed: number; error: string | null }>(
-      `${this.base}/orders/sheet-push`, {}, {}
-    );
   }
 
   // ---- точки продаж (управление магазинами + карточки) ----
@@ -186,6 +174,9 @@ export class ApiService {
   settings$(): Observable<M.AppSettings> { return this.http.get<M.AppSettings>(`${this.base}/settings`); }
   saveGptSettings$(body: M.GptSettings): Observable<{ ok: boolean; gpt: M.GptSettings }> {
     return this.http.patch<{ ok: boolean; gpt: M.GptSettings }>(`${this.base}/settings/gpt`, body);
+  }
+  saveProductionSettings$(body: M.ProductionDetails): Observable<{ ok: boolean; production: M.ProductionDetails }> {
+    return this.http.patch<{ ok: boolean; production: M.ProductionDetails }>(`${this.base}/settings/production`, body);
   }
   testGpt$(): Observable<M.GptTestResult> { return this.http.post<M.GptTestResult>(`${this.base}/settings/gpt/test`, {}); }
 

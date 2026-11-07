@@ -16,6 +16,8 @@
     "test:all": "node --import tsx --test test/waybill-units.pure.test.ts test/order-match.pure.test.ts test/writeoff-schedule.pure.test.ts test/waybill-intake-reverse.fake.test.ts test/batches-writeoff.fake.test.ts test/waybill-integration.pg.test.ts test/orders-batches-integration.pg.test.ts test/writeoff-run.pg.test.ts"
   },
   "dependencies": {
+    "@types/archiver": "^8.0.0",
+    "archiver": "^8.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.21.2",

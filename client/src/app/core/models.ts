@@ -720,29 +720,22 @@ export interface AppSettings {
   defaults: GptSettings;
   openai: { keyConfigured: boolean; model: string };
   proxy: { scheme: string; host: string; port: number; reachable: boolean };
-  writeoff: WriteoffSettings;
-  writeoffDefaults: WriteoffSettings;
-  writeoffNext: { dateIso: string; time: string } | null;
   delivery: DeliverySettings;
   deliveryDefaults: DeliverySettings;
   deliveryUpcoming: string[];
+  deliveryNext: { dateIso: string; time: string } | null;
+  writeoff: DeliverySettings;
+  writeoffDefaults: DeliverySettings;
+  writeoffNext: { dateIso: string; time: string } | null;
 }
 
-/** Расписание автосписания заказов со склада: дни недели + несколько времён (по tz). */
-export interface WriteoffSettings {
-  enabled: boolean;
-  /** 0=Вс … 6=Сб (конвенция JS getDay). */
-  weekdays: number[];
-  /** Слоты 'HH:MM'. */
-  times: string[];
-  /** IANA-таймзона, по умолчанию Europe/Moscow. */
-  tz: string;
-}
-
-/** Расписание доставок: какие дни недели — даты доставки (по tz). */
+/** Расписание доставок и закрытия заказов: включено, даты, время, таймзона. */
 export interface DeliverySettings {
-  /** 0=Вс … 6=Сб (конвенция JS getDay). */
-  weekdays: number[];
+  enabled: boolean;
+  /** Даты доставок в формате YYYY-MM-DD. */
+  dates: string[];
+  /** Время (или времена) закрытия/списания 'HH:MM'. */
+  times: string[];
   /** IANA-таймзона, по умолчанию Europe/Moscow. */
   tz: string;
 }

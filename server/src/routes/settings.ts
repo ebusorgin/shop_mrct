@@ -37,19 +37,19 @@ settingsRouter.get(
   wrap(async (_req, res) => {
     const gpt = await gptSettings();
     const target = proxyTarget(gpt.proxyUrl);
-    const writeoff = await writeoffSettings();
     const delivery = await deliverySettings();
     res.json({
       gpt,
       defaults: GPT_DEFAULTS,
       openai: { keyConfigured: Boolean(config.openaiKey), model: config.openaiModel },
       proxy: { ...target, reachable: await tcpProbe(target.host, target.port) },
-      writeoff,
-      writeoffDefaults: WRITEOFF_DEFAULTS,
-      writeoffNext: nextDue(writeoff),
       delivery,
       deliveryDefaults: DELIVERY_DEFAULTS,
       deliveryUpcoming: upcomingDeliveryDates(delivery, 4),
+      deliveryNext: nextDue(delivery),
+      writeoff: delivery,
+      writeoffDefaults: DELIVERY_DEFAULTS,
+      writeoffNext: nextDue(delivery),
     });
   })
 );
@@ -186,10 +186,10 @@ settingsRouter.patch(
       action: 'update',
       entity: 'setting',
       entityId: 'delivery',
-      title: `Дни доставки: ${delivery.weekdays.length} дн.`,
+      title: `Дни доставки: ${delivery.dates.length} дат`,
       details: { from: before, to: delivery },
     });
-    res.json({ ok: true, delivery, deliveryUpcoming: upcomingDeliveryDates(delivery, 4) });
+    res.json({ ok: true, delivery, deliveryUpcoming: upcomingDeliveryDates(delivery, 4), deliveryNext: nextDue(delivery) });
   })
 );
 

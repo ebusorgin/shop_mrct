@@ -28,21 +28,21 @@ const round3 = (n: number): number => Math.round(n * 1000) / 1000;
 
 /** Пора ли гасить списание в этот момент? */
 export function isSlotDue(now: TzNow, cfg: WriteoffSettings): boolean {
-  return cfg.enabled && cfg.weekdays.includes(now.weekday) && cfg.times.includes(now.hhmm);
+  return cfg.enabled && cfg.dates.includes(now.dateIso) && cfg.times.includes(now.hhmm);
 }
 
-/** Ближайший срабатывающий слот для превью на странице настроек (в пределах недели). */
+/** Ближайший срабатывающий слот для превью на странице настроек. */
 export function nextDue(cfg: WriteoffSettings, at: Date = new Date()): { dateIso: string; time: string } | null {
-  if (!cfg.enabled || !cfg.weekdays.length || !cfg.times.length) return null;
+  if (!cfg.enabled || !cfg.dates.length || !cfg.times.length) return null;
   const now = mskNow(cfg.tz, at);
   const times = [...cfg.times].sort();
-  if (cfg.weekdays.includes(now.weekday)) {
+  if (cfg.dates.includes(now.dateIso)) {
     const later = times.find((t) => t > now.hhmm);
     if (later) return { dateIso: now.dateIso, time: later };
   }
-  for (let i = 1; i <= 7; i++) {
-    const probe = mskNow(cfg.tz, new Date(at.getTime() + i * 86_400_000));
-    if (cfg.weekdays.includes(probe.weekday)) return { dateIso: probe.dateIso, time: times[0] };
+  const futureDates = cfg.dates.filter((d) => d > now.dateIso);
+  if (futureDates.length > 0) {
+    return { dateIso: futureDates[0], time: times[0] };
   }
   return null;
 }

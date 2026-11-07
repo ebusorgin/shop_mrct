@@ -2,7 +2,7 @@ import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } 
 import { FormsModule } from '@angular/forms';
 import { CommonModule } from '@angular/common';
 import { ApiService } from '../core/api.service';
-import { AppSettings, CardCategory, CardRef, GptTestResult, WriteoffSettings, WriteOffReport, WriteOffRun } from '../core/models';
+import { AppSettings, CardCategory, CardRef, GptTestResult, DeliverySettings, WriteOffReport, WriteOffRun } from '../core/models';
 import { httpErr } from '../core/format';
 
 /**
@@ -52,11 +52,21 @@ import { httpErr } from '../core/format';
     .chip .x { flex: none; background: none; border: none; cursor: pointer; font-size: 15px; line-height: 1;
       color: #b6bec9; padding: 0 3px; border-radius: 4px; }
     .chip .x:hover { color: var(--red); background: #fdeaec; }
-    /* переключатель дня недели */
-    .wd { padding: 4px 11px; border-radius: 12px; border: 1px solid var(--border); background: #fff;
-      cursor: pointer; font-size: 13px; color: #3c4450; }
-    .wd:hover { background: #f4f7fb; }
-    .wd.on { background: #e8f0fe; border-color: #1a73e8; color: #1a73e8; font-weight: 600; }
+    /* календарь дат доставок */
+    .cal-day {
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 7px 0;
+      cursor: pointer;
+      font-size: 13px;
+      color: #3c4450;
+      transition: background .1s, border-color .1s;
+    }
+    .cal-day:hover { background: #f4f7fb; border-color: var(--accent); }
+    .cal-day.other-month { opacity: 0.35; }
+    .cal-day.today { border-color: var(--accent); font-weight: bold; }
+    .cal-day.selected { background: #e8f0fe; border-color: #1a73e8; color: #1a73e8; font-weight: 600; }
     /* таблица отчёта по списанию */
     .rep { border-collapse: collapse; width: 100%; max-width: 640px; font-size: 13px; }
     .rep th, .rep td { border-bottom: 1px solid var(--border); padding: 5px 8px; text-align: left; }
@@ -118,84 +128,87 @@ import { httpErr } from '../core/format';
       } @else { <div class="muted" style="font-size:12px">Загружаем…</div> }
     </div>
 
-    <!-- Автосписание заказов -->
+    <!-- Дни и закрытие доставок -->
     <div class="panel">
-      <h3>Автосписание заказов со склада</h3>
+      <h3>Дни и закрытие доставок</h3>
       <div class="muted" style="font-size:12px; margin-bottom:12px">
-        В выбранные дни и время CRM списывает все линии доски за дату доставки: техкарты
-        раскрываются в сырьё (через заготовки, с учётом уварки/граммовки) и уходят со склада.
+        Выберите даты доставок в календаре (на ближайшие 3 месяца) и укажите время автоматического
+        закрытия заказов и списания со склада. В назначенный момент лист закрывается от правок.
         Время — по Москве.
       </div>
-      <label style="display:flex; gap:10px; align-items:center; cursor:pointer; font-weight:600">
-        <input type="checkbox" [ngModel]="woEnabled()" (ngModelChange)="woEnabled.set($event)"
-          [disabled]="woBusy()" style="width:18px; height:18px" />
-        <span>Включить автосписание по расписанию</span>
+
+      <label style="display:flex; gap:10px; align-items:center; cursor:pointer; font-weight:600; margin-bottom:14px">
+        <input type="checkbox" [ngModel]="dvEnabled()" (ngModelChange)="dvEnabled.set($event)"
+          [disabled]="dvBusy()" style="width:18px; height:18px" />
+        <span>Включить автоматическое закрытие и списание в дни доставок</span>
       </label>
 
-      <div style="margin-top:14px">
-        <div class="muted" style="font-size:12px; margin-bottom:6px">Дни недели</div>
-        <div class="chips">
-          @for (d of WD; track d.n) {
-            <button type="button" class="wd" [class.on]="woWeekdays().has(d.n)" (click)="toggleWd(d.n)">{{ d.label }}</button>
-          }
-        </div>
-      </div>
-
-      <div style="margin-top:14px">
-        <div class="muted" style="font-size:12px; margin-bottom:6px">Время списания</div>
+      <div style="margin-bottom:16px">
+        <div class="muted" style="font-size:12px; margin-bottom:6px">Время закрытия заказов</div>
         <div class="chips" style="align-items:center">
-          @for (t of woTimes(); track t) {
+          @for (t of dvTimes(); track t) {
             <span class="chip">{{ t }}<button type="button" class="x" (click)="removeTime(t)" title="Убрать">×</button></span>
           }
           <input type="time" [ngModel]="newTime()" (ngModelChange)="newTime.set($event)" style="width:120px" />
           <button type="button" class="btn sm" (click)="addTime()">+ добавить</button>
         </div>
-        @if (!woTimes().length) { <div class="muted" style="font-size:12px;margin-top:6px">Добавьте хотя бы одно время.</div> }
+        @if (!dvTimes().length) { <div class="muted" style="font-size:12px;margin-top:6px">Добавьте хотя бы одно время.</div> }
       </div>
 
-      <div class="muted" style="font-size:12px; margin-top:12px">
-        @if (woEnabled() && woNext(); as nx) {
-          Ближайшее срабатывание: {{ nx.dateIso }} в {{ nx.time }}
-        } @else if (woEnabled()) {
-          Расписание неполное — выберите дни и время.
-        } @else {
-          Сейчас выключено.
+      <div style="font-weight:600; font-size:13px; margin-bottom:8px">Календарь дат доставок</div>
+      <div style="display:flex; align-items:center; gap:12px; margin-bottom:14px">
+        <button type="button" class="btn sm" (click)="prevMonth()">◀ На месяц назад</button>
+        <button type="button" class="btn sm" (click)="nextMonth()">На месяц вперёд ▶</button>
+      </div>
+
+      <div class="cal-3months" style="display:flex; gap:20px; flex-wrap:wrap; align-items:flex-start">
+        @for (cal of calMonths(); track cal.monthName) {
+          <div style="flex:0 0 280px; background:#fafbfc; border:1px solid var(--border); border-radius:10px; padding:12px">
+            <div style="font-weight:600; font-size:14px; margin-bottom:8px; text-align:center">{{ cal.monthName }}</div>
+            <div style="display:grid; grid-template-columns:repeat(7, 1fr); gap:3px; text-align:center; font-size:13px">
+              @for (wd of ['Пн','Вт','Ср','Чт','Пт','Сб','Вс']; track wd) {
+                <div style="color:var(--muted); font-size:11px; font-weight:600; padding:3px 0">{{ wd }}</div>
+              }
+              @for (d of cal.days; track d.dateIso) {
+                <button type="button"
+                        class="cal-day"
+                        [class.other-month]="!d.inMonth"
+                        [class.selected]="d.isSelected"
+                        [class.today]="d.isToday"
+                        (click)="toggleDvDate(d.dateIso)">
+                  {{ d.dayNum }}
+                </button>
+              }
+            </div>
+          </div>
         }
       </div>
 
-      <hr class="hr" />
-      <div class="row">
-        <button class="btn primary" (click)="saveWriteoff()" [disabled]="woBusy()">{{ woBusy() ? 'Сохраняем…' : 'Сохранить' }}</button>
-        <button class="btn" (click)="runWriteoffNow()" [disabled]="woRunning() || woBusy()">{{ woRunning() ? 'Списываем…' : 'Запустить сейчас' }}</button>
-      </div>
-      @if (woMsg()) { <div class="ok-msg" style="margin-top:10px">{{ woMsg() }}</div> }
-    </div>
-
-    <!-- Дни доставки -->
-    <div class="panel">
-      <h3>Дни доставки</h3>
-      <div class="muted" style="font-size:12px; margin-bottom:12px">
-        Отметьте дни недели, в которые у магазинов доставка. CRM по ним показывает
-        ближайшую дату доставки; после автосписания лист за дату закрывается для правок.
-      </div>
-      <div class="chips">
-        @for (d of WD; track d.n) {
-          <button type="button" class="wd" [class.on]="dvWeekdays().has(d.n)" (click)="toggleDv(d.n)">{{ d.label }}</button>
-        }
-      </div>
-      <div class="muted" style="font-size:12px; margin-top:12px">
+      <div class="muted" style="font-size:12px; margin-top:14px">
         @if (dvUpcoming().length) {
           Ближайшие доставки: @for (dt of dvUpcoming(); track dt) { <span class="chip" style="margin:0 4px">{{ dt }}</span> }
         } @else {
-          Дни не выбраны — ближайшая доставка не определена.
+          Даты не выбраны — ближайшая доставка не определена.
         }
       </div>
+
+      <div class="muted" style="font-size:12px; margin-top:6px">
+        @if (dvEnabled() && dvNext(); as nx) {
+          Ближайшее срабатывание: {{ nx.dateIso }} в {{ nx.time }}
+        } @else if (dvEnabled()) {
+          Расписание неполное — выберите даты и время.
+        } @else {
+          Автоматическое закрытие выключено.
+        }
+      </div>
+
       <hr class="hr" />
       <div class="row">
         <button class="btn primary" (click)="saveDelivery()" [disabled]="dvBusy()">{{ dvBusy() ? 'Сохраняем…' : 'Сохранить' }}</button>
         <button class="btn" (click)="createDeliveryTab()" [disabled]="dvTabBusy()" title="Скопировать самый свежий лист на ближайшую дату доставки и обнулить количества точек">
           {{ dvTabBusy() ? 'Создаём…' : 'Лист доставки в Google' }}
         </button>
+        <button class="btn" (click)="runWriteoffNow()" [disabled]="woRunning() || dvBusy()">{{ woRunning() ? 'Списываем…' : 'Запустить списание сейчас' }}</button>
       </div>
       @if (dvMsg()) { <div class="ok-msg" style="margin-top:10px">{{ dvMsg() }}</div> }
     </div>
@@ -351,29 +364,103 @@ export class SettingsComponent implements OnInit {
   viaProxy = false;
   proxyUrl = '';
 
-  // === Автосписание заказов ===
-  woEnabled = signal(false);
-  /** Выбранные дни недели (getDay: 0=Вс … 6=Сб). */
-  woWeekdays = signal<Set<number>>(new Set());
-  woTimes = signal<string[]>([]);
+  // === Дни и закрытие доставок ===
+  dvEnabled = signal(false);
+  dvDates = signal<Set<string>>(new Set());
+  dvTimes = signal<string[]>([]);
   newTime = signal('');
-  woBusy = signal(false);
-  woRunning = signal(false);
-  woMsg = signal('');
-  woNext = signal<{ dateIso: string; time: string } | null>(null);
-  /** Порядок и подписи дней для чипов (getDay → локализованнаяabbr). */
-  readonly WD: { n: number; label: string }[] = [
-    { n: 1, label: 'Пн' }, { n: 2, label: 'Вт' }, { n: 3, label: 'Ср' }, { n: 4, label: 'Чт' },
-    { n: 5, label: 'Пт' }, { n: 6, label: 'Сб' }, { n: 0, label: 'Вс' },
-  ];
-
-  // === Дни доставки ===
-  /** Дни недели-доставки (getDay: 0=Вс … 6=Сб). */
-  dvWeekdays = signal<Set<number>>(new Set());
+  dvNext = signal<{ dateIso: string; time: string } | null>(null);
+  calYear = signal<number>(new Date().getFullYear());
+  calMonth = signal<number>(new Date().getMonth());
+  calMonthNames = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
   dvUpcoming = signal<string[]>([]);
   dvBusy = signal(false);
   dvTabBusy = signal(false);
+  woRunning = signal(false);
   dvMsg = signal('');
+
+  prevMonth(): void {
+    let m = this.calMonth() - 1;
+    let y = this.calYear();
+    if (m < 0) { m = 11; y--; }
+    this.calMonth.set(m);
+    this.calYear.set(y);
+  }
+
+  nextMonth(): void {
+    let m = this.calMonth() + 1;
+    let y = this.calYear();
+    if (m > 11) { m = 0; y++; }
+    this.calMonth.set(m);
+    this.calYear.set(y);
+  }
+
+  calMonths = computed(() => {
+    const baseYear = this.calYear();
+    const baseMonth = this.calMonth();
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const selected = this.dvDates();
+
+    const result = [];
+    for (let offset = 0; offset < 3; offset++) {
+      let y = baseYear;
+      let m = baseMonth + offset;
+      while (m > 11) { m -= 12; y++; }
+      while (m < 0) { m += 12; y--; }
+
+      const monthName = `${this.calMonthNames[m]} ${y}`;
+      const firstDay = new Date(y, m, 1);
+      let startDayOfWeek = firstDay.getDay() - 1;
+      if (startDayOfWeek < 0) startDayOfWeek = 6;
+
+      const daysInMonth = new Date(y, m + 1, 0).getDate();
+      const daysInPrevMonth = new Date(y, m, 0).getDate();
+
+      const days: { dateIso: string; dayNum: number; inMonth: boolean; isSelected: boolean; isToday: boolean }[] = [];
+
+      for (let i = startDayOfWeek - 1; i >= 0; i--) {
+        const dayNum = daysInPrevMonth - i;
+        const prevDate = new Date(y, m - 1, dayNum);
+        const dateIso = prevDate.toISOString().slice(0, 10);
+        days.push({
+          dateIso,
+          dayNum,
+          inMonth: false,
+          isSelected: selected.has(dateIso),
+          isToday: dateIso === todayIso,
+        });
+      }
+
+      for (let d = 1; d <= daysInMonth; d++) {
+        const currDate = new Date(y, m, d);
+        const dateIso = currDate.toISOString().slice(0, 10);
+        days.push({
+          dateIso,
+          dayNum: d,
+          inMonth: true,
+          isSelected: selected.has(dateIso),
+          isToday: dateIso === todayIso,
+        });
+      }
+
+      const totalCells = days.length <= 28 ? 28 : days.length <= 35 ? 35 : 42;
+      const remaining = totalCells - days.length;
+      for (let d = 1; d <= remaining; d++) {
+        const nextDate = new Date(y, m + 1, d);
+        const dateIso = nextDate.toISOString().slice(0, 10);
+        days.push({
+          dateIso,
+          dayNum: d,
+          inMonth: false,
+          isSelected: selected.has(dateIso),
+          isToday: dateIso === todayIso,
+        });
+      }
+
+      result.push({ year: y, month: m, monthName, days });
+    }
+    return result;
+  });
 
   // === Отчёт / архив автосписания ===
   repDate = signal('');
@@ -410,12 +497,11 @@ export class SettingsComponent implements OnInit {
         this.viaProxy = s.gpt.viaProxy;
         this.proxyUrl = s.gpt.proxyUrl;
         this.test.set(null);
-        this.woEnabled.set(s.writeoff.enabled);
-        this.woWeekdays.set(new Set(s.writeoff.weekdays));
-        this.woTimes.set([...s.writeoff.times]);
-        this.woNext.set(s.writeoffNext ?? null);
-        this.dvWeekdays.set(new Set(s.delivery.weekdays));
+        this.dvEnabled.set(s.delivery.enabled);
+        this.dvDates.set(new Set(s.delivery.dates));
+        this.dvTimes.set([...s.delivery.times]);
         this.dvUpcoming.set(s.deliveryUpcoming ?? []);
+        this.dvNext.set(s.deliveryNext ?? null);
         if (!this.repDate()) this.repDate.set(new Date().toISOString().slice(0, 10));
       },
       error: (e: unknown) => this.err.set(httpErr(e)),
@@ -447,86 +533,65 @@ export class SettingsComponent implements OnInit {
     });
   }
 
-  // ---- Автосписание ----
-  toggleWd(n: number): void {
-    const next = new Set(this.woWeekdays());
-    if (next.has(n)) next.delete(n);
-    else next.add(n);
-    this.woWeekdays.set(next);
-  }
-
+  // ---- Дни и закрытие доставок ----
   addTime(): void {
     const t = this.newTime().trim();
     if (!/^([01]?\d|2[0-3]):([0-5]\d)$/.test(t)) return;
     const canon = `${t.slice(0, t.indexOf(':')).padStart(2, '0')}:${t.slice(t.indexOf(':') + 1)}`;
-    if (this.woTimes().includes(canon)) { this.newTime.set(''); return; }
-    this.woTimes.set([...this.woTimes(), canon].sort());
+    if (this.dvTimes().includes(canon)) { this.newTime.set(''); return; }
+    this.dvTimes.set([...this.dvTimes(), canon].sort());
     this.newTime.set('');
   }
 
   removeTime(t: string): void {
-    this.woTimes.set(this.woTimes().filter((x) => x !== t));
+    this.dvTimes.set(this.dvTimes().filter((x) => x !== t));
   }
 
-  saveWriteoff(): void {
-    this.woBusy.set(true);
-    this.woMsg.set('');
-    const body: WriteoffSettings = {
-      enabled: this.woEnabled(),
-      weekdays: [...this.woWeekdays()].sort((a, b) => a - b),
-      times: this.woTimes(),
+  toggleDvDate(dateIso: string): void {
+    const next = new Set(this.dvDates());
+    if (next.has(dateIso)) next.delete(dateIso);
+    else next.add(dateIso);
+    this.dvDates.set(next);
+  }
+
+  saveDelivery(): void {
+    this.dvBusy.set(true);
+    this.dvMsg.set('');
+    const body: DeliverySettings = {
+      enabled: this.dvEnabled(),
+      dates: [...this.dvDates()].sort(),
+      times: this.dvTimes(),
       tz: 'Europe/Moscow',
     };
-    this.api.saveWriteoff$(body).subscribe({
+    this.api.saveDelivery$(body).subscribe({
       next: (r) => {
-        this.woBusy.set(false);
-        this.woEnabled.set(r.writeoff.enabled);
-        this.woWeekdays.set(new Set(r.writeoff.weekdays));
-        this.woTimes.set([...r.writeoff.times]);
-        this.woNext.set(r.writeoffNext ?? null);
-        this.woMsg.set('Расписание сохранено');
+        this.dvBusy.set(false);
+        this.dvEnabled.set(r.delivery.enabled);
+        this.dvDates.set(new Set(r.delivery.dates));
+        this.dvTimes.set([...r.delivery.times]);
+        this.dvUpcoming.set(r.deliveryUpcoming ?? []);
+        this.dvNext.set(r.deliveryNext ?? null);
+        this.dvMsg.set('Дни и закрытие доставок сохранены');
       },
-      error: (e: unknown) => { this.woBusy.set(false); this.woMsg.set(httpErr(e)); },
+      error: (e: unknown) => { this.dvBusy.set(false); this.dvMsg.set(httpErr(e)); },
     });
   }
 
   runWriteoffNow(): void {
     if (!confirm('Списать со склада все линии доски за сегодняшнюю дату доставки?')) return;
     this.woRunning.set(true);
-    this.woMsg.set('');
+    this.dvMsg.set('');
     this.api.runWriteoffNow$().subscribe({
-      next: (r) => {
+      next: (r: { skipped: boolean; deliveryDate: string; linesWritten: number; batches: number; error?: string }) => {
         this.woRunning.set(false);
-        this.woMsg.set(
+        this.dvMsg.set(
           r.skipped
             ? `Слот за ${r.deliveryDate} уже был закрыт`
             : `Готово (${r.deliveryDate}): списано строк ${r.linesWritten}, партий ${r.batches}` + (r.error ? ` · ${r.error}` : '')
         );
         this.load(true);
       },
-      error: (e: unknown) => { this.woRunning.set(false); this.woMsg.set(httpErr(e)); },
-    });
-  }
-
-  // ---- Дни доставки ----
-  toggleDv(n: number): void {
-    const next = new Set(this.dvWeekdays());
-    if (next.has(n)) next.delete(n);
-    else next.add(n);
-    this.dvWeekdays.set(next);
-  }
-
-  saveDelivery(): void {
-    this.dvBusy.set(true);
-    this.dvMsg.set('');
-    this.api.saveDelivery$({ weekdays: [...this.dvWeekdays()].sort((a, b) => a - b), tz: 'Europe/Moscow' }).subscribe({
-      next: (r) => {
-        this.dvBusy.set(false);
-        this.dvWeekdays.set(new Set(r.delivery.weekdays));
-        this.dvUpcoming.set(r.deliveryUpcoming ?? []);
-        this.dvMsg.set('Дни доставки сохранены');
-      },
-      error: (e: unknown) => { this.dvBusy.set(false); this.dvMsg.set(httpErr(e)); },
+      error: (e: unknown) => { this.woRunning.set(false); this.dvMsg.set(httpErr(e)); },
     });
   }
 

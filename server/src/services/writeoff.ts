@@ -15,9 +15,9 @@
 import { pool, tx } from '../db';
 import { postBatch } from '../routes/batches';
 import type { Actor } from './audit';
-import { writeoffSettings, deliverySettings, type WriteoffSettings } from './settings';
+import { writeoffSettings, type WriteoffSettings } from './settings';
 import { mskNow, type TzNow } from './tz';
-import { nextDeliveryDate } from './delivery';
+
 
 // часы по таймзоне живут в tz (общий для delivery/sheet-tabs); реэкспорт — прежние импортеры
 export { mskNow } from './tz';
@@ -145,41 +145,23 @@ export async function runWriteOff(
 
   // лист доставки закрыт только при чистом прогоне: частично несписанный лист остаётся открытым,
   // чтобы недобранное можно было дописать и списать следующим прогоном.
-  let nextTab: NewTabResult | null = null;
+
   if (status === 'ok') {
     await pool.query(
       "update order_tabs set status = 'locked', locked_at = now() where extract_date = $1::date and status = 'open'",
       [deliveryDate]
     );
-    nextTab = await openNextDeliveryTab(deliveryDate);
+
   }
 
   await pool.query(
     `update writeoff_runs
         set status = $2, finished_at = now(), lines_written = $3, batches = $4, raw = $5::jsonb, error = $6
       where id = $1`,
-    [claimed, status, linesWritten, batches, JSON.stringify(nextTab ? { ...raw, nextTab } : raw), error ?? (cardErrors ? `ошибок по карточкам: ${cardErrors}` : null)]
+    [claimed, status, linesWritten, batches, JSON.stringify(raw), error ?? (cardErrors ? `ошибок по карточкам: ${cardErrors}` : null)]
   );
 
-  return { skipped: false, runId: claimed, linesWritten, batches, raw: nextTab ? { ...raw, nextTab } : raw, error };
-}
-
-/**
- * После закрытия листа — завести следующий обнулённый лист доставки (best-effort:
- * расписание пустое / рубильник выключен / Google отказал — прогон от этого не падает).
- * Берём ближайшую дату доставки строго после списанной.
- */
-async function openNextDeliveryTab(deliveryDate: string): Promise<NewTabResult | null> {
-  try {
-    const cfg = await deliverySettings();
-    // сутки спустя после полуночи списываемой даты — чтобы считался следующий день, а не сегодня
-    const dayAfter = new Date(Date.parse(`${deliveryDate}T00:00:00Z`) + 86_400_000);
-    const next = nextDeliveryDate(cfg, dayAfter);
-    if (!next) return null;
-    return await ensureDeliveryTab(next);
-  } catch (e) {
-    return { ok: false, error: (e as Error).message };
-  }
+  return { skipped: false, runId: claimed, linesWritten, batches, raw, error };
 }
 
 /**

@@ -105,7 +105,7 @@ settingsRouter.patch(
       entity: 'setting',
       entityId: 'production',
       title: 'Реквизиты производства',
-      details: diff(before as Record<string, unknown>, production as Record<string, unknown>),
+      details: diff(before as unknown as Record<string, unknown>, production as unknown as Record<string, unknown>),
     });
     res.json({ ok: true, production });
   })
@@ -162,7 +162,7 @@ settingsRouter.patch(
       entity: 'setting',
       entityId: 'writeoff',
       title: writeoff.enabled
-        ? `Автосписание: ${writeoff.weekdays.length} дн. × ${writeoff.times.join(', ') || '—'}`
+        ? `Автосписание: ${writeoff.dates.length} дн. × ${writeoff.time || '—'}`
         : 'Автосписание выключено',
       details: { from: before, to: writeoff },
     });

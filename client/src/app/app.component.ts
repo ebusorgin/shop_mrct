@@ -1,15 +1,17 @@
 import { ChangeDetectionStrategy, Component, DestroyRef, effect, inject, signal } from '@angular/core';
 import { NavigationEnd, Router, RouterOutlet } from '@angular/router';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { TranslateModule } from '@ngx-translate/core';
 import { AuthService } from './core/auth.service';
 import { LiveService } from './core/live.service';
+import { LangService, AppLang } from './core/lang.service';
 import { PasswordFormComponent } from './shared/password-form.component';
 import { ToastComponent } from './shared/toast.component';
 
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [RouterOutlet, PasswordFormComponent, ToastComponent],
+  imports: [RouterOutlet, PasswordFormComponent, ToastComponent, TranslateModule],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     @if (auth.user(); as u) {
@@ -24,14 +26,14 @@ import { ToastComponent } from './shared/toast.component';
           <button type="button" class="side-close" aria-label="Закрыть меню" (click)="menu.set(false)">✕</button>
           @if (auth.isStoreUser()) {
             <!-- магазинный сотрудник видит только свою точку -->
-            <a href="#" class="nav-link" [class.active]="isActive('/store', undefined)" (click)="go($event, '/store')">🏪 <span>Мой магазин</span></a>
+            <a href="#" class="nav-link" [class.active]="isActive('/store', undefined)" (click)="go($event, '/store')">🏪 <span>{{ 'nav.myStore' | translate }}</span></a>
           } @else {
-            @for (g of navGroups; track g.title) {
-              @if (g.title) { <div class="side-group">{{ g.title }}</div> }
-              @for (r of g.items; track r.label) {
+            @for (g of navGroups; track g.titleKey) {
+              @if (g.titleKey) { <div class="side-group">{{ g.titleKey | translate }}</div> }
+              @for (r of g.items; track r.labelKey) {
                 @if (!r.admin || auth.isAdmin()) {
                   <a href="#" class="nav-link" [class.active]="isActive(r.path, r.qp, r.also)"
-                     (click)="go($event, r.path, r.qp)">{{ r.icon }} <span>{{ r.label }}</span></a>
+                     (click)="go($event, r.path, r.qp)">{{ r.icon }} <span>{{ r.labelKey | translate }}</span></a>
                 }
               }
             }
@@ -39,8 +41,16 @@ import { ToastComponent } from './shared/toast.component';
           <div class="side-foot">
             <div class="side-user">{{ u.fullName || u.login }}{{ u.storeName ? ' · ' + u.storeName : (u.isAdmin ? ' · админ' : '') }}</div>
             <div class="side-actions">
-              <button type="button" class="side-btn" (click)="pwdOpen.set(true)">Пароль</button>
-              <button type="button" class="side-btn" (click)="logout()">Выйти</button>
+              <button type="button" class="side-btn" (click)="pwdOpen.set(true)">{{ 'common.password' | translate }}</button>
+              <button type="button" class="side-btn" (click)="logout()">{{ 'nav.logout' | translate }}</button>
+            </div>
+            <!-- Переключатель языка -->
+            <div class="lang-switcher">
+              @for (lang of langs; track lang) {
+                <button type="button" class="lang-btn" [class.active]="langSvc.currentLang() === lang" (click)="langSvc.setLang(lang)">
+                  {{ lang.toUpperCase() }}
+                </button>
+              }
             </div>
           </div>
         </nav>
@@ -59,26 +69,31 @@ import { ToastComponent } from './shared/toast.component';
     <!-- плашка «в таблице изменения» (справа сверху, 2 сек) -->
     <app-toast />
   `,
+  styles: [`
+    .lang-switcher { display: flex; gap: 4px; padding: 8px 0 0; }
+    .lang-btn { padding: 2px 7px; font-size: 11px; border: 1px solid rgba(255,255,255,.3);
+      border-radius: 4px; background: transparent; color: inherit; cursor: pointer; opacity: .7; }
+    .lang-btn.active { opacity: 1; background: rgba(255,255,255,.18); border-color: rgba(255,255,255,.6); font-weight: 700; }
+    .lang-btn:hover:not(.active) { opacity: .9; }
+  `],
 })
 export class AppComponent {
   auth = inject(AuthService);
+  langSvc = inject(LangService);
   private router = inject(Router);
   private live = inject(LiveService);
   private destroyRef = inject(DestroyRef);
 
+  readonly langs: AppLang[] = ['ru', 'en', 'sr'];
+
   constructor() {
-    // живой канал (SSE) нужен только с активной сессией: на /login он бесполезен
     effect(() => {
       if (this.auth.user()) this.live.connect();
       else this.live.disconnect();
     });
-    // мобильное меню — drawer поверх страницы: пока открыто, блокируем прокрутку
-    // документа, иначе свайп по фону/меню скроллит страницу под ним, а drawer «дёргается»
     effect(() => {
       document.documentElement.classList.toggle('menu-lock', this.menu());
     });
-    // подсветка пункта меню: у страницы вкладки меняются без смены URL (?tab=),
-    // поэтому активный пункт считаем сами из текущего URL
     this.router.events
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe((e) => {
@@ -88,39 +103,33 @@ export class AppComponent {
 
   menu = signal(false);
   pwdOpen = signal(false);
-  /** текущий адрес для подсветки меню (fields-инициализаторы отработают до constructor) */
   currentUrl = signal(this.router.url);
 
-  /**
-   * Меню сгруппировано по частоте работы: ежедневные операции, склад-справочники,
-   * заказы и точки, редкое — вниз. Ссылки с queryParams открывают нужную вкладку страницы.
-   */
-  navGroups: { title: string; items: { path: string; qp?: Record<string, string>; icon: string; label: string; admin?: boolean; also?: string[] }[] }[] = [
-    { title: '', items: [{ path: '', icon: '📊', label: 'Панель' }] },
+  navGroups: { titleKey: string; items: { path: string; qp?: Record<string, string>; icon: string; labelKey: string; admin?: boolean; also?: string[] }[] }[] = [
+    { titleKey: '', items: [{ path: '', icon: '📊', labelKey: 'nav.dashboard' }] },
     {
-      title: 'Операции',
-      items: [{ path: 'waybills', icon: '📥', label: 'Приход товара' }],
+      titleKey: 'nav.groupOperations',
+      items: [{ path: 'waybills', icon: '📥', labelKey: 'nav.waybills' }],
     },
     {
-      title: 'Склад',
+      titleKey: 'nav.groupStock',
       items: [
-
-        { path: 'stock', icon: '🏬', label: 'Склад' },
-        { path: 'semis', icon: '🔪', label: 'Полуфабрикаты' },
-        { path: 'cards', icon: '📐', label: 'Техкарты' },
-        { path: 'constructor', icon: '🍲', label: 'Конструктор блюд' },
+        { path: 'stock', icon: '🏬', labelKey: 'nav.stock' },
+        { path: 'semis', icon: '🔪', labelKey: 'nav.semis' },
+        { path: 'cards', icon: '📐', labelKey: 'nav.cards' },
+        { path: 'constructor', icon: '🍲', labelKey: 'nav.constructor' },
       ],
     },
     {
-      title: 'Заказы и продажи',
-      items: [{ path: 'orders', icon: '🧾', label: 'Заказы и продажи', also: ['points'] }],
+      titleKey: 'nav.groupOrders',
+      items: [{ path: 'orders', icon: '🧾', labelKey: 'nav.orders', also: ['points'] }],
     },
     {
-      title: 'Ещё',
+      titleKey: 'nav.groupOther',
       items: [
-        { path: 'audit', icon: '📜', label: 'Журнал действий' },
-        { path: 'users', icon: '👤', label: 'Пользователи', admin: true },
-        { path: 'settings', icon: '⚙️', label: 'Настройки', admin: true },
+        { path: 'audit', icon: '📜', labelKey: 'nav.audit' },
+        { path: 'users', icon: '👤', labelKey: 'nav.users', admin: true },
+        { path: 'settings', icon: '⚙️', labelKey: 'nav.settings', admin: true },
       ],
     },
   ];
@@ -132,11 +141,6 @@ export class AppComponent {
     });
   }
 
-  /**
-   * Пункт активен на любом адресе своей страницы и её дочерних маршрутов.
-   * also — дополнительные пути того же раздела: «Заказы и продажи» подсвечивается
-   * и на /orders (с вкладками), и на /points (с карточкой точки).
-   */
   isActive(path: string, qp?: Record<string, string>, also?: string[]): boolean {
     const [p] = this.currentUrl().split('?');
     const wants = ['/' + path, ...(also ?? []).map((a) => '/' + a)];
@@ -146,8 +150,6 @@ export class AppComponent {
   go(ev: Event, path: string, qp?: Record<string, string>): void {
     ev.preventDefault();
     this.menu.set(false);
-    // queryParams — вторым аргументом (NavigationExtras), иначе Angular завернёт объект
-    // в матричный параметр сегмента: /stock;queryParams=[object Object]
     void this.router.navigate(['/' + path], qp ? { queryParams: qp } : undefined);
   }
 }

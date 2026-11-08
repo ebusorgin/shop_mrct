@@ -105,9 +105,11 @@ import { OrdersNavComponent } from './orders-nav.component';
           @if (!isFresh() && date()) {
             <button class="btn sm fresh-btn" (click)="goFresh()">К свежему</button>
           }
-          <button class="btn sm" (click)="exportOtpremnice()" [disabled]="!date() || exporting()" title="Выгрузить отпремницы (.doc)">
-            {{ exporting() ? 'Экспорт…' : '📦 Выгрузить отпремницы (.doc)' }}
-          </button>
+          @if (!embedded) {
+            <button class="btn sm" (click)="exportOtpremnice()" [disabled]="!date() || exporting()" title="Выгрузить отпремницы (.doc)">
+              {{ exporting() ? 'Экспорт…' : '📦 Выгрузить отпремницы (.doc)' }}
+            </button>
+          }
         </div>
         <div class="tb-group right">
           <select class="minw0" [ngModel]="category()" (ngModelChange)="category.set($event)">

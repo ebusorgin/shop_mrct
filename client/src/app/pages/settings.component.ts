@@ -1,6 +1,8 @@
 import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { CommonModule } from '@angular/common';
+import { TranslateModule } from '@ngx-translate/core';
+import { LangService, AppLang } from '../core/lang.service';
 import { ApiService } from '../core/api.service';
 import { AppSettings, CardCategory, CardRef, GptTestResult, DeliverySettings } from '../core/models';
 import { httpErr } from '../core/format';
@@ -14,7 +16,7 @@ import { httpErr } from '../core/format';
 @Component({
   selector: 'app-settings',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, TranslateModule],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styles: [`
     /* дерево категорий: узел = категория, потомки = товары */
@@ -299,6 +301,7 @@ import { httpErr } from '../core/format';
 })
 export class SettingsComponent implements OnInit {
   private api = inject(ApiService);
+  protected langSvc = inject(LangService);
 
   // === GPT ===
   st = signal<AppSettings | null>(null);

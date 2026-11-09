@@ -1,17 +1,16 @@
 import { ChangeDetectionStrategy, Component, DestroyRef, effect, inject, signal } from '@angular/core';
 import { NavigationEnd, Router, RouterOutlet } from '@angular/router';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { TranslateModule } from '@ngx-translate/core';
+import { TranslatePipe, TranslateDirective } from '@ngx-translate/core';
 import { AuthService } from './core/auth.service';
 import { LiveService } from './core/live.service';
 import { LangService, AppLang } from './core/lang.service';
-import { PasswordFormComponent } from './shared/password-form.component';
 import { ToastComponent } from './shared/toast.component';
 
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [RouterOutlet, PasswordFormComponent, ToastComponent, TranslateModule],
+  imports: [RouterOutlet, ToastComponent, TranslatePipe],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     @if (auth.user(); as u) {
@@ -41,7 +40,6 @@ import { ToastComponent } from './shared/toast.component';
           <div class="side-foot">
             <div class="side-user">{{ u.fullName || u.login }}{{ u.storeName ? ' · ' + u.storeName : (u.isAdmin ? ' · админ' : '') }}</div>
             <div class="side-actions">
-              <button type="button" class="side-btn" (click)="pwdOpen.set(true)">{{ 'common.password' | translate }}</button>
               <button type="button" class="side-btn" (click)="logout()">{{ 'nav.logout' | translate }}</button>
             </div>
             <!-- Переключатель языка -->
@@ -58,10 +56,6 @@ import { ToastComponent } from './shared/toast.component';
           <router-outlet />
         </main>
       </div>
-
-      @if (pwdOpen()) {
-        <app-password-form (closed)="pwdOpen.set(false)" />
-      }
     } @else {
       <router-outlet />
     }
@@ -102,7 +96,6 @@ export class AppComponent {
   }
 
   menu = signal(false);
-  pwdOpen = signal(false);
   currentUrl = signal(this.router.url);
 
   navGroups: { titleKey: string; items: { path: string; qp?: Record<string, string>; icon: string; labelKey: string; admin?: boolean; also?: string[] }[] }[] = [

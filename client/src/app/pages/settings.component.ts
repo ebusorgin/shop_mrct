@@ -1,11 +1,12 @@
 import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { CommonModule } from '@angular/common';
-import { TranslateModule } from '@ngx-translate/core';
+import { TranslatePipe, TranslateDirective } from '@ngx-translate/core';
 import { LangService, AppLang } from '../core/lang.service';
 import { ApiService } from '../core/api.service';
 import { AppSettings, CardCategory, CardRef, GptTestResult, DeliverySettings } from '../core/models';
 import { httpErr } from '../core/format';
+import { PasswordFormComponent } from '../shared/password-form.component';
 
 /**
  * Раздел «Настройки» (только администратор): транспорт GPT + категории товаров.
@@ -16,7 +17,7 @@ import { httpErr } from '../core/format';
 @Component({
   selector: 'app-settings',
   standalone: true,
-  imports: [CommonModule, FormsModule, TranslateModule],
+  imports: [CommonModule, FormsModule, TranslatePipe, PasswordFormComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styles: [`
     /* дерево категорий: узел = категория, потомки = товары */
@@ -69,13 +70,19 @@ import { httpErr } from '../core/format';
     .cal-day.other-month { opacity: 0.35; }
     .cal-day.today { border-color: var(--accent); font-weight: bold; }
     .cal-day.selected { background: #e8f0fe; border-color: #1a73e8; color: #1a73e8; font-weight: 600; }
+    .cal-day.past { opacity: 0.3; cursor: not-allowed; background: #f5f6f8; color: #a0a8b5; }
+    .cal-day.past:hover { background: #f5f6f8; border-color: var(--border); }
   `],
   template: `
     <div class="bar">
       <h1 class="page-title" style="margin:0">⚙️ Настройки</h1>
       <span class="spacer"></span>
+      <button class="btn sm" (click)="pwdOpen.set(true)">{{ 'common.password' | translate }}</button>
       <button class="btn sm" (click)="load()" [disabled]="busy()">⟳</button>
     </div>
+    @if (pwdOpen()) {
+      <app-password-form (closed)="pwdOpen.set(false)" />
+    }
     @if (err()) { <div class="err">{{ err() }}</div> }
     @if (msg()) { <div class="ok-msg">{{ msg() }}</div> }
 
@@ -168,6 +175,7 @@ import { httpErr } from '../core/format';
                         [class.other-month]="!d.inMonth"
                         [class.selected]="d.isSelected"
                         [class.today]="d.isToday"
+                        [class.past]="d.isPast"
                         (click)="toggleDvDate(d.dateIso)">
                   {{ d.dayNum }}
                 </button>
@@ -305,6 +313,7 @@ export class SettingsComponent implements OnInit {
 
   // === GPT ===
   st = signal<AppSettings | null>(null);
+  pwdOpen = signal(false);
   err = signal('');
   msg = signal('');
   busy = signal(false);
@@ -363,7 +372,7 @@ export class SettingsComponent implements OnInit {
       const daysInMonth = new Date(y, m + 1, 0).getDate();
       const daysInPrevMonth = new Date(y, m, 0).getDate();
 
-      const days: { dateIso: string; dayNum: number; inMonth: boolean; isSelected: boolean; isToday: boolean }[] = [];
+      const days: { dateIso: string; dayNum: number; inMonth: boolean; isSelected: boolean; isToday: boolean; isPast: boolean }[] = [];
 
       for (let i = startDayOfWeek - 1; i >= 0; i--) {
         const dayNum = daysInPrevMonth - i;
@@ -375,6 +384,7 @@ export class SettingsComponent implements OnInit {
           inMonth: false,
           isSelected: selected.has(dateIso),
           isToday: dateIso === todayIso,
+          isPast: dateIso < todayIso,
         });
       }
 
@@ -387,6 +397,7 @@ export class SettingsComponent implements OnInit {
           inMonth: true,
           isSelected: selected.has(dateIso),
           isToday: dateIso === todayIso,
+          isPast: dateIso < todayIso,
         });
       }
 
@@ -401,6 +412,7 @@ export class SettingsComponent implements OnInit {
           inMonth: false,
           isSelected: selected.has(dateIso),
           isToday: dateIso === todayIso,
+          isPast: dateIso < todayIso,
         });
       }
 
@@ -514,7 +526,11 @@ export class SettingsComponent implements OnInit {
 
   // ---- Дни и закрытие доставок ----
   toggleDvDate(dateIso: string): void {
+    const todayIso = new Date().toISOString().slice(0, 10);
     const next = new Set(this.dvDates());
+    if (dateIso < todayIso && next.has(dateIso)) return;
+    if (dateIso < todayIso) return;
+
     if (next.has(dateIso)) next.delete(dateIso);
     else next.add(dateIso);
     this.dvDates.set(next);

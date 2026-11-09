@@ -15,7 +15,6 @@ export class LangService {
 
   init(): void {
     this.translate.addLangs(SUPPORTED);
-    this.translate.setDefaultLang(DEFAULT);
     this.translate.use(this.currentLang());
   }
 

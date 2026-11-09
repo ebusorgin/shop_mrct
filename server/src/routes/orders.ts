@@ -46,7 +46,7 @@ async function getCombinedDates(storeId?: number | null) {
               bool_or(exists (select 1 from order_tabs t
                                where t.extract_date = orders.date_tab
                                  and t.status in ('locked','archived'))) as locked
-         from orders where store_id = $1 group by 1 order by 1 desc limit 400`
+         from orders where store_id = $1 group by 1 order by 1 desc limit 1000`
     : `select o.date_tab::text as date, count(*)::int as cnt,
               coalesce(max(o.tab_id), 0) as "tabId",
               bool_or(o.source = 'g_sheet') as synced,
@@ -56,7 +56,7 @@ async function getCombinedDates(storeId?: number | null) {
                                  and t.status in ('locked','archived'))) as locked
          from orders o join stores st on st.id = o.store_id and st.active
          ${storeId != null ? 'where o.store_id = $1' : ''}
-        group by 1 order by 1 desc limit 200`;
+        group by 1 order by 1 desc limit 1000`;
 
   const { rows } = await pool.query(query, storeId != null ? [storeId] : []);
   const dbMap = new Map<string, any>();
@@ -85,17 +85,15 @@ async function getCombinedDates(storeId?: number | null) {
   }
 
   for (const d of delivery.dates) {
-    if (d >= todayIso) {
-      if (!resultDatesMap.has(d)) {
-        resultDatesMap.set(d, {
-          date: d,
-          cnt: 0,
-          tabId: 0,
-          synced: false,
-          manual: false,
-          locked: false,
-        });
-      }
+    if (!resultDatesMap.has(d)) {
+      resultDatesMap.set(d, {
+        date: d,
+        cnt: 0,
+        tabId: 0,
+        synced: false,
+        manual: false,
+        locked: d < todayIso,
+      });
     }
   }
 

@@ -2,7 +2,7 @@ import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
 import { ToastService } from '../core/toast.service';
 
 /**
- * Всплывающая плашка справа сверху (например «в Google Таблице изменения»).
+ * Всплывающая плашка справа сверху (например «заготовка сохранена»).
  * Показом и скрытием управляет ToastService: компонент только рисует текущее сообщение.
  */
 @Component({

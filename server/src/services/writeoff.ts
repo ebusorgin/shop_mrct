@@ -19,7 +19,7 @@ import { writeoffSettings, type WriteoffSettings } from './settings';
 import { mskNow, type TzNow } from './tz';
 
 
-// часы по таймзоне живут в tz (общий для delivery/sheet-tabs); реэкспорт — прежние импортеры
+// часы по таймзоне живут в tz (общий для delivery); реэкспорт — прежние импортеры
 export { mskNow } from './tz';
 export type { TzNow } from './tz';
 

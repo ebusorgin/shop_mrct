@@ -263,7 +263,6 @@ export class AuditComponent implements OnInit {
     store: 'Точка',
     user: 'Пользователь',
     stock: 'Склад',
-    sheet: 'Google Таблица',
     diagram: 'Блок-схема',
   };
 

@@ -60,7 +60,7 @@ import { ToastComponent } from './shared/toast.component';
       <router-outlet />
     }
 
-    <!-- плашка «в таблице изменения» (справа сверху, 2 сек) -->
+    <!-- всплывающая плашка уведомления (справа сверху, 2 сек) -->
     <app-toast />
   `,
   styles: [`

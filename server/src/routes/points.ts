@@ -9,7 +9,7 @@
  *   POST   /api/points/:id/deactivate — мягко деактивировать (история цела)
  *   DELETE /api/points/:id        — удалить навсегда (только если по точке нет заказов)
  *
- * Логику заказов (orders/order_tabs/order_changes, синхронизацию) не меняем —
+ * Логику заказов (orders/order_tabs/order_changes) не меняем —
  * здесь только читаем из них read-only агрегаты.
  */
 import { Router } from 'express';
@@ -58,7 +58,6 @@ interface PointCard {
   health: {
     lastOrderDate: string | null;
     daysSince: number | null;
-    lastSyncAt: string | null;
     onLatestTab: number;
     latestTab: string | null;
     badge: Badge;
@@ -211,9 +210,7 @@ async function loadCards(): Promise<PointCard[]> {
            (select greatest(0, current_date - max(o.date_tab)) from orders o where o.store_id = s.id) as "daysSince",
            (select count(*)::int from orders o where o.store_id = s.id
               and o.date_tab = (select max(date_tab) from orders)) as "onLatestTab",
-           (select max(o2.date_tab)::text from orders o2) as "latestTab",
-           (select max(ot.last_sync_at) from orders o3
-              join order_tabs ot on ot.id = o3.tab_id where o3.store_id = s.id) as "lastSyncAt"
+           (select max(o2.date_tab)::text from orders o2) as "latestTab"
       from stores s
       left join users cu on cu.id = s.created_by
       left join users uu on uu.id = s.updated_by
@@ -247,7 +244,6 @@ async function loadCards(): Promise<PointCard[]> {
       health: {
         lastOrderDate: r.lastOrderDate ?? null,
         daysSince,
-        lastSyncAt: r.lastSyncAt ?? null,
         onLatestTab,
         latestTab: r.latestTab ?? null,
         badge: badgeOf(r.active, r.lastOrderDate ?? null, onLatestTab, daysSince),

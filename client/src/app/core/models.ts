@@ -338,7 +338,7 @@ export interface Dashboard {
   nearExpiry: NearExpiryRow[];
 }
 
-// ================= ЗАКАЗЫ МАГАЗИНОВ (Google Таблица) =================
+// ================= ЗАКАЗЫ МАГАЗИНОВ =================
 
 /** Точка продаж (витрина-магазин). id = номер точки (103..110 и далее). */
 export interface Store {
@@ -396,7 +396,6 @@ export interface PointDayOrder {
 export interface PointHealth {
   lastOrderDate: string | null;
   daysSince: number | null;
-  lastSyncAt: string | null;
   onLatestTab: number;
   latestTab: string | null;
   badge: 'inactive' | 'none' | 'missed' | 'stale' | 'ok';
@@ -449,9 +448,6 @@ export interface OrderItem {
   statusByLogin?: string | null;
   statusByName?: string | null;
   statusAt?: string | null;
-  /** когда линию ultimo вытолкнули в таблицу / когда правили в CRM (бейдж «в таблице»). */
-  pushedAt?: string | null;
-  dbEditedAt?: string | null;
 }
 
 export interface OrdersSummary {
@@ -518,8 +514,6 @@ export interface OrderDate {
   date: string;
   cnt: number;
   tabId: number;
-  synced: boolean;
-  manual: boolean;
   /** лист закрыт после автосписания — магазин правки не вносит. */
   locked?: boolean;
 }
@@ -578,49 +572,6 @@ export interface OrderChange {
 export interface OrderJournal {
   lastTab: { sheetName: string; tabDate: string } | null;
   changes: OrderChange[];
-}
-
-export interface OrderSyncTab {
-  sheetName: string;
-  date: string | null;
-  rowCount: number | null;
-  lastSyncAt: string | null;
-  lastError: string | null;
-}
-
-export interface OrderSyncState {
-  state: {
-    status: string;
-    last_run_at: string | null;
-    finished_at: string | null;
-    tabs_synced: number | null;
-    tabs_failed: number | null;
-    last_error: string | null;
-    next_run_at: string | null;
-  } | null;
-  summary: {
-    tabsSeen: number; tabsParsed: number; tabsFailed: number; unchanged: number;
-    ordersCreated: number; ordersChanged: number; ordersRemoved: number; pushed: number; full: boolean;
-  } | null;
-  tabs: OrderSyncTab[];
-  /** Состояние живого канала: вотчер «горячего» листа и открытые SSE-вкладки. */
-  watch?: {
-    lastCheckAt: string | null;
-    lastChangeAt: string | null;
-    intervalSec: number;
-    clients: number;
-  } | null;
-  /** Ссылка на Google Таблицу-источник, из которой идёт парсинг заказов. */
-  sheetUrl?: string | null;
-  /** Настроено ли копирование прод-таблицы в тестовую (кнопка на «Синхронизации»). */
-  copyConfigured?: boolean;
-  /** Состояние обратной записи заказов в таблицу (двусторонний синк). */
-  write?: {
-    configured: boolean;
-    enabled: boolean;
-    active: boolean;
-    stores: number[];
-  } | null;
 }
 
 /** Вошедший пользователь CRM. */
@@ -683,7 +634,7 @@ export type AuditAction =
 /** Раздел системы, к которому относится запись. */
 export type AuditEntity =
   | 'product' | 'waybill' | 'semi' | 'tech_card' | 'batch'
-  | 'order' | 'store' | 'user' | 'stock' | 'sheet' | 'setting';
+  | 'order' | 'store' | 'user' | 'stock' | 'setting';
 
 /** Одна запись журнала: кто, что, когда и с какими деталями. */
 export interface AuditEntry {

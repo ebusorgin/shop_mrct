@@ -39,7 +39,6 @@ export type AuditEntity =
   | 'store'
   | 'user'
   | 'stock'
-  | 'sheet'
   | 'setting';
 
 export interface AuditEntry {
@@ -51,7 +50,7 @@ export interface AuditEntry {
   details?: Record<string, unknown>;
 }
 
-/** Тот, от чьего имени пишем: пользователь сессии либо система (синхронизатор, миграция). */
+/** Тот, от чьего имени пишем: пользователь сессии либо система (фоновые задачи, миграция). */
 export type Actor = Pick<AuthUser, 'id' | 'login' | 'fullName'> | null | undefined;
 
 export function actorName(actor: Actor): string {

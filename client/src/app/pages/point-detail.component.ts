@@ -237,7 +237,6 @@ function buildStats(p: PointCard): Stats {
           @if (p.phone) { · {{ p.phone }} }
           @if (p.openingHours) { · {{ p.openingHours }} }
           @if (p.health.lastOrderDate) { · посл. заказ {{ fmtDate(p.health.lastOrderDate) }} }
-          @if (p.health.lastSyncAt) { · синхр. {{ when(p.health.lastSyncAt) }} }
         </div>
       </div>
 
@@ -903,13 +902,5 @@ export class PointDetailComponent implements OnInit {
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return iso.slice(0, 10);
     return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()}`;
-  }
-
-  when(iso: string | null): string {
-    if (!iso) return '—';
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return iso;
-    const p = (x: number) => String(x).padStart(2, '0');
-    return `${p(d.getDate())}.${p(d.getMonth() + 1)} ${p(d.getHours())}:${p(d.getMinutes())}`;
   }
 }

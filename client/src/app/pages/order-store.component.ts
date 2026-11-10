@@ -105,11 +105,6 @@ interface CartLine {
               </td>
               <td data-l="Статус">
                 <span class="badge" [class]="badgeCls(it.status)">{{ statusLabel(it.status) }}</span>
-                @if (it.source === 'g_sheet') { <span class="badge gray" title="из Google Таблицы">G</span> }
-                @if (it.source !== 'g_sheet') {
-                  <span class="badge" [class.green]="!!it.pushedAt" [class.gray]="!it.pushedAt"
-                        [title]="it.pushedAt ? 'вытолкнуто в Google-таблицу' : 'заказ из CRM'">CRM</span>
-                }
                 @if (it.statusByLogin) {
                   <div class="who" [title]="'статус сменил: ' + it.statusByLogin + ' · ' + fmtWhen(it.statusAt)">
                     {{ it.statusByName || it.statusByLogin }} · {{ fmtWhen(it.statusAt) }}
@@ -256,10 +251,10 @@ export class OrderStoreComponent implements OnInit {
   }
 
   constructor() {
-    // в таблице что-то поменяли и сервер уже перечитал её — или заказ изменён в CRM
-    // (оформлен/правка/отмена, в т.ч. другим сотрудником точки) — перечитываем список
+    // заказ изменён в CRM (оформлен/правка/отмена, в т.ч. другим сотрудником точки) —
+    // перечитываем список
     effect(() => {
-      if (this.live.sheetVersion() + this.live.ordersVersion() > 0 && this.storeId) {
+      if (this.live.ordersVersion() > 0 && this.storeId) {
         untracked(() => {
           this.loadDates();
           this.ordersSvc.ensureCategories(true);
@@ -438,7 +433,7 @@ export class OrderStoreComponent implements OnInit {
       next: () => {
         this.savingQty.set(false);
         this.editId.set(null);
-        this.msg.set('Количество сохранено, выталкиваем в таблицу ✓');
+        this.msg.set('Количество сохранено ✓');
         this.loadOrders();
       },
       error: (e) => {

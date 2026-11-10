@@ -9,8 +9,6 @@
  *  POST /api/orders/place?store=103      — оформление заказа (транзакция, проверка min)
  *  PATCH/api/orders/:id                  — статус/заметка
  *  GET  /api/orders/journal              — журнал изменений (привязан к последнему листу)
- *  GET  /api/orders/sync                 — состояние синхронизатора
- *  POST /api/orders/sync                 — запустить прогон (full=1 — все вкладки)
  */
 import { Router, Request } from 'express';
 import { pool, tx } from '../db';
@@ -41,16 +39,12 @@ async function getCombinedDates(storeId?: number | null) {
   const query = storeId != null
     ? `select date_tab::text as date, count(*)::int as cnt,
               coalesce(max(tab_id), 0) as "tabId",
-              bool_or(source = 'g_sheet') as synced,
-              bool_or(source = 'manual') as manual,
               bool_or(exists (select 1 from order_tabs t
                                where t.extract_date = orders.date_tab
                                  and t.status in ('locked','archived'))) as locked
          from orders where store_id = $1 group by 1 order by 1 desc limit 1000`
     : `select o.date_tab::text as date, count(*)::int as cnt,
               coalesce(max(o.tab_id), 0) as "tabId",
-              bool_or(o.source = 'g_sheet') as synced,
-              bool_or(o.source = 'manual') as manual,
               bool_or(exists (select 1 from order_tabs t
                                where t.extract_date = o.date_tab
                                  and t.status in ('locked','archived'))) as locked
@@ -65,8 +59,6 @@ async function getCombinedDates(storeId?: number | null) {
       date: r.date,
       cnt: Number(r.cnt),
       tabId: Number(r.tabId),
-      synced: Boolean(r.synced),
-      manual: Boolean(r.manual),
       locked: Boolean(r.locked) || r.date < todayIso,
     });
   }
@@ -90,8 +82,6 @@ async function getCombinedDates(storeId?: number | null) {
         date: d,
         cnt: 0,
         tabId: 0,
-        synced: false,
-        manual: false,
         locked: d < todayIso,
       });
     }
@@ -103,8 +93,6 @@ async function getCombinedDates(storeId?: number | null) {
       date: actualDelivery,
       cnt: 0,
       tabId: 0,
-      synced: false,
-      manual: false,
       locked: false,
     });
   }
@@ -123,7 +111,6 @@ const ORDER_SELECT = `
          o.ek_price::float8 as ek, o.vk_price::float8 as vk,
          o.date_tab::text as "dateTab", o.status, o.source, o.note,
          o.created_at as "createdAt", o.updated_at as "updatedAt",
-         o.pushed_at as "pushedAt", o.db_edited_at as "dbEditedAt",
          o.created_by as "createdById", cu.login as "createdByLogin",
          coalesce(nullif(btrim(cu.full_name), ''), cu.login) as "createdByName",
          coalesce(o.status_by_login, su.login) as "statusByLogin",
@@ -168,9 +155,6 @@ interface OrderItem {
   statusByLogin: string | null;
   statusByName: string | null;
   statusAt: string | null;
-  /** когда значение линии ultimo уходило в таблицу / когда его правили в CRM (для бейджа отправки). */
-  pushedAt?: string | null;
-  dbEditedAt?: string | null;
 }
 
 const dec = (r: Record<string, unknown>): OrderItem =>
@@ -651,7 +635,6 @@ ordersRouter.patch(
         // кто и когда сменил статус — видно прямо в строке заказа (принял/собрал/отменил)
         params.push(req.user?.id ?? null, req.user?.login ?? 'system');
         sets.push(`status_by = $${params.length - 1}`, `status_by_login = $${params.length}`, 'status_at = now()');
-        // статус (особенно отмена) — правка БД: при расхождении с таблицей должна победить
         sets.push('db_edited_at = now()');
       }
       if (req.body.note !== undefined) {
@@ -676,7 +659,6 @@ ordersRouter.patch(
         }
         params.push(base);
         sets.push(`quantity = $${params.length}::numeric`);
-        // правка из CRM — позже отправки: при расхождении с таблицей должна победить БД
         sets.push('db_edited_at = now()');
       }
       params.push(id);

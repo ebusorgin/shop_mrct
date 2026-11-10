@@ -274,9 +274,9 @@ export class OrdersBoardComponent implements OnInit {
   });
 
   constructor() {
-    // живой канал: изменения листа перезагружают доску (если дата не закреплена вручную)
+    // живой канал: изменения заказов перезагружают доску (если дата не закреплена вручную)
     effect(() => {
-      this.live.sheetVersion();
+      this.live.ordersVersion();
       if (!this.pinned) this.date.set(untracked(() => this.freshDate()));
       this.load();
     });
@@ -446,7 +446,7 @@ export class OrdersBoardComponent implements OnInit {
   private save(r: BoardRow, qty: number): void {
     if (this.savingKey() === r.key) return;
     if (!(qty > 0)) {
-      // 0 = «убрать позицию»: существующую линию отменяем (в таблице ячейка очистится),
+      // 0 = «убрать позицию»: существующую линию отменяем,
       // синтетическую строку каталога (и так 0) нечего удалять — просто сбрасываем черновик.
       if (r.orderId != null) {
         this.savingKey.set(r.key);

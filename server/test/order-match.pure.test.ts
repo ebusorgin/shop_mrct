@@ -1,12 +1,11 @@
 /**
- * Чистые юнит-тесты заказов магазинов:
- *  • пересчёт печатных единиц листа (кг/порц/шт) в базовые единицы CRM и обратно (себестоимость);
- *  • нормализация названий — по ней строка таблицы ищёт свою техкарту.
+ * Чистые юнит-тесты пересчёта количеств заказа: печатные единицы (кг/порц/шт)
+ * в базовые единицы CRM (г/мл/шт) и обратно — для стоимости и документов.
  * Запуск: npm run test:pure (из server/).
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { toBase, printedQty, normalizeName, normalizeNameStrict } from '../src/services/order-match';
+import { toBase, printedQty } from '../src/services/order-match';
 
 const closeTo = (actual: number, expected: number, msg?: string): void => {
   assert.ok(Math.abs(actual - expected) < 1e-9, `${msg ?? ''} ожидаемо ${expected}, получено ${actual}`);
@@ -69,22 +68,4 @@ test('сквозной круг: toBase и printedQty взаимно обрат�
     const back = printedQty({ qty: toBase(printed, unit, base, portion), unitCode: unit, cardUnit: base, portionQty: portion });
     closeTo(back, printed, `${printed} ${unit} -> ${base} -> обратно`);
   }
-});
-
-// ==================== нормализация названий (матчинг строки листа с каталогом) ====================
-
-test('normalizeName: регистр, ё/е, пунктуация и диакритика не мешают, фасовка вырезается', () => {
-  assert.equal(normalizeName('  БЛИНЫ (100г)!! '), 'блины');
-  assert.equal(normalizeName('Блины 100 g'), 'блины');
-  assert.equal(normalizeName('Спаржа по-корейски 250g'), 'спаржа по корейски');
-  assert.equal(normalizeName('Борщ с говядиной.'), 'борщ с говядиной');
-  assert.equal(normalizeName('Mr.no 1000'), 'mr no 1000');
-  assert.equal(normalizeName(''), '');
-  assert.equal(normalizeName('!!аннотация!!'), '', 'аннотация без названия — пусто');
-});
-
-test('normalizeNameStrict: фасовка остаётся — иначе «Спаржа» и «Спаржа 250g» схлопнулись бы в одну карту', () => {
-  assert.equal(normalizeNameStrict('Спаржа по-корейски 250g'), 'спаржа по корейски 250g');
-  assert.notEqual(normalizeNameStrict('Спаржа 250g'), normalizeNameStrict('Спаржа'));
-  assert.equal(normalizeName('Спаржа 250g'), normalizeName('Спаржа'), 'а терпимая норма их всё же сравнивает');
 });

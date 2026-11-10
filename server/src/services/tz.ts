@@ -1,8 +1,8 @@
 /**
- * Часы по таймзоне — общий helper для расписаний (списание, доставка, листы).
+ * Часы по таймзоне — общий helper для расписаний (списание, доставка).
  *
- * Живет отдельно от writeoff, чтобы delivery / sheet-tabs не зацикливали импорты
- * (writeoff → sheet-tabs → delivery → writeoff).
+ * Живет отдельно от writeoff, чтобы delivery не зацикливал импорты
+ * (writeoff → delivery → writeoff).
  */
 
 const WD_MAP: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };

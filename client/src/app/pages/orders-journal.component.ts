@@ -73,9 +73,9 @@ export class OrdersJournalComponent implements OnInit {
   err = signal('');
 
   constructor() {
-    // пришло событие из таблицы — подтягиваем журнал
+    // заказ изменён в CRM — подтягиваем журнал
     effect(() => {
-      if (this.live.sheetVersion() > 0) untracked(() => this.loadJournal());
+      if (this.live.ordersVersion() > 0) untracked(() => this.loadJournal());
     });
   }
 

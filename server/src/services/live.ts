@@ -68,8 +68,3 @@ export function broadcast(event: string, data: unknown): void {
     }
   }
 }
-
-/** Сколько браузеров сейчас слушают события (для диагностики в /api/orders/sync). */
-export function sseClients(): number {
-  return clients.size;
-}

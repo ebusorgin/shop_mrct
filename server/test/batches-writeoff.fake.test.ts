@@ -1,9 +1,8 @@
 /**
- * Тесты списания в производство («партии») и матчера заказов on in-memory фейке Postgres:
+ * Тесты списания в производство («партии») on in-memory фейке Postgres:
  *  • postBatch: раскрытие техкарты в чистое сырьё (с выходом после обработки),
  *    списание по средневзвешенной, снимок состава и себестоимость партии;
- *  • reverseBatch: возврат сырья по снимку «как будто партии не было»;
- *  • CardMatcher: строка Google Таблицы ищет свою техкарту (PLU -> имя -> нечёткий).
+ *  • reverseBatch: возврат сырья по снимку «как будто партии не было».
  * БД не требуется. Запуск: npm run test:fake (из server/).
  */
 import test from 'node:test';
@@ -11,7 +10,6 @@ import assert from 'node:assert/strict';
 import { FakePg, emptyState, fakeTx, type FakeState } from './fake-pg';
 import { ApiError } from '../src/http';
 import { postBatch, reverseBatch } from '../src/routes/batches';
-import { CardMatcher } from '../src/services/order-match';
 import type { Actor } from '../src/services/audit';
 
 const actor: Actor = { id: 9, login: 'tech', fullName: 'Технолог' };
@@ -242,52 +240,4 @@ test('отмена партии: двойная отмена — 409, несущ
     (e: unknown) => e instanceof ApiError && e.status === 409 && /нет состава/.test(e.message)
   );
   assert.equal(db.batch(999).status, 'posted', 'отклонённая отмена статус не поменяла');
-});
-
-// ==================== CardMatcher: строка листа ищет свою техкарту ====================
-
-function catalogDb(): FakePg {
-  const state = rawState();
-  mkCard(state, 11, 'Блины (100г)', 100, U.pcs, 'M924');
-  mkCard(state, 12, 'Спаржа по-корейски 250g', 250, U.g, null);
-  mkCard(state, 13, 'Спаржа по-корейски', 1000, U.kg, null);
-  mkCard(state, 14, 'Борщ с говядиной', 300, U.ml, null);
-  return new FakePg(state);
-}
-
-test('матчер: PLU бьёт первым, даже если имя написано латиницей и с мусором', async () => {
-  const m = new CardMatcher();
-  await m.load((sql, p) => catalogDb().query(sql, p));
-  const r = await m.match('BLYNY 100g!!!', 'm924');
-  assert.deepEqual({ ...r, sim: 1 }, { cardId: 11, via: 'plu', sim: 1 });
-});
-
-test('матчер: терпимая норма — точное имя; коллизию фасовок различает строгая норма', async () => {
-  const m = new CardMatcher();
-  await m.load((sql, p) => catalogDb().query(sql, p));
-  const a = await m.match('  блины (100г) ', null);
-  assert.equal(a.cardId, 11);
-  assert.equal(a.via, 'name');
-  // «Спаржа по-корейски» и «...250g» под терпимой нормой коллидируют — берёт строгая
-  assert.equal((await m.match('Спаржа по корейски 250g', null)).cardId, 12);
-  assert.equal((await m.match('Спаржа по-корейски', null)).cardId, 13);
-});
-
-test('матчер: опечатка ловится нечётким поиском, явный мусор — без карты', async () => {
-  const m = new CardMatcher();
-  await m.load((sql, p) => catalogDb().query(sql, p));
-  const fuzzy = await m.match('Барщ с говядиной', null);
-  assert.equal(fuzzy.cardId, 14, 'одна буква не в месте — симмя выше порога');
-  assert.equal(fuzzy.via, 'fuzzy');
-  const none = await m.match('Пицца Маргарита', null);
-  assert.equal(none.cardId, null);
-  assert.equal((await m.match('', null)).cardId, null, 'пустая строка не матчится ни на что');
-});
-
-test('матчер: byId отдаёт выход карточки для пересчёта порций в граммы', async () => {
-  const m = new CardMatcher();
-  await m.load((sql, p) => catalogDb().query(sql, p));
-  const c = m.byId(11)!;
-  assert.equal(c.unitCode, 'шт');
-  closeTo(c.portionQty, 100);
 });

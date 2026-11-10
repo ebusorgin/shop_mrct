@@ -9,9 +9,7 @@
  *  • PATCH /api/orders/:id — статусы, «магазин может только отменить», блокировка
  *    правки количества после принятия производством;
  *  • POST /api/batches + /:id/reverse — раскрытие техкарты (в т.ч. через заготовку с
- *    выходом), списание по настоящему numeric avg_cost, откат партии, боевой rollback;
- *  • applyTab — сведение листа периодического синка (наше эхо / победа БД /
- *    правка человека / удаление пропавшей строки / новая строка через матчер).
+ *    выходом), списание по настоящему numeric avg_cost, откат партии, боевой rollback.
  *
  * Требуется запущенный Postgres: docker compose up -d db. Если сервер недоступен —
  * тесты корректно скипаются, а не валятся. Запуск: npm run test:integration (из server/).
@@ -67,12 +65,6 @@ const D = {
   a1: '2026-01-17',
   a2: '2026-01-18',
   brd: '2026-01-19',
-  f1: '2026-02-01',
-  f2: '2026-02-02',
-  f3: '2026-02-03',
-  f4: '2026-02-04',
-  f5: '2026-02-05',
-  f6: '2026-02-06',
 };
 
 type Ctx = {
@@ -121,7 +113,6 @@ async function ensureReady(): Promise<Ctx | null> {
   const pool = dbMod.pool;
   const { createApp } = await import('../src/app');
   const authMod = await import('../src/services/auth');
-  const syncMod = await import('../src/services/order-sync');
 
   const uid = async (code: string): Promise<number> => {
     const { rows } = await pool.query('select id from units where code = $1', [code]);
@@ -245,7 +236,7 @@ async function orderOf(c: Ctx, id: number): Promise<any> {
   const { rows } = await c.pool.query(
     `select id, store_id as "storeId", card_id as "cardId", source_name as "sourceName", unit_code as "unitCode",
             quantity::float8 as qty, min_qty::float8 as "minQty", status, source, note,
-            sheet_qty::float8 as "sheetQty", db_edited_at as "dbEdited", pushed_at as "pushed",
+            db_edited_at as "dbEdited",
             date_tab::text as "dateTab", status_by_login as "statusByLogin", category_id as "categoryId",
             ek_price::float8 as ek, vk_price::float8 as vk
        from orders where id = $1`,
@@ -267,21 +258,20 @@ async function stockOf(c: Ctx, pid: number): Promise<{ qty: number; avg: number 
 async function insertOrder(c: Ctx, f: Record<string, any>): Promise<number> {
   const { rows } = await c.pool.query(
     `insert into orders (tab_id, store_id, card_id, source_name, plu, min_qty, ek_price, vk_price,
-                         quantity, unit_code, date_tab, status, source, sheet_qty, db_edited_at, pushed_at)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::date,$12,$13,$14,$15,$16) returning id`,
+                         quantity, unit_code, date_tab, status, source)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::date,$12,$13) returning id`,
     [
       f.tabId ?? null, f.store, f.cardId ?? null, f.name, f.plu ?? null, f.minQty ?? null,
       f.ek ?? null, f.vk ?? null, f.qty, f.unit ?? 'г', f.date, f.status ?? 'synced', f.source ?? 'g_sheet',
-      f.sheetQty ?? null, f.dbEdited ?? null, f.pushed ?? null,
     ]
   );
   return Number(rows[0].id);
 }
 async function upsertTab(c: Ctx, name: string, date: string): Promise<number> {
   const { rows } = await c.pool.query(
-    `insert into order_tabs (sheet_name, extract_date, content_hash, row_count, last_sync_at)
-     values ($1, $2::date, 'hash-тест', 1, now())
-     on conflict (sheet_name) do update set content_hash = excluded.content_hash, row_count = excluded.row_count
+    `insert into order_tabs (sheet_name, extract_date, status)
+     values ($1, $2::date, 'open')
+     on conflict (sheet_name) do update set extract_date = excluded.extract_date
      returning id`,
     [name, date]
   );
@@ -564,100 +554,6 @@ test('B3: правка количества — печатные единицы 
   const plain = await patch(c, c.office, `/api/orders/${id}`, { qty: 450 });
   assert.equal(plain.status, 200);
   closeTo((await orderOf(c, id)).qty, 450, 'без единицы количество базовое (обратная совместимость)');
-});
-
-// ==================== C. Периодический синк листа (applyTab) ====================
-
-test('C1: applyTab — новое значение листа правит БД (правка человека), эхо листа не трогает', async (t) => {
-  const c = await ensureReady();
-  if (!c) return t.skip('Postgres недоступен');
-  const syncMod = await import('../src/services/order-sync');
-
-  const tabId = await upsertTab(c, `лист-${SUF}-c1`, D.f1);
-  // линия уже сверена с таблицей (sheet_qty == значение листа) — наше эхо, изменений нет
-  const echoId = await insertOrder(c, {
-    tabId, store: 103, name: P.lineBliny, date: D.f1, qty: 300, sheetQty: 300,
-    dbEdited: new Date('2026-01-01T00:00:00Z'), pushed: new Date('2026-01-01T00:00:00Z'),
-  });
-  const rows = (r: number) => [{ category: 'закуски', name: P.lineBliny, plu: null, unit: 'г', min: null, ek: null, vk: null, qty: { 103: r } }];
-
-  const echo = await syncMod.applyTab(tabId, D.f1, rows(300));
-  assert.deepEqual(echo, { created: 0, changed: 0, removed: 0 }, 'защита от петли эха');
-
-  const human = await syncMod.applyTab(tabId, D.f1, rows(500));
-  assert.deepEqual(human, { created: 0, changed: 1, removed: 0 });
-  const o = await orderOf(c, echoId);
-  closeTo(o.qty, 500, 'правка человека в таблице импортируется');
-  closeTo(o.sheetQty!, 500, 'базлайн сверен с новым значением листа');
-});
-
-test('C2: applyTab — конфликт разрешается в пользу БД, количество и базлайн не теряются', async (t) => {
-  const c = await ensureReady();
-  if (!c) return t.skip('Postgres недоступен');
-  const syncMod = await import('../src/services/order-sync');
-
-  const tabId = await upsertTab(c, `лист-${SUF}-c2`, D.f2);
-  const id = await insertOrder(c, {
-    tabId, store: 104, name: P.lineBliny, date: D.f2, qty: 1000, sheetQty: 1000, unit: 'г',
-    dbEdited: new Date('2026-02-10T00:00:00Z'), pushed: new Date('2026-02-01T00:00:00Z'),
-  });
-  const d = await syncMod.applyTab(tabId, D.f2, [
-    { category: 'салаты', name: P.lineBliny, plu: null, unit: 'г', min: 250, ek: 1.5, vk: null, qty: { 104: 300 } },
-  ]);
-  assert.deepEqual(d, { created: 0, changed: 0, removed: 0 }, 'в конфликте количество не импортируется');
-  const o = await orderOf(c, id);
-  closeTo(o.qty, 1000, 'побеждает БД');
-  closeTo(o.sheetQty!, 1000, 'базлайн не переписан — линия будет вытолкнута в таблицу');
-  closeTo(o.minQty!, 250, 'не-количествовые атрибуты листа обновляются');
-  closeTo(o.ek!, 1.5);
-});
-
-test('C3: applyTab — строка листа заводится новой, связывается с техкартой по PLU и получает категорию', async (t) => {
-  const c = await ensureReady();
-  if (!c) return t.skip('Postgres недоступен');
-  const syncMod = await import('../src/services/order-sync');
-
-  const tabId = await upsertTab(c, `лист-${SUF}-c3`, D.f3);
-  const d = await syncMod.applyTab(tabId, D.f3, [
-    { category: 'Закуски', name: P.cardBliny, plu: P.plu, unit: 'порц', min: null, ek: null, vk: null, qty: { 103: 2, 105: 1 } },
-  ]);
-  assert.equal(d.created, 2);
-
-  const o = await orderByKey(c, 103, D.f3, P.cardBliny);
-  assert.equal(o.cardId, c.cards.bliny, 'матчер привязал техкарту по PLU');
-  closeTo(o.qty, 200, '2 порции × 100 г -> 200 г');
-  closeTo(o.sheetQty!, 200, 'новая строка сразу сверена с листом');
-  assert.equal(o.status, 'synced');
-  assert.equal(o.source, 'g_sheet');
-
-  const { rows } = await c.pool.query('select lower(name) as name from order_categories where id = $1', [o.categoryId]);
-  assert.equal(rows[0].name, 'закуски', 'категория листа нормализуется и upsert-ится');
-});
-
-test('C4: applyTab — пропавшую из листа строку снимаем, ручную и правленную в CRM не трогаем', async (t) => {
-  const c = await ensureReady();
-  if (!c) return t.skip('Postgres недоступен');
-  const syncMod = await import('../src/services/order-sync');
-
-  const tabId = await upsertTab(c, `лист-${SUF}-c4`, D.f4);
-  const goneId = await insertOrder(c, {
-    tabId, store: 103, name: P.lineBliny, date: D.f4, qty: 400, sheetQty: 400,
-    dbEdited: new Date('2026-01-01T00:00:00Z'), pushed: new Date('2026-01-01T00:00:00Z'),
-  });
-  const manualId = await insertOrder(c, { store: 103, name: P.lineCabbage, date: D.f4, qty: 100, source: 'manual', status: 'placed' });
-  const dbWinId = await insertOrder(c, {
-    tabId, store: 103, name: `ТЕСТ Вытолкнуто ${SUF}`, date: D.f4, qty: 700, sheetQty: 700,
-    dbEdited: new Date('2026-02-10T00:00:00Z'), pushed: new Date('2026-02-01T00:00:00Z'),
-  });
-
-  const d = await syncMod.applyTab(tabId, D.f4, []);
-  assert.deepEqual(d, { created: 0, changed: 0, removed: 1 });
-  assert.equal(await orderOf(c, goneId), null, 'листовая строка исчезла из таблицы — удаляем');
-  assert.ok(await orderOf(c, manualId), 'ручной заказ не удаляется — его вытолкнет план записи');
-  assert.ok(await orderOf(c, dbWinId), 'правку CRM не снимаем');
-
-  const { rows } = await c.pool.query("select change_type from order_changes where order_id = $1 or source_name = $2 order by id desc limit 1", [goneId, P.lineBliny]);
-  assert.equal(rows[0].change_type, 'removed', 'удаление попало в журнал заказов');
 });
 
 // ==================== D. Списывание по расписанию: партии производства ====================

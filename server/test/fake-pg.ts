@@ -343,7 +343,7 @@ export class FakePg {
     }
 
     // ---------- техкарты / партии / каталог заказов ----------
-    // CardMatcher.load: каталог готовой продукции с единицей выхода
+    // каталог готовой продукции с единицей выхода (expandCard, /place, /catalog)
     if (/from tech_cards tc\s+join units u/i.test(s)) {
       return {
         rows: this.state.tech_cards

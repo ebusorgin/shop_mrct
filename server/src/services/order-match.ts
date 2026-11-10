@@ -1,149 +1,15 @@
 /**
- * Сопоставление строк Google Таблицы с каталогом CRM (готовая продукция = tech_cards).
- * Порядок: 1) точный PLU; 2) нормализованное совпадение имени; 3) нечёткий поиск
- * (токены + Левенштейн) с порогом. Результат — card_id или null (строка заводится
- * внешним именем, товар позже подвяжется через ручную сопоставку).
+ * Пересчёт количеств заказа между «печатной» единицей строки (кг/л/порц/шт) и
+ * базовой единицей CRM (г/мл/шт). Общая для оформления заказа, доски производства,
+ * сводки точек и отгрузочных документов.
  */
-import { pool } from '../db';
 
-export interface CardRef {
-  id: number;
-  name: string;
-  plu: string | null;
-  unitCode: string;
-  /** базовая единица выхода техкарты: 'г' | 'мл' | 'шт' */
-  baseUnitCode: string;
-  /** вес/объём одной порции выхода (для пересчёта «порц» источника в базовые единицы) */
-  portionQty: number;
-}
-
-export interface MatchResult {
-  cardId: number | null;
-  via: 'plu' | 'name' | 'fuzzy' | null;
-  sim: number;
-}
-
-/** Общая часть нормализации: «!!аннотации!!», скобки, пунктуация, ё→е, схлоп пробелов. */
-function normalizeBase(s: string): string {
-  return s
-    .toLowerCase()
-    .replace(/!![^!]*!!/g, ' ')
-    .replace(/[(«”"][^)]*[)»"]/g, ' ')
-    .replace(/ё/g, 'е')
-    .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-/** Терпимая нормализация: дополнительно вырезает фасовку «250g/450г» — «Блины(100г)» ≈ «Блины». */
-export function normalizeName(s: string): string {
-  return normalizeBase(s).replace(/\d+\s*(кг|г|л|мл|шт|g|kg)\b/g, ' ').replace(/\s+/g, ' ').trim();
-}
-
-/**
- * Строгая нормализация: фасовку СОХРАНЯЕТ. Нужна, чтобы различать товары, отличающиеся только
- * весом порции — «Спаржа по корейски» (кг) vs «Спаржа по корейски 250g» (порции): под терпимой
- * нормой они коллизируют и матчер брал первую карту по алфавиту.
- */
-export function normalizeNameStrict(s: string): string {
-  return normalizeBase(s);
-}
-
-function levenshtein(a: string, b: string): number {
-  const m = a.length;
-  const n = b.length;
-  if (!m) return n;
-  if (!n) return m;
-  let prev = Array.from({ length: n + 1 }, (_, i) => i);
-  for (let i = 1; i <= m; i++) {
-    const cur = [i];
-    for (let j = 1; j <= n; j++) {
-      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
-    }
-    prev = cur;
-  }
-  return prev[n];
-}
-
-function similarity(a: string, b: string): number {
-  if (!a && !b) return 1;
-  const max = Math.max(a.length, b.length);
-  return 1 - levenshtein(a, b) / max;
-}
-
-/** Сходство по токенам: сколько слов источника найдено вcandidate + общая сим. */
-function score(srcNorm: string, candNorm: string): number {
-  const exact = srcNorm === candNorm ? 1 : 0;
-  if (exact) return 1;
-  const srcToks = srcNorm.split(' ').filter((t) => t.length > 2);
-  const candSet = new Set(candNorm.split(' '));
-  const overlap = srcToks.length ? srcToks.filter((t) => candSet.has(t) || t.startsWith(candNorm) || candNorm.startsWith(t)).length / srcToks.length : 0;
-  return 0.55 * overlap + 0.45 * similarity(srcNorm, candNorm);
-}
-
-const FUZZY_THRESHOLD = 0.62;
-
-export class CardMatcher {
-  private cards: CardRef[] = [];
-  private normIdx: { norm: string; strict: string; card: CardRef }[] = [];
-
-  /**
-   * queryFn — исполнитель запроса (в тестах подставляют in-memory фейк), по умолчанию — реальный pool.
-   */
-  async load(queryFn: (sql: string, params?: unknown[]) => Promise<{ rows: any[] }> = (sql, params) => pool.query(sql, params)): Promise<void> {
-    const { rows } = await queryFn(`
-      select tc.id, tc.name, tc.plu, u.code as "unitCode", u.code as "baseUnitCode",
-             coalesce(tc.portion_qty::float8, 0) as "portionQty"
-        from tech_cards tc
-        join units u on u.id = tc.portion_unit_id
-       order by tc.name`);
-    this.cards = rows as CardRef[];
-    this.normIdx = this.cards.map((c) => ({ norm: normalizeName(c.name), strict: normalizeNameStrict(c.name), card: c }));
-  }
-
-  async match(name: string, plu: string | null): Promise<MatchResult> {
-    if (!this.cards.length) await this.load();
-    if (plu) {
-      const byPlu = this.cards.find((c) => c.plu && c.plu.trim().toUpperCase() === plu.trim().toUpperCase());
-      if (byPlu) return { cardId: byPlu.id, via: 'plu', sim: 1 };
-    }
-    const src = normalizeName(name);
-    if (!src) return { cardId: null, via: null, sim: 0 };
-    const exacts = this.normIdx.filter((x) => x.norm === src);
-    if (exacts.length === 1) return { cardId: exacts[0].card.id, via: 'name', sim: 1 };
-    // коллизия терпимой нормы (2+ карты, отличающиеся только фасовкой): различаем по строгому имени
-    if (exacts.length > 1) {
-      const sSrc = normalizeNameStrict(name);
-      const strictHits = exacts.filter((x) => x.strict === sSrc);
-      if (strictHits.length === 1) return { cardId: strictHits[0].card.id, via: 'name', sim: 1 };
-      const pool2 = strictHits.length ? strictHits : exacts;
-      let bestS: { card: CardRef; sc: number } | null = null;
-      for (const x of pool2) {
-        const sc = score(sSrc, x.strict);
-        if (!bestS || sc > bestS.sc) bestS = { card: x.card, sc };
-      }
-      if (bestS && bestS.sc >= FUZZY_THRESHOLD) return { cardId: bestS.card.id, via: 'name', sim: bestS.sc };
-    }
-    let best: { card: CardRef; sc: number } | null = null;
-    for (const x of this.normIdx) {
-      const sc = score(src, x.norm);
-      if (!best || sc > best.sc) best = { card: x.card, sc };
-    }
-    if (best && best.sc >= FUZZY_THRESHOLD) return { cardId: best.card.id, via: 'fuzzy', sim: best.sc };
-    return { cardId: null, via: null, sim: best?.sc ?? 0 };
-  }
-
-  byId(id: number): CardRef | undefined {
-    return this.cards.find((c) => c.id === id);
-  }
-}
-
-/** Единицы-«штуки» источника: порции/штуки (пересчёт в граммы — через вес порции техкарты). */
+/** Единицы-«штуки»: порции/штуки (пересчёт в граммы — через вес порции техкарты). */
 const COUNT_UNITS = new Set(['шт', 'порц', 'порция', 'порции', 'des']);
 
 /**
- * Пересчёт «печатного» количества источника в базовые единицы CRM (кг->г, порц->г и т.п.).
- * portionQty — грамм/мл на одну порцию техкарты; нужен, когда источник считает порциями,
+ * Пересчёт «печатного» количества в базовые единицы CRM (кг->г, порц->г и т.п.).
+ * portionQty — грамм/мл на одну порцию техкарты; нужен, когда заказ считает порциями,
  * а карточка хранится в г/мл.
  */
 export function toBase(qty: number, printedUnit: string, baseUnitCode: string, portionQty = 0): number {
@@ -169,8 +35,8 @@ export interface PrintedQtyInput {
 }
 
 /**
- * Обратное к toBase: «печатное» количество источника из базового (г/мл/шт).
- * Нужно для стоимости: VK в таблице задаётся за печатную единицу (за кг / за порцию).
+ * Обратное к toBase: «печатное» количество из базового (г/мл/шт).
+ * Нужно для стоимости: VK задаётся за печатную единицу (за кг / за порцию).
  * Общая для сводки заказов и агрегатов раздела «Точки продаж».
  */
 export function printedQty(it: PrintedQtyInput): number {

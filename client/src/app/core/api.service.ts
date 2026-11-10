@@ -96,7 +96,7 @@ export class ApiService {
     return this.http.get<M.Dashboard>(`${this.base}/dashboard`, { params: hp });
   }
 
-  // ---- заказы магазинов (Google Таблица) ----
+  // ---- заказы магазинов ----
   orderStores$(): Observable<M.Store[]> { return this.http.get<M.Store[]>(`${this.base}/orders/stores`); }
   orderDates$(store: number): Observable<M.OrderDate[]> {
     return this.http.get<M.OrderDate[]>(`${this.base}/orders/dates`, { params: new HttpParams().set('store', String(store)) });
@@ -188,11 +188,6 @@ export class ApiService {
   runWriteoffNow$(date?: string): Observable<{ ok: boolean; skipped: boolean; deliveryDate: string; firedSlot: string; linesWritten: number; batches: number; error?: string }> {
     return this.http.post<{ ok: boolean; skipped: boolean; deliveryDate: string; firedSlot: string; linesWritten: number; batches: number; error?: string }>(
       `${this.base}/settings/writeoff/run`, date ? { deliveryDate: date } : {}, {});
-  }
-  /** Завести следующий обнулённый лист доставки в прод-таблице (по умолчанию — ближайшая дата). */
-  createDeliveryTab$(date?: string): Observable<{ ok: boolean; date: string; skipped?: boolean; sheetName?: string; created?: boolean; note?: string; error?: string }> {
-    return this.http.post<{ ok: boolean; date: string; skipped?: boolean; sheetName?: string; created?: boolean; note?: string; error?: string }>(
-      `${this.base}/settings/delivery/tab`, date ? { date } : {}, {});
   }
   /** Отчёт по автосписанию за дату доставки (по умолчанию — сегодняшняя MSK). */
   writeoffReport$(date?: string): Observable<M.WriteOffReport> {

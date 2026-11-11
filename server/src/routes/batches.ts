@@ -35,7 +35,7 @@ export async function postBatch(input: BatchIn, runTx: typeof tx = tx): Promise<
 
   return runTx(async (client) => {
     const { rows: cardInfo } = await client.query('select name from tech_cards where id = $1', [cardId]);
-    if (!cardInfo.length) throw new ApiError(404, 'Техкарта не найдена');
+    if (!cardInfo.length) throw new ApiError(404, 'Продукт не найден');
 
     const need = await expandCard(client, cardId, portions);
 

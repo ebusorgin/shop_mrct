@@ -21,3 +21,21 @@ metaRouter.get(
     res.json(rows.map((r) => r.category));
   })
 );
+
+/** Справочник категорий номенклатуры (product_categories) — для выбора в форме позиции. */
+metaRouter.get(
+  '/categories-dictionary',
+  wrap(async (_req, res) => {
+    const { rows } = await pool.query('select id, name from product_categories order by name');
+    res.json(rows);
+  })
+);
+
+/** Каталоги готовой продукции (product_catalogs) — для выбора в карточке продукта. */
+metaRouter.get(
+  '/product-catalogs',
+  wrap(async (_req, res) => {
+    const { rows } = await pool.query('select id, name, icon, color from product_catalogs order by position, name');
+    res.json(rows);
+  })
+);

@@ -15,7 +15,8 @@
     "constructor": "Dish Constructor",
     "stock": "Stock",
     "semis": "Semi-finished",
-    "cards": "Tech Cards"
+    "cards": "Products",
+    "orders": "Orders"
   },
   "common": {
     "loading": "Loading...",
@@ -172,8 +173,8 @@
     "addIngredient": "Add Ingredient"
   },
   "cards": {
-    "title": "Tech Cards",
-    "new": "New Tech Card",
+    "title": "Products",
+    "new": "New product",
     "name": "Name",
     "yield": "Yield",
     "unit": "Unit",

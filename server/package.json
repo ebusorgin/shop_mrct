@@ -5,9 +5,8 @@
   "description": "MIX markt CRM — server (Express + PostgreSQL)",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc -p tsconfig.json && node -e \"require('fs').cpSync('sql','dist/sql',{recursive:true})\"",
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json && node -e \"require('fs').cpSync('sql','dist/sql',{recursive:true})\"",
     "start": "node dist/index.js",
-    "db:migrate": "tsx src/migrate.ts",
     "db:seed": "tsx src/seed.ts",
     "test": "node --import tsx --test test/waybill-units.pure.test.ts test/waybill-intake-reverse.fake.test.ts test/batches-writeoff.fake.test.ts",
     "test:pure": "node --import tsx --test test/waybill-units.pure.test.ts",

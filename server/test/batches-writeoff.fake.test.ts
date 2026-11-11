@@ -150,11 +150,11 @@ test('партия: отказы — порции <= 0, несуществующ
   );
   await assert.rejects(
     postBatch({ cardId: 404, portions: 1, batchDate: null, note: '', actor }, tx),
-    (e: unknown) => e instanceof ApiError && e.status === 404 && /Техкарта не найдена/.test(e.message)
+    (e: unknown) => e instanceof ApiError && e.status === 404 && /Продукт не найден/.test(e.message)
   );
   await assert.rejects(
     postBatch({ cardId: 5, portions: 1, batchDate: null, note: '', actor }, tx),
-    (e: unknown) => e instanceof ApiError && e.status === 400 && /В техкарте нет позиций/.test(e.message)
+    (e: unknown) => e instanceof ApiError && e.status === 400 && /В составе продукта нет позиций/.test(e.message)
   );
   assert.equal(db.state.production_batches.length, 0);
   assert.equal(db.state.movements.length, 0);

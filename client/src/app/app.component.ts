@@ -105,6 +105,7 @@ export class AppComponent {
         { path: 'semis', icon: '🔪', labelKey: 'nav.semis' },
         { path: 'cards', icon: '📐', labelKey: 'nav.cards' },
         { path: 'constructor', icon: '🍲', labelKey: 'nav.constructor' },
+        { path: 'orders', icon: '🧾', labelKey: 'nav.orders' },
       ],
     },
     {

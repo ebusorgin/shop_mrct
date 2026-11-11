@@ -48,7 +48,7 @@ import { fmtCost, fmtDateTime, fmtMoney, fmtQty, httpErr, trim } from '../core/f
           <div class="calm">✓ Всё в порядке, срочных задач нет</div>
         } @else {
           <div class="tiles">
-            <a class="tile" [class.critical]="data.lowStock.length" routerLink="/stock" [queryParams]="{ tab: 'balances', low: '1' }">
+            <a class="tile" [class.critical]="data.lowStock.length" routerLink="/stock" [queryParams]="{ tab: 'items', low: '1' }">
               <div class="t-head"><span class="t-count">{{ data.lowStock.length }}</span><span class="t-title">низкие остатки</span></div>
               <div class="t-sub">ниже минимального запаса · открыть список</div>
             </a>
@@ -75,7 +75,7 @@ import { fmtCost, fmtDateTime, fmtMoney, fmtQty, httpErr, trim } from '../core/f
                 } @empty { <tr class="empty"><td colspan="4">Все позиции выше минимальных остатков 👍</td></tr> }
               </table>
               @if (data.lowStock.length > 4) {
-                <a class="muted more" routerLink="/stock" [queryParams]="{ tab: 'balances', low: '1' }">
+                <a class="muted more" routerLink="/stock" [queryParams]="{ tab: 'items', low: '1' }">
                   ещё {{ data.lowStock.length - 4 }} →
                 </a>
               }

@@ -15,7 +15,8 @@
     "constructor": "Konstruktor jela",
     "stock": "Skladište",
     "semis": "Poluprodukti",
-    "cards": "Tehnički listovi"
+    "cards": "Proizvodi",
+    "orders": "Porudžbine"
   },
   "common": {
     "loading": "Učitavanje...",
@@ -172,8 +173,8 @@
     "addIngredient": "Dodaj sastojak"
   },
   "cards": {
-    "title": "Tehnički listovi",
-    "new": "Novi tehnički list",
+    "title": "Proizvodi",
+    "new": "Novi proizvod",
     "name": "Naziv",
     "yield": "Izlaz",
     "unit": "Jed.",

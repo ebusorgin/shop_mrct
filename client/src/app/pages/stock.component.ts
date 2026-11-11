@@ -4,17 +4,16 @@ import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ApiService } from '../core/api.service';
-import { Movement, NearExpiryRow, StockRow } from '../core/models';
-import { fmtCost, fmtDateTime, fmtMoney, fmtQty, httpErr, trim } from '../core/format';
-import { ProductEditComponent } from '../shared/product-edit.component';
-import { RawCategoriesComponent } from '../shared/raw-categories.component';
+import { Movement, NearExpiryRow } from '../core/models';
+import { fmtDateTime, fmtQty, httpErr } from '../core/format';
+import { StockItemsComponent } from '../shared/stock-items.component';
 
-type Tab = 'balances' | 'catalog' | 'journal' | 'shelf';
+type Tab = 'items' | 'journal' | 'shelf';
 
 @Component({
   selector: 'app-stock',
   standalone: true,
-  imports: [CommonModule, FormsModule, ProductEditComponent, RawCategoriesComponent, RouterLink],
+  imports: [CommonModule, FormsModule, StockItemsComponent, RouterLink],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styles: [`.red { color: var(--red); }`],
   template: `
@@ -23,79 +22,14 @@ type Tab = 'balances' | 'catalog' | 'journal' | 'shelf';
     @if (msg()) { <div class="ok-msg">{{ msg() }}</div> }
 
     <div class="tabs">
-      <button [class.on]="tab() === 'balances'" (click)="go('balances')">Остатки</button>
-      <button [class.on]="tab() === 'catalog'" (click)="go('catalog')">Номенклатура</button>
+      <button [class.on]="tab() === 'items'" (click)="go('items')">Остатки и номенклатура</button>
       <button [class.on]="tab() === 'shelf'" (click)="go('shelf')">Сроки годности</button>
       <button [class.on]="tab() === 'journal'" (click)="go('journal')">Журнал движений</button>
     </div>
 
-    <!-- ================= ОСТАТКИ ================= -->
-    @if (tab() === 'balances') {
-      <div class="panel">
-        <div class="row">
-          <input style="max-width:260px" [(ngModel)]="search" (ngModelChange)="applyFilter()" placeholder="🔍 поиск позиции…" />
-          <select [(ngModel)]="catFilter" (ngModelChange)="applyFilter()">
-            <option value="">все категории</option>
-            @for (c of categories(); track c) { <option [value]="c">{{ c }}</option> }
-          </select>
-          <label class="f" style="flex-direction:row;align-items:center;gap:6px">
-            <input type="checkbox" [(ngModel)]="onlyLow" (ngModelChange)="applyFilter()" /> только заканчивающиеся
-          </label>
-          <div class="spacer"></div>
-          <a class="btn sm primary" [routerLink]="wbLink" [queryParams]="wbQp">+ Принять товар</a>
-        </div>
-        <hr class="hr" />
-        <table class="tbl">
-          <tr><th>Продукт</th><th>Категория</th><th class="num">Остаток</th><th class="num">Мин. остаток</th><th class="num">Себестоимость</th><th class="num">Сумма</th><th></th><th></th></tr>
-          @for (r of filteredRows(); track r.productId) {
-            <tr>
-              <td><b>{{ r.name }}</b></td>
-              <td class="muted">{{ r.category }}</td>
-              <td class="num" [class.red]="r.low">{{ fmtQty(r.qty, r.unitCode) }}</td>
-              <td class="num muted">@if (r.minStock > 0) { {{ fmtQty(r.minStock, r.unitCode) }} } @else { — }</td>
-              <td class="num muted">{{ fmtCost(r.avgCost, r.unitCode) }}</td>
-              <td class="num">{{ fmtMoney(r.qty * r.avgCost) }}</td>
-              <td>@if (r.low) { <span class="badge red"> ↓ ниже минимума</span> }</td>
-              <td>
-                <button class="btn sm" (click)="startAdjust(r)">корректировать</button>
-                <button class="btn sm" (click)="showMovements(r.name)">история</button>
-              </td>
-            </tr>
-          } @empty { <tr class="empty"><td colspan="8">нет позиций</td></tr> }
-        </table>
-      </div>
-
-      @if (adjusting(); as a) {
-        <div class="panel">
-          <h3>Корректировка: {{ a.name }} (сейчас {{ fmtQty(a.qty, a.unitCode) }})</h3>
-          <div class="row">
-            <label class="f">Новый фактический остаток (в {{ a.unitCode }})<input type="number" [(ngModel)]="adjustQty" /></label>
-            <label class="f" style="flex:1">Комментарий<input [(ngModel)]="adjustComment" placeholder="инвентаризация, порча…" /></label>
-            <button class="btn primary" (click)="doAdjust()">Провести</button>
-            <button class="btn" (click)="adjusting.set(null)">Отмена</button>
-          </div>
-          <p class="muted" style="font-size:12px">Дельта = факт − текущий остаток; запишется в журнал как «корректировка».</p>
-        </div>
-      }
-    }
-
-    <!-- ================= НОМЕНКЛАТУРА ================= -->
-    @if (tab() === 'catalog') {
-      <div class="panel">
-        <div class="row">
-          <div class="muted" style="flex:1;font-size:12px">
-            Дерево категорий: клик по категории раскрывает позиции. ✎ — редактирование позиции,
-            × — убрать в «прочее». Остатки хранятся в базовых единицах (г/мл/шт).
-          </div>
-          <button class="btn primary" (click)="newProduct()">+ Новая позиция</button>
-        </div>
-        <hr class="hr" />
-        <app-raw-categories (changed)="onRawChanged()" />
-      </div>
-
-      @if (editOpen()) {
-        <app-product-edit [productId]="null" (saved)="onProductSaved()" (closed)="editOpen.set(false)" />
-      }
+    <!-- ================= ОСТАТКИ И НОМЕНКЛАТУРА ================= -->
+    @if (tab() === 'items') {
+      <app-stock-items />
     }
 
     <!-- ================= СРОКИ ГОДНОСТИ (по партиям прихода) ================= -->
@@ -188,27 +122,14 @@ export class StockComponent implements OnInit {
   private router = inject(Router);
   private destroyRef = inject(DestroyRef);
 
-  tab = signal<Tab>('balances');
+  tab = signal<Tab>('items');
   err = signal('');
   msg = signal('');
 
-  rows = signal<StockRow[]>([]);
-  filteredRows = signal<StockRow[]>([]);
-  categories = signal<string[]>([]);
   journal = signal<Movement[]>([]);
   /** партии с истекающим сроком (тот же /dashboard с большим лимитом — без нового эндпоинта) */
   shelf = signal<NearExpiryRow[]>([]);
   shelfBusy = signal(false);
-
-  search = '';
-  catFilter = '';
-  onlyLow = false;
-
-  adjusting = signal<StockRow | null>(null);
-  adjustQty: number | null = null;
-  adjustComment = '';
-
-  editOpen = signal(false);
 
   jFrom = '';
   jTo = '';
@@ -217,35 +138,26 @@ export class StockComponent implements OnInit {
   jProduct = '';
 
   fmtQty = fmtQty;
-  fmtMoney = fmtMoney;
-  fmtCost = fmtCost;
-  trim = trim;
   fmtWhen = fmtDateTime;
 
   ngOnInit(): void {
-    this.api.categories$().subscribe((c) => this.categories.set(c));
-    this.loadAll();
-    // переходы с панели и из меню приходят как query-параметры: вкладка, «только дефицит», тип/позиция журнала
+    // переходы с панели и из меню приходят как query-параметры: вкладка, тип/позиция журнала
     this.route.queryParams.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((p) => {
       const t = String(p['tab'] ?? '');
-      if (t === 'balances' || t === 'catalog' || t === 'journal' || t === 'shelf') {
-        this.tab.set(t as Tab);
+      // старые ссылки на «Остатки»/«Номенклатуру» ведут на объединённую вкладку
+      if (t === 'items' || t === 'balances' || t === 'catalog') {
+        this.tab.set('items');
+        this.err.set('');
+        this.msg.set('');
+      } else if (t === 'journal' || t === 'shelf') {
+        this.tab.set(t);
         this.err.set('');
         this.msg.set('');
       }
-      this.onlyLow = p['low'] === '1';
       if (typeof p['type'] === 'string') this.jType = p['type'];
       this.jProduct = typeof p['product'] === 'string' ? p['product'] : '';
       if (this.tab() === 'journal') this.loadJournal();
       if (this.tab() === 'shelf' && !this.shelf().length) this.loadShelf();
-      this.applyFilter();
-    });
-  }
-
-  loadAll(): void {
-    this.api.stock$().subscribe({
-      next: (v) => { this.rows.set(v); this.applyFilter(); },
-      error: (e) => this.err.set(httpErr(e)),
     });
   }
 
@@ -270,69 +182,13 @@ export class StockComponent implements OnInit {
     });
   }
 
-  /** История движений конкретной позиции (из «Остатков» или из предупреждения). */
+  /** История движений конкретной позиции (из остатков или из предупреждения). */
   showMovements(name: string): void {
     void this.router.navigate(['/stock'], { queryParams: { tab: 'journal', product: name } });
   }
 
   clearProductFilter(): void {
     void this.router.navigate(['/stock'], { queryParams: { tab: 'journal' } });
-  }
-
-  applyFilter(): void {
-    const q = this.search.toLowerCase();
-    const bal = this.rows().filter(
-      (r) =>
-        (!q || r.name.toLowerCase().includes(q)) &&
-        (!this.catFilter || r.category === this.catFilter) &&
-        (!this.onlyLow || r.low)
-    );
-    this.filteredRows.set(bal);
-  }
-
-  // -------- корректировки --------
-  startAdjust(r: StockRow): void {
-    this.adjusting.set(r);
-    // пересчитываем базовое число в «его» единицах для простоты: базовая = unitCode продукта
-    this.adjustQty = r.qty;
-    this.adjustComment = '';
-  }
-
-  doAdjust(): void {
-    const r = this.adjusting();
-    if (!r || this.adjustQty === null) return;
-    const delta = this.adjustQty - r.qty;
-    if (delta === 0) { this.msg.set('Остаток не изменился'); return; }
-    this.api.adjust({ productId: r.productId, delta, comment: this.adjustComment || 'инвентаризация' }).subscribe({
-      next: () => {
-        this.adjusting.set(null);
-        this.msg.set(`Корректировка «${r.name}» на ${delta > 0 ? '+' : ''}${trim(delta)} ${r.unitCode} проведена ✓`);
-        this.loadAll();
-      },
-      error: (e) => this.err.set(httpErr(e)),
-    });
-  }
-
-  // -------- номенклатура --------
-  /** Открыть модалку создания новой позиции. */
-  newProduct(): void {
-    this.err.set('');
-    this.msg.set('');
-    this.editOpen.set(true);
-  }
-
-  /** Модалка (app-product-edit) сохранила позицию: список и категории могли измениться. */
-  onProductSaved(): void {
-    this.msg.set('Позиция сохранена ✓');
-    this.editOpen.set(false);
-    this.api.categories$().subscribe((c) => this.categories.set(c));
-    this.loadAll();
-  }
-
-  /** Дерево категорий (app-raw-categories) изменило данные — обновляем списки страницы. */
-  onRawChanged(): void {
-    this.api.categories$().subscribe((c) => this.categories.set(c));
-    this.loadAll();
   }
 
   // -------- журнал --------

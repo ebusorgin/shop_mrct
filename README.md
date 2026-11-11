@@ -27,7 +27,7 @@ docker compose up -d db
 cd server
 npm install
 # .env уже создан из .env.example; при необходимости поправьте доступ к БД
-npm run db:seed   # миграции + демо-данные (борщ из ТЗ, овощи, уварки)
+npm run db:seed   # схема БД + демо-данные (борщ из ТЗ, овощи, уварки)
 npm run dev       # или npm run build && npm start (прод)
 ```
 API: `http://localhost:4000/api/health`
@@ -80,7 +80,8 @@ npm run autostart:remove      # убрать автозапуск
   `package-lock.json`) `npm ci --omit=dev` → подмена `server/dist` и `client/dist/crm` → `systemctl restart mixmarkt-crm`
   → ожидание `/api/health` до 40 с. Если сервис не поднялся — артефакты откатываются на предыдущие, сервис перезапускается.
   Выкладки сериализованы общим lock-файлом `/var/lock/mixmarkt-apply.lock`.
-- **Миграции** применяются самим сервисом при старте (`server/src/migrate.ts`), отдельного шага не нужно.
+- **Схема БД** инициализируется самим сервисом при старте из единственного идемпотентного файла
+  `server/sql/init.sql` (`server/src/init-db.ts`); отдельного шага миграций нет.
 - **Логи и состояние:** `/var/log/mixmarkt-deploy.log` (logrotate), текущий коммит — `/opt/mixmarkt-crm/.deployed-sha`.
   Коммит, на котором упала сборка, пишется в `/opt/mixmarkt-crm/.build-failed-sha` и больше не повторяется
   (сбросить: `rm /opt/mixmarkt-crm/.build-failed-sha`).
@@ -163,7 +164,7 @@ cd server; npm run db:seed
 
 ## Структура репозитория
 ```
-server/    Express + pg: sql/миграции, src/routes (REST), src/services (склад, раскрытие уварка)
+server/    Express + pg: sql/init.sql (единая схема), src/routes (REST), src/services (склад, раскрытие уварка)
 client/    Angular 19 standalone+signals: src/app/pages/{dashboard,waybills,stock,semis,cards,batches}
 docker-compose.yml   PostgreSQL 16 (restart: unless-stopped)
 scripts/             start-crm.ps1 (Docker+БД+PM2), install/remove-autostart.ps1

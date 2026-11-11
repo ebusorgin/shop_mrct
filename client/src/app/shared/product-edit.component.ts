@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, EventEmitter, Input, OnInit, Output, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, ChangeDetectorRef, Component, EventEmitter, Input, OnInit, Output, computed, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ApiService } from '../core/api.service';
@@ -23,8 +23,12 @@ import { ModalComponent } from './modal.component';
       @if (edit.id !== null && !loaded()) { <p class="muted">Загружаем позицию…</p> }
       <div class="row">
         <label class="f" style="flex:2">Название<input [(ngModel)]="edit.name" placeholder="Картофель" /></label>
-        <label class="f">Категория<input [(ngModel)]="edit.category" list="pe-cats" placeholder="овощи" /></label>
-        <datalist id="pe-cats">@for (c of categories(); track c) { <option [value]="c"></option> }</datalist>
+        <label class="f">Категория
+          <select [(ngModel)]="edit.category">
+            <option value="">— без категории («прочее») —</option>
+            @for (c of categoryOptions(); track c) { <option [value]="c">{{ c }}</option> }
+          </select>
+        </label>
         <label class="f">Ед. хранения (базовая)
           <select [(ngModel)]="edit.unitId">
             @for (u of baseUnits(); track u.id) { <option [ngValue]="u.id">{{ u.code }} — {{ u.name }}</option> }
@@ -56,6 +60,7 @@ import { ModalComponent } from './modal.component';
 })
 export class ProductEditComponent implements OnInit {
   private api = inject(ApiService);
+  private cdr = inject(ChangeDetectorRef);
 
   /** null — новая позиция; иначе id редактируемой (карточка подтягивается с сервера). */
   @Input() productId: number | null = null;
@@ -81,7 +86,10 @@ export class ProductEditComponent implements OnInit {
 
   ngOnInit(): void {
     this.api.units$().subscribe((u) => this.units.set(u));
-    this.api.categories$().subscribe((c) => this.categories.set(c));
+    this.api.categoriesDictionary$().subscribe((list) => {
+      this.categories.set(list.map((c) => c.name));
+      this.canonicalizeCategory();
+    });
     if (this.productId === null) {
       this.loaded.set(true);
       return;
@@ -89,14 +97,36 @@ export class ProductEditComponent implements OnInit {
     this.api.product$(this.productId).subscribe({
       next: (p) => {
         this.edit = {
-          id: p.id, name: p.name, category: p.category, unitId: p.unitId, minStock: p.minStock, active: p.active,
+          id: p.id, name: p.name, category: (p.category ?? '').trim(), unitId: p.unitId, minStock: p.minStock, active: p.active,
           shelfLifeDays: p.shelfLifeDays ?? null,
           gPerPcs: p.gPerPcs ?? null, mlPerPcs: p.mlPerPcs ?? null, gPerMl: p.gPerMl ?? null,
         };
+        this.canonicalizeCategory();
         this.loaded.set(true);
+        // edit — обычный объект, для OnPush-вьюхи это не триггер перерисовки
+        this.cdr.markForCheck();
       },
       error: (e: unknown) => this.err.set(httpErr(e)),
     });
+  }
+
+  /** Варианты выбора: справочник + текущее значение, если его там нет (старые данные). */
+  categoryOptions(): string[] {
+    const list = this.categories();
+    const cur = this.edit.category.trim();
+    if (cur && !list.some((c) => c.toLowerCase() === cur.toLowerCase())) return [cur, ...list];
+    return list;
+  }
+
+  /** «Прочее» показываем пустым пунктом; имя категории приводим к написанию из справочника. */
+  private canonicalizeCategory(): void {
+    const cur = this.edit.category.trim();
+    if (!cur || cur.toLowerCase() === 'прочее') {
+      this.edit.category = '';
+      return;
+    }
+    const match = this.categories().find((c) => c.toLowerCase() === cur.toLowerCase());
+    this.edit.category = match ?? cur;
   }
 
   save(): void {

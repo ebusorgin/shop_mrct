@@ -1,33 +1,22 @@
 /**
- * API магазинного сотрудника: он видит и меняет только свою точку.
+ * API магазинного сотрудника: он видит только свою точку.
  *
- *   GET   /api/store — карточка своей точки
- *   PATCH /api/store — правка информации о магазине (адрес, телефоны, контакты…)
+ *   GET /api/store — карточка своей точки (только просмотр: данные заполняет офис)
+ *   GET /api/store/order-catalog — продукция производства для оформления заказа
  */
 import { Router } from 'express';
 import { pool } from '../db';
 import { ApiError, wrap } from '../http';
 import { requireStore } from '../services/auth';
-import { audit, diff } from '../services/audit';
 
 export const storeRouter = Router();
 
-/** Текстовое поле точки: колонки stores not null default '', поэтому пусто -> ''. */
-function optStr(v: unknown, max: number, label: string): string {
-  if (v === undefined || v === null) return '';
-  if (typeof v !== 'string') throw new ApiError(400, `Поле «${label}» должно быть строкой`);
-  const s = v.trim().replace(/\s+/g, ' ');
-  if (s.length > max) throw new ApiError(400, `Поле «${label}»: не длиннее ${max} символов`);
-  return s;
-}
-
 const CARD_SQL = `
-  select s.id, s.code, s.name, s.active,
+  select s.id, s.code, s.name, s.active, s.position,
          s.address, s.phone, s.email,
          s.contact_person as "contactPerson",
          s.opening_hours as "openingHours",
-         s.note,
-         (select count(*)::int from users u where u.store_id = s.id and u.active) as "employees"
+         s.pib, s.mbr, s.account_no as "accountNo", s.note
     from stores s where s.id = $1`;
 
 storeRouter.get(
@@ -41,50 +30,23 @@ storeRouter.get(
   })
 );
 
-storeRouter.patch(
-  '/',
+/**
+ * Продукция производства для формы заказа магазина: только карточка продукта
+ * (название, выход, каталог), состав и склады магазину не нужны.
+ */
+storeRouter.get(
+  '/order-catalog',
   requireStore,
-  wrap(async (req, res) => {
-    const storeId = req.user?.storeId as number;
-    const { rows } = await pool.query(
-      `select id, name, address, phone, email, contact_person, opening_hours, note
-         from stores where id = $1`,
-      [storeId]
-    );
-    const cur = rows[0];
-    if (!cur) throw new ApiError(404, 'Магазин не найден');
-
-    // код/номер/активность меняет только офис
-    const name = optStr(req.body?.name, 120, 'Название');
-    if (!name) throw new ApiError(400, 'Название магазина не может быть пустым');
-
-    const next = {
-      name,
-      address: optStr(req.body?.address, 200, 'Адрес'),
-      phone: optStr(req.body?.phone, 60, 'Телефон'),
-      email: optStr(req.body?.email, 120, 'E-mail'),
-      contact_person: optStr(req.body?.contactPerson, 120, 'Контактное лицо'),
-      opening_hours: optStr(req.body?.openingHours, 120, 'Часы работы'),
-      note: optStr(req.body?.note, 500, 'Примечание'),
-    };
-
-    await pool.query(
-      `update stores set name=$2, address=$3, phone=$4, email=$5, contact_person=$6,
-              opening_hours=$7, note=$8, updated_at=now(), updated_by=$9
-        where id=$1`,
-      [
-        storeId, next.name, next.address, next.phone, next.email,
-        next.contact_person, next.opening_hours, next.note,
-        req.user?.id ?? null,
-      ]
-    );
-    await audit(req.user, {
-      action: 'update',
-      entity: 'store',
-      entityId: storeId,
-      title: `Магазин «${next.name}» · свои данные`,
-      details: diff(cur as Record<string, unknown>, next),
-    });
-    res.json({ ok: true });
+  wrap(async (_req, res) => {
+    const { rows } = await pool.query(`
+      select tc.id, tc.name, tc.note, tc.portion_qty::float8 as "portionQty",
+             pu.code as "portionUnitCode",
+             tc.catalog_id as "catalogId", cc.name as "catalogName",
+             cc.icon as "catalogIcon", cc.color as "catalogColor"
+        from tech_cards tc
+        join units pu on pu.id = tc.portion_unit_id
+        left join product_catalogs cc on cc.id = tc.catalog_id
+       order by cc.position nulls last, cc.name nulls last, tc.name`);
+    res.json(rows);
   })
 );

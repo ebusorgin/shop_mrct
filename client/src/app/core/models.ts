@@ -242,13 +242,26 @@ export interface Semi {
 
 export interface CardItem {
   id?: number;
-  sourceType: 'raw' | 'semi';
+  sourceType: 'raw' | 'semi' | 'product';
   refId: number;
   refName?: string;
   qty: number;
   unitId: number;
   unitCode?: string;
   position?: number;
+}
+
+/** Продукция производства в форме заказа магазина (без состава). */
+export interface OrderCatalogItem {
+  id: number;
+  name: string;
+  note: string;
+  portionQty: number;
+  portionUnitCode: string;
+  catalogId: number | null;
+  catalogName: string | null;
+  catalogIcon?: string | null;
+  catalogColor?: string | null;
 }
 
 export interface TechCard {
@@ -259,6 +272,9 @@ export interface TechCard {
   portionUnitId: number;
   portionUnitCode: string;
   items: CardItem[];
+  /** Каталог готовой продукции (product_catalogs); null — без каталога. */
+  catalogId?: number | null;
+  catalogName?: string | null;
 }
 
 export interface ExpansionRow {
@@ -393,14 +409,16 @@ export interface MyStore {
   code: string;
   name: string;
   active: boolean;
+  position: number;
   address: string | null;
   phone: string | null;
   email: string | null;
   contactPerson: string | null;
   openingHours: string | null;
+  pib: string | null;
+  mbr: string | null;
+  accountNo: string | null;
   note: string | null;
-  /** Активных сотрудников точки. */
-  employees: number;
 }
 
 // ================= ЖУРНАЛ ДЕЙСТВИЙ =================
@@ -472,7 +490,23 @@ export interface GptTestResult {
 export interface RawCategory {
   id: number;
   name: string;
+  /** Иконка категории (эмодзи); '' — без иконки. */
+  icon?: string;
+  /** Фоновый цвет #rrggbb; '' — без цвета. */
+  color?: string;
   productCount: number;
+}
+
+/** Каталог готовой продукции (product_catalogs). */
+export interface ProductCatalog {
+  id: number;
+  name: string;
+  /** Иконка каталога (эмодзи); '' — без иконки. */
+  icon?: string;
+  /** Фоновый цвет #rrggbb; '' — без цвета. */
+  color?: string;
+  /** Сколько продуктов привязано (только в списке настроек). */
+  cardCount?: number;
 }
 
 /** Ссылка на позицию номенклатуры (products) для привязки к категории сырья. */
@@ -480,6 +514,12 @@ export interface RawProductRef {
   id: number;
   name: string;
   categoryId?: number | null;
+  /** Единица хранения (базовая): г / мл / шт. */
+  unitCode?: string;
+  /** Минимальный остаток в базовой единице. */
+  minStock?: number;
+  /** Срок годности, дней (null — не задан). */
+  shelfLifeDays?: number | null;
 }
 
 /**

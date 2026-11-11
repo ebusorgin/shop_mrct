@@ -265,7 +265,7 @@ semisRouter.delete(
       [req.params.id]
     );
     if (!rows.length) throw new ApiError(404, 'Полуфабрикат не найден');
-    if (Number(rows[0].cards) > 0) throw new ApiError(409, 'Полуфабрикат используется в техкартах');
+    if (Number(rows[0].cards) > 0) throw new ApiError(409, 'Полуфабрикат используется в продуктах');
     if (Number(rows[0].semis) > 0) throw new ApiError(409, 'Полуфабрикат используется в составе других полуфабрикатов');
     await pool.query('delete from semi_products where id = $1', [req.params.id]);
     await audit(req.user, {

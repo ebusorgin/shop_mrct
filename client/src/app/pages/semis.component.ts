@@ -9,6 +9,7 @@ import {
   ConvField,
   ExpWarn,
   Issue,
+  OutGap,
   RawLine,
   SemiCtx,
   SemiDraft,
@@ -16,7 +17,6 @@ import {
   SourceKind,
   SortMode,
   SORT_LABELS,
-  batchPresets,
   convValueOf,
   dedupeWarnings,
   edgesOfDraft,
@@ -24,11 +24,11 @@ import {
   Expansion,
   fixableWarn,
   fmtBase,
-  incompleteOf,
+  fmtExact as fmtExactBase,  incompleteOf,
+  outputGaps,
   pickableAsInput,
   productConvBody,
   refInfo,
-  semiPrimary,
   semiBodyOf,
   semiMatches,
   sortSemis,
@@ -42,6 +42,7 @@ import {
 } from '../core/semi-calc';
 import { PickOption, PickerComponent } from '../shared/picker.component';
 import { httpErr, trim } from '../core/format';
+import { toBaseClient } from '../core/units';
 
 /** Строка дерева потребности (узел + открыты ли его дети). */
 interface CalcRow {
@@ -77,6 +78,29 @@ interface ConvFix {
 
 /** Самооценка модели — по-человечески, в подписи под полем. */
 const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 'средняя', low: 'низкая' };
+
+/** Живое состояние правки «дыры» выхода: входные значения + статус запроса/сохранения. */
+interface OutFixState {
+  value?: string;
+  saving?: boolean;
+  err?: string;
+  asking?: boolean;
+  ai?: string;
+  aiValue?: number | null;
+  aiModel?: string | null;
+}
+
+/** Дыра выхода + её текущее значение: то, что рисует блок E рядом с «Выход по составу». */
+interface OutFix extends OutGap, OutFixState {
+  current: number | null;
+  value: string;
+  saving: boolean;
+  err: string;
+  asking: boolean;
+  ai: string;
+  aiValue: number | null;
+  aiModel: string | null;
+}
 
 @Component({
   selector: 'app-semis',
@@ -195,9 +219,9 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
           </div>
           @if (err()) { <div class="err">{{ err() }}</div> }
 
-          <!-- БЛОК A. Заготовка и размер партии -->
+          <!-- БЛОК A. Заготовка -->
           <div class="blk">
-            <div class="blk-t">A · Заготовка и размер партии</div>
+            <div class="blk-t">A · Заготовка</div>
             <div class="row">
               <label class="f" style="flex:2">Название
                 <input [ngModel]="d.name" (ngModelChange)="patchDraft('name', $event)" placeholder="Картофель варёный" />
@@ -213,21 +237,8 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
                 <input [ngModel]="d.note" (ngModelChange)="patchDraft('note', $event)" placeholder="почистили и сварили" />
               </label>
             </div>
-            <div class="row batch-row">
-              <label class="f">Размер партии — сколько заготовки даёт состав
-                <input style="width:140px" type="number" min="0" step="any" inputmode="decimal"
-                       [ngModel]="d.outQty" (ngModelChange)="patchDraft('outQty', num($event))" placeholder="напр. 1000" />
-                @if (issue('outQty')) { <span class="f-err">{{ issue('outQty') }}</span> }
-              </label>
-              <span class="ro">{{ unitCodeOf(d.unitId) }}</span>
-              <div class="spacer"></div>
-              @for (p of presets(); track p.label) {
-                <button type="button" class="btn sm" [class.on]="d.outQty === p.qty" (click)="patchDraft('outQty', p.qty)">{{ p.label }}</button>
-              }
-            </div>
             <div class="muted tip">
               Все ингредиенты равноправны: количество каждого задаётся <b>на эту партию</b> и в своей базовой единице.
-              Меняете размер партии — блок E тут же переложит состав до сырья заново, рецептуру править не нужно.
             </div>
             <details class="adv">
               <summary>Доп. параметры (срок годности, пересчёт размерностей)</summary>
@@ -240,7 +251,7 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
                 <div class="row" style="margin-top:8px;align-items:flex-end">
                   <div class="muted" style="flex-basis:100%;font-size:12px">
                     Пересчёт размерностей выхода — задайте только нужные связи; пусто = связь не задавать.
-                    Позволяет техкарте ссылаться на заготовку в г/мл, даже если её выход — в шт.
+                    Позволяет продукту ссылаться на заготовку в г/мл, даже если её выход — в шт.
                   </div>
                   <label class="f">грамм в 1 шт
                     <input type="number" min="0" [ngModel]="d.gPerPcs" (ngModelChange)="patchDraft('gPerPcs', num($event))" placeholder="напр. 53" /></label>
@@ -309,15 +320,57 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
           <!-- БЛОК E. Проверка рецепта -->
           <div class="blk calc">
             <div class="blk-t">E · Проверка рецепта
-              <span class="blk-note">раскладка партии из блока A до чистого сырья; склад и себестоимость не трогаем</span></div>
+              <span class="blk-note">раскладка состава до чистого сырья в исходных единицах; склад и себестоимость не трогаем</span></div>
             @if (!hasInputs() || !(batchOut() > 0)) {
-              <p class="muted small">Добавьте ингредиент и задайте размер партии в блоке A, чтобы увидеть, как состав раскладывается до сырья.</p>
+              <p class="muted small">Добавьте ингредиент, чтобы увидеть, как состав раскладывается до сырья.</p>
             } @else {
               <div class="calc-sum">
-                <div><span class="l">Партия</span><b>{{ fmt(batchOut(), unitCodeOf(d.unitId)) }}</b></div>
+                <div><span class="l">Выход по составу</span><b [class.bad]="outFixes().length > 0">{{ compositionOutLabel() }}</b></div>
                 <div><span class="l">Позиций сырья</span><b>{{ calc().raw.length }}</b></div>
                 <div><span class="l">Предупреждений</span><b [class.bad]="calcWarnCount() > 0">{{ calcWarnCount() ? calcWarnCount() : 'нет' }}</b></div>
               </div>
+
+              @if (outFixes().length) {
+                <div class="out-gaps">
+                  @for (g of outFixes(); track g.key) {
+                    <div class="out-gap">
+                      <div class="og-head">
+                        <span>⚠</span>
+                        <b>{{ g.name }}</b>
+                        <span>{{ g.text }}</span>
+                      </div>
+                      <div class="cf-row">
+                        <label class="f cf-field">
+                          {{ convLabel(g.field) }}
+                          <input class="hot" type="number" min="0" step="any" autocomplete="off"
+                                 [ngModel]="g.value" (ngModelChange)="setOutVal(g.key, $event)"
+                                 (keyup.enter)="saveOutFix(g)" (keyup.escape)="resetOutFix(g.key)"
+                                 [placeholder]="convExample(g.field)" />
+                        </label>
+                        <div class="cf-acts">
+                          <button type="button" class="btn sm ai" [disabled]="g.asking || g.saving" (click)="askOutAi(g)"
+                                  title="Спросить у GPT типичное значение и подставить в поле; сохраняет по-прежнему человек">
+                            {{ g.asking ? '🤖 Спрашиваю…' : '🤖 Спросить у ИИ' }}
+                          </button>
+                          <button type="button" class="btn primary sm" [disabled]="g.saving" (click)="saveOutFix(g)">
+                            {{ g.saving ? 'Сохраняю…' : 'Задать размерность' }}
+                          </button>
+                        </div>
+                      </div>
+                      <div class="cf-note">
+                        @if (g.target.kind === 'self') {
+                          Коэффициент пишется в саму заготовку (блок A → «Доп. параметры»).
+                        } @else {
+                          Коэффициент пишется в запись «{{ g.name }}» — состав заготовки не меняется.
+                        }
+                        {{ convHint(g.field) }}.
+                      </div>
+                      @if (g.err) { <div class="cf-err">{{ g.err }}</div> }
+                      @if (g.ai) { <div class="cf-ai" [class.na]="g.aiValue == null">{{ g.ai }}</div> }
+                    </div>
+                  }
+                </div>
+              }
 
               <div class="sub-t">Дерево расхода{{ expanded().size ? ' (с раскрытием)' : '' }}</div>
               <div class="tree">
@@ -329,7 +382,7 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
                     <span class="k" [class.semi]="r.node.sourceType === 'semi'">{{ r.node.sourceType === 'semi' ? 'полуфабрикат' : 'сырьё' }}</span>
                     <span class="n">{{ r.node.name }}</span>
                     <span class="b">{{ r.node.basis }}</span>
-                    <span class="q">{{ fmt(r.node.qty, r.node.unitCode) }}</span>
+                    <span class="q">{{ fmtExact(r.node.qty, r.node.unitCode) }}</span>
                     @if (nodeFix(r.node); as fx) {
                       <button type="button" class="w fixw" [class.open]="!!cfOf(fx)" (click)="openFix(fx)"
                               title="Не хватает коэффициента — кликните, чтобы задать его у этой записи">
@@ -349,7 +402,7 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
                   <tr>
                     <td data-l="Сырьё">{{ r.name }}</td>
                     <td data-l="Откуда" class="muted">{{ r.via.length ? 'через ' + r.via.join(', ') : 'напрямую' }}</td>
-                    <td class="num" data-l="На партию">{{ fmt(r.qty, r.unitCode) }}</td>
+                    <td class="num" data-l="На партию">{{ fmtExact(r.qty, r.unitCode) }}</td>
                   </tr>
                 } @empty {
                   <tr><td class="empty" colspan="3">Сырьё не собирается — проверьте состав</td></tr>
@@ -428,7 +481,7 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
             <div class="blk-err">Сохранение заблокировано: посмотрите подсказки у полей ({{ issues().length }}).</div>
           }
           @if (calcWarnCount() && !issues().length) {
-            <div class="mini warn">Проверка рецепта содержит нерешённые пересчёты размерностей — кликните предупреждение в блоке E, чтобы задать коэффициент.</div>
+            <div class="mini warn">Проверка рецепта содержит нерешённые пересчёты размерностей — задайте недостающий коэффициент в блоке E.</div>
           }
         </div>
       } @else {
@@ -506,11 +559,6 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
     /* блоки-подсказки «как считается» (упразднён вместе с блоком D) */
     .blk-err { margin-top: 10px; font-size: 12px; color: var(--red); }
 
-    .batch-row { margin-top: 10px; align-items: flex-end; }
-    .ro {
-      border: 1px solid var(--border); border-radius: 8px; background: #f7f9fc; padding: 8px 10px;
-      font-size: 13px; font-weight: 600; color: var(--text); min-height: 38px; display: flex; align-items: center;
-    }
     .tip { margin-top: 6px; font-size: 11.5px; line-height: 1.4; }
     .f-err { display: block; font-size: 11.5px; color: var(--red); text-transform: none; letter-spacing: 0; }
 
@@ -544,6 +592,11 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
     .calc-sum .l { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); }
     .calc-sum b { font-size: 15px; font-variant-numeric: tabular-nums; }
     .calc-sum b.bad { color: var(--red); }
+    /* «Выход по составу» не сходится: рядом поле и обе кнопки, без промежуточных кликов */
+    .out-gaps { margin: 8px 0 4px; display: flex; flex-direction: column; gap: 8px; }
+    .out-gap { border: 1px solid var(--amber); border-radius: 8px; background: #fffdf7; padding: 10px 12px; }
+    .og-head { display: flex; gap: 8px; flex-wrap: wrap; font-size: 12.5px; color: var(--amber); margin-bottom: 8px; }
+    .og-head span:last-child { min-width: 0; overflow-wrap: anywhere; }
     .sub-t { margin: 12px 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); }
     .tree { border: 1px solid var(--border); border-radius: 8px; background: #fff; padding: 4px 6px; }
     .tr { display: flex; align-items: baseline; gap: 8px; padding: 4px 0; font-size: 12.5px; border-bottom: 1px solid #f0f3f8; flex-wrap: wrap; }
@@ -755,20 +808,31 @@ export class SemisComponent implements OnInit {
     return Number.isFinite(n) ? n : null;
   };
   fmt = (qty: number, unitCode: string) => fmtBase(qty, unitCode ?? '');
+  fmtExact = (qty: number, unitCode: string) => fmtExactBase(qty, unitCode ?? '');
   unitCodeOf = (unitId: number | null) => unitCodeOf(this.ctx(), unitId);
 
   /** Чем «неполна» заготовка для бейджа в каталоге. */
   rowWarn(s: Semi): string | null {
     const bad = incompleteOf(s);
     if (bad) return bad;
-    const first = semiPrimary(s);
-    if (!first || !first.unitId || !s.unitId) return null;
-    const outU = this.units().find((u) => u.id === s.unitId);
-    const inU = this.units().find((u) => u.id === first.unitId);
-    if (outU && inU && outU.dimension !== inU.dimension && !(s.gPerPcs || s.mlPerPcs || s.gPerMl)) {
-      return 'нет коэффициента пересчёта размерностей';
-    }
-    return null;
+    const d: SemiDraft = {
+      id: s.id,
+      name: s.name,
+      note: s.note,
+      unitId: s.unitId,
+      outQty: s.outQty,
+      shelfLifeDays: s.shelfLifeDays,
+      gPerPcs: s.gPerPcs,
+      mlPerPcs: s.mlPerPcs,
+      gPerMl: s.gPerMl,
+      inputs: s.inputs.map((i) => ({
+        sourceType: i.sourceType,
+        refId: i.refId,
+        qty: i.qty,
+        yieldPct: i.yieldPct ?? null,
+      })),
+    };
+    return outputGaps(this.ctx(), d).length ? 'нет коэффициента пересчёта размерностей' : null;
   }
 
   // ---------- редактор ----------
@@ -810,8 +874,6 @@ export class SemisComponent implements OnInit {
       .sort((a, b) => Number(!!a.blocked) - Number(!!b.blocked) || a.label.localeCompare(b.label, 'ru'));
   });
 
-  presets = computed(() => batchPresets(this.ctx(), this.draft()?.unitId ?? null));
-
   /** Базовая единица выбранного компонента — она же единица его количества. */
   inputUnit(a: SemiDraftInput): string {
     const ref = a.refId == null ? null : refInfo(this.ctx(), a.sourceType, a.refId);
@@ -836,6 +898,200 @@ export class SemisComponent implements OnInit {
 
   /** Размер партии редактируемой заготовки — база раскладки в блоке E (масштаб ×1). */
   batchOut = computed(() => Number(this.draft()?.outQty ?? 0));
+
+  /**
+   * Выход по составу: сумма введённых количеств входов, приведённая к единице выхода.
+   * null — есть входы, которые не переводятся в единицу выхода (тогда честно показываем «—»).
+   * Потери входа уже учтены в расходе, на выход по составу они не влияют.
+   */
+  compositionOut = computed<number | null>(() => {
+    const d = this.draft();
+    if (!d?.unitId) return null;
+    const units = this.units();
+    const outU = units.find((u) => u.id === d.unitId);
+    if (!outU) return null;
+    let sum = 0;
+    let any = false;
+    for (const a of d.inputs) {
+      if (a.refId == null) continue;
+      const ref = refInfo(this.ctx(), a.sourceType, a.refId);
+      if (!ref) continue;
+      const q = Number(a.qty ?? 0);
+      if (!(q > 0)) continue;
+      // для штучного выхода массу/объём переводим через коэффициенты самой заготовки
+      const conv =
+        outU.dimension === 'count'
+          ? { ...ref.conv, gPerPcs: d.gPerPcs ?? ref.conv.gPerPcs, mlPerPcs: d.mlPerPcs ?? ref.conv.mlPerPcs }
+          : ref.conv;
+      const outQty = toBaseClient(units, q, ref.unitId, d.unitId, conv);
+      if (outQty == null) return null;
+      sum += outQty;
+      any = true;
+    }
+    return any ? sum : null;
+  });
+
+  /** Подпись выхода по составу в исходных единицах. */
+  compositionOutLabel(): string {
+    const v = this.compositionOut();
+    const d = this.draft();
+    if (v == null || !d) return '—';
+    return fmtExactBase(v, this.unitCodeOf(d.unitId));
+  }
+
+  // ---------- «Выход по составу» не сходится: поле + две кнопки прямо здесь ----------
+  /** Чего не хватает, чтобы свести каждый вход к единице выхода. */
+  outGaps = computed<OutGap[]>(() => {
+    const d = this.draft();
+    return d ? outputGaps(this.ctx(), d) : [];
+  });
+  /** Введённые числа и статусы правок; ключ — из OutGap, чтобы пережить пересчёт состава. */
+  private outState = signal<Record<string, OutFixState>>({});
+
+  outFixes = computed<OutFix[]>(() => {
+    const d = this.draft();
+    const st = this.outState();
+    return this.outGaps().map((g) => {
+      const s = st[g.key] ?? {};
+      const current = d ? this.gapCurrent(d, g) : null;
+      return {
+        ...g,
+        current,
+        value: s.value !== undefined ? s.value : current == null ? '' : String(current),
+        saving: s.saving ?? false,
+        err: s.err ?? '',
+        asking: s.asking ?? false,
+        ai: s.ai ?? '',
+        aiValue: s.aiValue ?? null,
+        aiModel: s.aiModel ?? null,
+      };
+    });
+  });
+
+  /** Текущее значение коэффициента: у самой заготовки (блок A) или у записи входа. */
+  private gapCurrent(d: SemiDraft, g: OutGap): number | null {
+    const v =
+      g.target.kind === 'self'
+        ? d[g.field] ?? null
+        : convValueOf(this.ctx(), g.target.sourceType, g.target.refId, g.field);
+    return v == null ? null : Number(v);
+  }
+
+  private patchOutFix(key: string, patch: OutFixState): void {
+    this.outState.update((m) => ({ ...m, [key]: { ...m[key], ...patch } }));
+  }
+
+  resetOutFix(key: string): void {
+    this.outState.update((m) => {
+      const n = { ...m };
+      delete n[key];
+      return n;
+    });
+  }
+
+  /** Ручной ввод снимает статус «подсказал ИИ» — в журнал пойдёт то, что человек сохранил. */
+  setOutVal(key: string, v: unknown): void {
+    this.patchOutFix(key, {
+      value: v == null || v === '' ? '' : String(v),
+      err: '',
+      ai: '',
+      aiValue: null,
+      aiModel: null,
+    });
+  }
+
+  askOutAi(g: OutFix): void {
+    if (g.asking || g.saving) return;
+    const d = this.draft();
+    let sourceType: SourceKind = 'raw';
+    let refId: number | null = null;
+    if (g.target.kind === 'input') {
+      sourceType = g.target.sourceType;
+      refId = g.target.refId;
+    } else if (d?.id != null) {
+      sourceType = 'semi';
+      refId = d.id;
+    }
+    if (refId == null) {
+      this.patchOutFix(g.key, { err: 'Сначала сохраните заготовку — ИИ спрашивает запись справочника' });
+      return;
+    }
+    this.patchOutFix(g.key, { asking: true, ai: 'Спрашиваю у GPT…', aiValue: null, aiModel: null, err: '' });
+    this.api.askCoefficient$({ sourceType, refId, field: g.field }).subscribe({
+      next: (r) => {
+        const conf = AI_CONFIDENCE[r.confidence] ?? r.confidence;
+        if (r.value == null) {
+          this.patchOutFix(g.key, {
+            asking: false,
+            ai: `🤖 ${r.model}: ${r.reason || 'вразумительного ответа нет'} — поле не заполнено`,
+          });
+          return;
+        }
+        this.patchOutFix(g.key, {
+          asking: false,
+          value: String(r.value),
+          ai: `🤖 ${r.model}: ${r.reason || 'без объяснения'} · уверенность: ${conf} · значение в поле можно поправить перед сохранением`,
+          aiValue: r.value,
+          aiModel: r.model,
+        });
+      },
+      error: (e) => this.patchOutFix(g.key, { asking: false, ai: '', err: httpErr(e) }),
+    });
+  }
+
+  saveOutFix(g: OutFix): void {
+    if (g.saving) return;
+    const raw = g.value.trim().replace(',', '.');
+    if (!raw) {
+      this.patchOutFix(g.key, { err: 'Введите число: пустое значение коэффициент не задаёт' });
+      return;
+    }
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) {
+      this.patchOutFix(g.key, { err: 'Коэффициент — число больше 0' });
+      return;
+    }
+    const aiModel = g.aiModel && g.aiValue != null && Math.abs(n - g.aiValue) < 1e-9 ? g.aiModel : null;
+    const what = `${CONV_FIELD_LABEL[g.field]} = ${trimNum(n)}${aiModel ? ' (подсказал ИИ)' : ''}`;
+
+    // выход в штуках: коэффициент живёт в черновике самой заготовки, в API не пишем
+    if (g.target.kind === 'self') {
+      this.patchDraft(g.field, n);
+      this.resetOutFix(g.key);
+      this.msg.set(`${what} у заготовки — выход пересчитан; сохраните заготовку, чтобы записать коэффициент`);
+      return;
+    }
+
+    this.patchOutFix(g.key, { saving: true, err: '' });
+    const target = g.target;
+    const done = () => {
+      this.resetOutFix(g.key);
+      if (target.sourceType === 'raw') {
+        this.api.products$({ active: 'true' }).subscribe((p) => {
+          this.products.set(p);
+          this.msg.set(`«${g.name}»: ${what} — выход пересчитан ✓`);
+        });
+        return;
+      }
+      this.api.semis$().subscribe((list) => {
+        this.semis.set(list);
+        this.msg.set(`«${g.name}»: ${what} — выход пересчитан ✓`);
+      });
+    };
+    const fail = (e: unknown) => this.patchOutFix(g.key, { saving: false, err: httpErr(e) });
+    if (target.sourceType === 'raw') {
+      this.api.patchProduct(target.refId, productConvBody(g.field, n, aiModel)).subscribe({ next: done, error: fail });
+      return;
+    }
+    const src = this.semis().find((s) => s.id === target.refId);
+    if (!src) {
+      this.patchOutFix(g.key, { saving: false, err: 'Вложенная заготовка не найдена — обновите список' });
+      return;
+    }
+    const patch: Partial<Record<ConvField, number | null>> = {};
+    patch[g.field] = n;
+    this.api.patchSemi(g.target.refId, semiBodyOf(src, patch, aiModel)).subscribe({ next: done, error: fail });
+  }
 
   /** Выход редактируемой заготовки — в штуках. */
   outIsPcs(): boolean {
@@ -884,7 +1140,11 @@ export class SemisComponent implements OnInit {
       return n;
     });
   }
-  calcWarnCount = computed(() => this.calcWarnings().length);
+  calcWarnCount = computed(() => {
+    const keys = new Set(this.calcWarnings().map(warnKey));
+    for (const g of this.outGaps()) keys.add(g.key);
+    return keys.size;
+  });
 
   /** Предупреждения раскрытия без повторов: один и тот же продукт может входить в несколько веток. */
   calcWarnings = computed<ExpWarn[]>(() => dedupeWarnings(this.calc().warnings));
@@ -1064,9 +1324,10 @@ export class SemisComponent implements OnInit {
       inSum += n.qty * iu.baseFactor;
     }
     if (!inSum) return null;
-    const outBase = this.batchOut();
+    const outBase = this.compositionOut();
+    if (!(outBase && outBase > 0)) return null;
     const ratio = inSum / outBase;
-    const parts = `Σ входа ${fmtBase(inSum, outU.code)} vs выход ${fmtBase(outBase, outU.code)}`;
+    const parts = `Σ входа ${fmtExactBase(inSum, outU.code)} vs выход ${fmtExactBase(outBase, outU.code)}`;
     if (ratio <= 1.02) return { text: `${parts} — потер при обработке не задано (выход ≈ входу)`, warn: false };
     if (ratio > 4) return { text: `${parts} — вход в ×${trimNum(Math.round(ratio * 10) / 10)} больше выхода: проверьте свои выходы после обработки и количества на партию`, warn: true };
     return { text: `${parts} — технологический расход ×${trimNum(Math.round(ratio * 100) / 100)}`, warn: false };
@@ -1225,7 +1486,7 @@ export class SemisComponent implements OnInit {
       this.err.set(problems.map((p) => p.message).join(' · '));
       return;
     }
-    // payload: абсолютные количества на партию + размер партии (outQty)
+    // payload: абсолютные количества на партию; выход весим по составу
     const inputs: Record<string, unknown>[] = d.inputs
       .filter((a) => a.refId != null && (a.qty ?? 0) > 0)
       .map((a) => ({
@@ -1238,7 +1499,7 @@ export class SemisComponent implements OnInit {
       name: d.name.trim(),
       note: d.note,
       unitId: d.unitId,
-      outQty: Number(d.outQty) || 1,
+      outQty: this.compositionOut() ?? (Number(d.outQty) || 1),
       shelfLifeDays:
         d.shelfLifeDays === null || (d.shelfLifeDays as unknown) === '' || !Number.isFinite(Number(d.shelfLifeDays))
           ? null
@@ -1294,7 +1555,7 @@ export class SemisComponent implements OnInit {
       if (parents.length || usedCards.length) {
         const lines = [
           parents.length ? `состав других заготовок: ${parents.map((s) => `«${s.name}»`).join(', ')}` : '',
-          usedCards.length ? `техкарты: ${usedCards.map((c) => `«${c.name}»`).join(', ')}` : '',
+          usedCards.length ? `продукция: ${usedCards.map((c) => `«${c.name}»`).join(', ')}` : '',
         ].filter(Boolean);
         this.err.set(
           `«${name}» используется — ${lines.join('; ')}. ` +

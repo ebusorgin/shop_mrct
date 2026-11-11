@@ -1,11 +1,11 @@
 import { createApp } from './app';
 import { config } from './config';
-import { migrate } from './migrate';
+import { initDb } from './init-db';
 import { pool } from './db';
 import { ensureAdminUser, purgeExpiredSessions } from './services/auth';
 
 async function main(): Promise<void> {
-  await migrate();
+  await initDb();
   await ensureAdminUser();
   await purgeExpiredSessions();
   const app = createApp();

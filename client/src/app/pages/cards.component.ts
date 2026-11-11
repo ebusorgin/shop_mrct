@@ -2,16 +2,20 @@ import { ChangeDetectionStrategy, Component, ElementRef, OnInit, computed, injec
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ApiService } from '../core/api.service';
-import { CardItem, ExpansionRow, Product, Semi, TechCard, Unit } from '../core/models';
+import { CardItem, ExpansionRow, Product, ProductCatalog, Semi, TechCard, Unit } from '../core/models';
 import { fmtQty, httpErr, trim } from '../core/format';
-import { Dim, dimOf, reachableDims } from '../core/units';
+import { Conv, NO_CONV, dimOf, reachableDims } from '../core/units';
 
 interface CardDraftItem {
-  sourceType: 'raw' | 'semi';
+  sourceType: 'raw' | 'semi' | 'product';
   refId: number | null;
   qty: number | null;
   unitId: number | null;
+  /** текст поля поиска позиции; выбранный пункт хранится здесь же */
+  refQuery?: string;
 }
+
+interface RefOption { id: number; label: string; }
 
 interface CardDraft {
   id: number | null;
@@ -19,6 +23,7 @@ interface CardDraft {
   note: string;
   portionQty: number | null;
   portionUnitId: number | null;
+  catalogId: number | null;
   items: CardDraftItem[];
 }
 
@@ -32,19 +37,46 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
   changeDetection: ChangeDetectionStrategy.OnPush,
   styles: [
     `
-      /* панель фильтра над списком техкарт */
+      /* панель фильтров над списком продукции */
       .card-filter { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 12px; }
       .cf-search { width: 100%; box-sizing: border-box; padding: 6px 10px; font-size: 13px;
         border: 1px solid #c9c9c9; border-radius: 6px; }
       .cf-search:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
-      /* заголовок панели: название слева, заметная кнопка создания справа (всегда на виду, над списком) */
+      .cf-row { display: flex; gap: 8px; flex-wrap: wrap; }
+      .cf-row select { flex: 1 1 140px; min-width: 0; padding: 6px 8px; font-size: 13px;
+        border: 1px solid #c9c9c9; border-radius: 6px; background: #fff; }
+      .cf-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; }
+      /* позиция состава: поле с поиском по вводу */
+      .combo { position: relative; flex: 2 1 140px; min-width: 0; }
+      .combo-input { width: 100%; box-sizing: border-box; padding: 6px 8px; font-size: 13px;
+        border: 1px solid #c9c9c9; border-radius: 6px; }
+      .combo-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
+      .combo-list { position: absolute; z-index: 20; top: 100%; left: 0; right: 0; margin-top: 2px;
+        max-height: 240px; overflow-y: auto; background: #fff; border: 1px solid #c9c9c9;
+        border-radius: 6px; box-shadow: 0 6px 18px rgba(0, 0, 0, .12); }
+      .combo-list button { display: block; width: 100%; text-align: left; padding: 6px 8px;
+        border: 0; background: none; font-size: 13px; cursor: pointer; }
+      .combo-list button:hover { background: #eef3fb; }
+      .combo-empty { padding: 6px 8px; color: #6b7488; font-size: 12px; }
+      /* шапка страницы как в «Полуфабрикатах»: заголовок, счётчик, действия справа */
+      .head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+      .head .page-title { margin: 0; }
+      /* заголовок панели списка */
       .list-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 12px; }
       .list-head h3 { margin: 0; }
-      .new-card { flex: 0 0 auto; white-space: nowrap; font-size: 13px; padding: 7px 14px; }
+      /* метка каталога в списке: фон и иконка из настроек каталога */
+      .cat-chip { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px;
+        line-height: 16px; color: #26303f; vertical-align: baseline; }
     `,
   ],
   template: `
-    <h1 class="page-title">📐 Технологические карты</h1>
+    <div class="head">
+      <h1 class="page-title">📐 Продукция</h1>
+      <span class="badge blue">{{ list().length }} продуктов</span>
+      <div class="spacer"></div>
+      <button class="btn" (click)="duplicate()" [disabled]="!draft()">⧉ Дублировать</button>
+      <button class="btn primary" (click)="newCard()">＋ Новый продукт</button>
+    </div>
     @if (err()) { <div class="err">{{ err() }}</div> }
     @if (msg()) { <div class="ok-msg">{{ msg() }}</div> }
 
@@ -52,23 +84,45 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
       <!-- ===== список ===== -->
       <div class="panel" #listEl style="scroll-margin-top: 64px;">
         <div class="list-head">
-          <h3>Техкарты</h3>
-          <button class="btn primary new-card" (click)="newCard()">＋ Новая техкарта</button>
+          <h3>Продукция</h3>
         </div>
         <div class="card-filter">
-          <input type="search" class="cf-search" placeholder="🔍 Поиск по названию"
+          <input type="search" class="cf-search" placeholder="🔍 Название, примечание или ингредиент"
                  [ngModel]="q()" (ngModelChange)="q.set($event)" />
+          <div class="cf-row">
+            <select [ngModel]="catalogFilter()" (ngModelChange)="catalogFilter.set($event)">
+              <option value="">Все каталоги</option>
+              <option value="none">— без каталога —</option>
+              @for (c of catalogs(); track c.id) { <option [value]="c.id.toString()">{{ c.icon ? c.icon + ' ' : '' }}{{ c.name }}</option> }
+            </select>
+            <select [ngModel]="ingredientFilter()" (ngModelChange)="ingredientFilter.set($event)">
+              <option value="">Любой ингредиент</option>
+              <optgroup label="Сырьё">
+                @for (p of products(); track p.id) { <option [value]="'raw:' + p.id">{{ p.name }}</option> }
+              </optgroup>
+              <optgroup label="Полуфабрикаты">
+                @for (s of semis(); track s.id) { <option [value]="'semi:' + s.id">{{ s.name }}</option> }
+              </optgroup>
+            </select>
+          </div>
+          <div class="cf-meta">
+            <span class="muted">Найдено: {{ filtered().length }} из {{ list().length }}</span>
+            @if (hasFilters()) { <button class="btn sm" (click)="resetFilters()">Сбросить фильтры</button> }
+          </div>
         </div>
         <div class="list-pick">
           @for (c of filtered(); track c.id) {
             <button [class.on]="draft()?.id === c.id" (click)="editCard(c)">
               <b>{{ c.name }}</b>
               <div class="muted" style="font-size:12px">
-                порция {{ trim(c.portionQty) }} {{ c.portionUnitCode }} · позиций {{ c.items.length }}
+                выход {{ trim(c.portionQty) }} {{ c.portionUnitCode }} · позиций {{ c.items.length }}
+                @if (catOf(c.catalogId); as cat) {
+                  · <span class="cat-chip" [style.background]="cat.color || '#eef2f7'">{{ cat.icon ? cat.icon + ' ' : '' }}{{ cat.name }}</span>
+                } @else if (c.catalogName) { · {{ c.catalogName }} }
               </div>
             </button>
           } @empty {
-            <p class="muted">{{ list().length ? 'Ничего не найдено' : 'Техкарт пока нет' }}</p>
+            <p class="muted">{{ list().length ? 'Ничего не найдено' : 'Продукции пока нет' }}</p>
           }
         </div>
       </div>
@@ -76,20 +130,26 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
       <!-- ===== редактор ===== -->
       @if (draft(); as d) {
         <div class="panel" #editorEl style="scroll-margin-top: 64px;">
-          <h3>{{ d.id ? 'Редактирование' : 'Создание' }} техкарты</h3>
+          <h3>{{ d.id ? 'Редактирование' : 'Создание' }} продукта</h3>
           <div class="row">
-            <label class="f" style="flex:2">Название<input [(ngModel)]="d.name" placeholder="Борщ (порция)" /></label>
-            <label class="f">Размер порции<input type="number" [(ngModel)]="d.portionQty" /></label>
+            <label class="f" style="flex:2">Название<input [(ngModel)]="d.name" placeholder="напр. Борщ (400 г)" /></label>
+            <label class="f">Выход<input type="number" [(ngModel)]="d.portionQty" /></label>
             <label class="f">Ед.
               <select [(ngModel)]="d.portionUnitId">
                 @for (u of units(); track u.id) { <option [ngValue]="u.id">{{ u.code }}</option> }
               </select>
             </label>
             <label class="f" style="flex:1">Примечание<input [(ngModel)]="d.note" /></label>
+            <label class="f" style="flex:1">Каталог
+              <select [(ngModel)]="d.catalogId">
+                <option [ngValue]="null">— без каталога —</option>
+                @for (c of catalogs(); track c.id) { <option [ngValue]="c.id">{{ c.icon ? c.icon + ' ' : '' }}{{ c.name }}</option> }
+              </select>
+            </label>
           </div>
           <hr class="hr" />
 
-          <h3>Состав на порцию</h3>
+          <h3>Состав продукта</h3>
           @if (sumHint(); as sh) {
             <div class="row" style="align-items:center; margin-bottom:8px">
               <span class="muted" style="font-size:12px">{{ sh.parts }}</span>
@@ -100,18 +160,29 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
           }
           @for (it of d.items; track $index) {
             <div class="row" style="align-items:center;margin-bottom:6px">
-              <select style="width:140px; min-width:0" [(ngModel)]="it.sourceType" (ngModelChange)="it.refId = null">
+              <select style="width:140px; min-width:0" [(ngModel)]="it.sourceType" (ngModelChange)="it.refId = null; it.unitId = null; it.refQuery = ''">
                 <option value="raw">сырьё</option>
                 <option value="semi">полуфабрикат</option>
+                <option value="product">продукт</option>
               </select>
-              <select style="flex:2 1 140px; min-width:0" [(ngModel)]="it.refId" (ngModelChange)="onPickRef(it)">
-                <option [ngValue]="null">— выбрать —</option>
-                @if (it.sourceType === 'raw') {
-                  @for (p of products(); track p.id) { <option [ngValue]="p.id">{{ p.category }} · {{ p.name }}</option> }
-                } @else {
-                  @for (s of semis(); track s.id) { <option [ngValue]="s.id">{{ s.name }}</option> }
+              <div class="combo">
+                <input type="text" class="combo-input" placeholder="— выбрать —"
+                       [ngModel]="it.refQuery ?? ''"
+                       (ngModelChange)="onRefQuery(it, $event)"
+                       (focus)="openRef($index)"
+                       (blur)="openRefIdx.set(null)"
+                       (keydown.enter)="pickFirst(it)"
+                       (keydown.escape)="openRefIdx.set(null)" />
+                @if (openRefIdx() === $index) {
+                  <div class="combo-list">
+                    @for (o of comboOptions(it); track o.id) {
+                      <button type="button" (mousedown)="$event.preventDefault(); pickRef(it, o)">{{ o.label }}</button>
+                    } @empty {
+                      <div class="combo-empty">Ничего не найдено</div>
+                    }
+                  </div>
                 }
-              </select>
+              </div>
               <input style="width:100px; min-width:0" type="number" [(ngModel)]="it.qty" placeholder="кол-во" />
               <select style="width:75px; min-width:0" [(ngModel)]="it.unitId">
                 @for (u of itemUnits(it); track u.id) { <option [ngValue]="u.id">{{ u.code }}</option> }
@@ -123,7 +194,7 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
 
           <hr class="hr" />
           <div class="row">
-            <button class="btn primary" (click)="save()">💾 Сохранить техкарту</button>
+            <button class="btn primary" (click)="save()">💾 Сохранить продукт</button>
             @if (d.id) {
               <button class="btn" (click)="togglePreview()" [class.primary]="preview().length > 0">🔎 Проверка расхода</button>
               <button class="btn danger" (click)="remove()">Удалить</button>
@@ -134,7 +205,7 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
 
           @if (d.id && showPreview()) {
             <div class="row" style="margin-top:10px; align-items:center">
-              <label class="f">Порций для проверки<input type="number" style="width:100px" [(ngModel)]="previewPortions" (ngModelChange)="loadPreview()" /></label>
+              <label class="f">Единиц для проверки<input type="number" style="width:100px" [(ngModel)]="previewPortions" (ngModelChange)="loadPreview()" /></label>
             </div>
             <table class="tbl">
               <tr><th>Сырьё (с учётом выхода после обработки)</th><th class="num">Нужно</th><th class="num">На складе</th><th></th></tr>
@@ -178,7 +249,7 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
           </div>
         </div>
       } @else {
-        <div class="panel"><p class="muted">Выберите техкарту из списка или создайте новую. Блок-схема показывает, как складское сырьё
+        <div class="panel"><p class="muted">Выберите продукт из списка или создайте новый. Блок-схема показывает, как складское сырьё
           через полуфабрикаты (с учётом выхода после обработки) превращается в готовую продукцию.</p></div>
       }
     </div>
@@ -193,6 +264,7 @@ export class CardsComponent implements OnInit {
   semis = signal<Semi[]>([]);
   products = signal<Product[]>([]);
   units = signal<Unit[]>([]);
+  catalogs = signal<ProductCatalog[]>([]);
   draft = signal<CardDraft | null>(null);
   err = signal('');
   msg = signal('');
@@ -203,15 +275,117 @@ export class CardsComponent implements OnInit {
 
   diagram = signal<{ nodes: DNode[]; edges: DEdge[]; w: number; h: number }>({ nodes: [], edges: [], w: 10, h: 10 });
 
-  /** Фильтр списка техкарт по названию. */
+  /** Фильтры списка продукции: строка поиска, каталог ('' — все, 'none' — без каталога) и ингредиент ('raw:id' | 'semi:id'). */
   q = signal('');
+  catalogFilter = signal('');
+  ingredientFilter = signal('');
+
+  hasFilters = computed(() => !!this.q().trim() || !!this.catalogFilter() || !!this.ingredientFilter());
+
+  /** Каталог продукта — для иконки и фонового цвета в списке. */
+  catOf(catalogId: number | null | undefined): ProductCatalog | undefined {
+    return catalogId == null ? undefined : this.catalogs().find((c) => c.id === catalogId);
+  }
 
   filtered = computed(() => {
     const needle = this.q().trim().toLowerCase();
+    const cat = this.catalogFilter();
+    const ing = this.ingredientFilter();
     return [...this.list()]
-      .filter((c) => !needle || c.name.toLowerCase().includes(needle))
+      .filter((c) => {
+        if (needle) {
+          const hay = [c.name, c.note, ...c.items.map((i) => i.refName ?? '')].join(' ').toLowerCase();
+          if (!hay.includes(needle)) return false;
+        }
+        if (cat) {
+          if (cat === 'none' ? c.catalogId != null : c.catalogId !== Number(cat)) return false;
+        }
+        if (ing) {
+          const sep = ing.indexOf(':');
+          const type = ing.slice(0, sep);
+          const id = Number(ing.slice(sep + 1));
+          if (!c.items.some((i) => i.sourceType === type && i.refId === id)) return false;
+        }
+        return true;
+      })
       .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
   });
+
+  resetFilters(): void {
+    this.q.set('');
+    this.catalogFilter.set('');
+    this.ingredientFilter.set('');
+  }
+
+  /** Продукты для состава: все, кроме текущего (нельзя вкладывать продукт сам в себя). */
+  productRefs = computed(() => {
+    const self = this.draft()?.id;
+    return this.list()
+      .filter((c) => c.id !== self)
+      .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+  });
+
+  /** Индекс позиции, для которой открыт список поиска. */
+  openRefIdx = signal<number | null>(null);
+
+  openRef(index: number): void {
+    this.openRefIdx.set(index);
+  }
+
+  /** Все варианты позиции выбранного типа. */
+  refOptions(it: CardDraftItem): RefOption[] {
+    if (it.sourceType === 'raw') {
+      return this.products().map((p) => ({ id: p.id, label: `${p.category} · ${p.name}` }));
+    }
+    if (it.sourceType === 'semi') {
+      return this.semis().map((s) => ({ id: s.id, label: s.name }));
+    }
+    return this.productRefs().map((c) => ({ id: c.id, label: c.name }));
+  }
+
+  /** Варианты с учётом введённого текста; ровно выбранный пункт не прячет остальные. */
+  comboOptions(it: CardDraftItem): RefOption[] {
+    const opts = this.refOptions(it);
+    let q = (it.refQuery ?? '').trim().toLowerCase();
+    if (q && q === this.refLabel(it).toLowerCase()) q = '';
+    return q ? opts.filter((o) => o.label.toLowerCase().includes(q)) : opts;
+  }
+
+  /** Ввод в поле поиска: точное совпадение сразу фиксирует выбор и единицу. */
+  onRefQuery(it: CardDraftItem, value: string): void {
+    it.refQuery = value;
+    const exact = this.refOptions(it).find((o) => o.label.toLowerCase() === value.trim().toLowerCase());
+    if (exact) {
+      it.refId = exact.id;
+      this.onPickRef(it);
+      return;
+    }
+    it.refId = null;
+    it.unitId = null;
+  }
+
+  pickRef(it: CardDraftItem, o: RefOption): void {
+    it.refQuery = o.label;
+    it.refId = o.id;
+    this.onPickRef(it);
+    this.openRefIdx.set(null);
+  }
+
+  pickFirst(it: CardDraftItem): void {
+    const first = this.comboOptions(it)[0];
+    if (first) this.pickRef(it, first);
+  }
+
+  /** Подпись выбранной позиции (для поля поиска при открытии существующего продукта). */
+  private refLabel(it: { sourceType: 'raw' | 'semi' | 'product'; refId: number | null }): string {
+    if (!it.refId) return '';
+    if (it.sourceType === 'raw') {
+      const p = this.products().find((x) => x.id === it.refId);
+      return p ? `${p.category} · ${p.name}` : '';
+    }
+    if (it.sourceType === 'semi') return this.semis().find((x) => x.id === it.refId)?.name ?? '';
+    return this.list().find((x) => x.id === it.refId)?.name ?? '';
+  }
 
   trim = trim;
   fmtQty = fmtQty;
@@ -221,6 +395,7 @@ export class CardsComponent implements OnInit {
     this.api.semis$().subscribe((s) => this.semis.set(s));
     this.api.products$({ active: 'true' }).subscribe((p) => this.products.set(p));
     this.api.units$().subscribe((u) => this.units.set(u));
+    this.api.productCatalogs$().subscribe((c) => this.catalogs.set(c));
   }
 
   reload(): void {
@@ -234,26 +409,38 @@ export class CardsComponent implements OnInit {
     return this.units().find((u) => u.id === id)?.code ?? '';
   }
 
+  /** Каноничная единица позиции: у сырья/полуфабриката — единица хранения, у продукта — единица выхода. */
+  private refUnitId(it: CardDraftItem): number | null {
+    if (!it.refId) return null;
+    if (it.sourceType === 'raw') return this.products().find((p) => p.id === it.refId)?.unitId ?? null;
+    if (it.sourceType === 'semi') return this.semis().find((s) => s.id === it.refId)?.unitId ?? null;
+    return this.list().find((c) => c.id === it.refId)?.portionUnitId ?? null;
+  }
+
+  /** Коэффициенты пересчёта размерностей позиции; у продукта (tech_card) их нет. */
+  private refConv(it: CardDraftItem): Conv {
+    if (it.sourceType === 'raw') {
+      const p = this.products().find((x) => x.id === it.refId);
+      return p ? { gPerPcs: p.gPerPcs, mlPerPcs: p.mlPerPcs, gPerMl: p.gPerMl } : NO_CONV;
+    }
+    if (it.sourceType === 'semi') {
+      const s = this.semis().find((x) => x.id === it.refId);
+      return s ? { gPerPcs: s.gPerPcs, mlPerPcs: s.mlPerPcs, gPerMl: s.gPerMl } : NO_CONV;
+    }
+    return NO_CONV;
+  }
+
   /**
-   * Единицы для позиции состава: и для сырья, и для полуфабриката — только размерности,
-   * достижимые из каноничной единицы по коэффициентам пересчёта (g_per_pcs/ml_per_pcs/g_per_ml).
-   * Уже выбранная единица остаётся в списке, чтобы select не «слетал».
+   * Единицы для позиции состава: только размерности, достижимые из каноничной единицы
+   * по коэффициентам пересчёта (g_per_pcs/ml_per_pcs/g_per_ml). Уже выбранная единица
+   * остаётся в списке, чтобы select не «слетал».
    */
   itemUnits(it: CardDraftItem): Unit[] {
     const all = this.units();
     if (!it.refId) return all;
-    const ref =
-      it.sourceType === 'raw'
-        ? this.products().find((x) => x.id === it.refId)
-        : this.semis().find((x) => x.id === it.refId);
-    if (!ref) return all;
-    const from =
-      it.sourceType === 'raw'
-        ? (ref as Product).dimension
-        : dimOf(all, (ref as Semi).unitId);
+    const from = dimOf(all, this.refUnitId(it));
     if (!from) return all;
-    const conv = { gPerPcs: ref.gPerPcs, mlPerPcs: ref.mlPerPcs, gPerMl: ref.gPerMl };
-    const dims = reachableDims(from as Dim, conv);
+    const dims = reachableDims(from, this.refConv(it));
     const list = all.filter((u) => dims.has(u.dimension));
     if (it.unitId && !list.some((u) => u.id === it.unitId)) {
       const cur = all.find((u) => u.id === it.unitId);
@@ -262,17 +449,10 @@ export class CardsComponent implements OnInit {
     return list;
   }
 
-  /** При выборе сырья/полуфабриката: если текущая единица недоступна — ставим базовую в каноничной размерности. */
+  /** При выборе позиции сразу подставляем её каноничную единицу (г/мл/шт). */
   onPickRef(it: CardDraftItem): void {
     if (!it.refId) return;
-    const allowed = this.itemUnits(it);
-    if (it.unitId && allowed.some((u) => u.id === it.unitId)) return;
-    const from =
-      it.sourceType === 'raw'
-        ? this.products().find((x) => x.id === it.refId)?.dimension
-        : dimOf(this.units(), this.semis().find((x) => x.id === it.refId)?.unitId);
-    const base = allowed.find((u) => u.dimension === from && u.baseFactor === 1);
-    it.unitId = base?.id ?? allowed[0]?.id ?? null;
+    it.unitId = this.refUnitId(it) ?? this.itemUnits(it)[0]?.id ?? null;
   }
 
   /**
@@ -312,8 +492,9 @@ export class CardsComponent implements OnInit {
     this.msg.set('');
     this.showPreview.set(false);
     this.draft.set({
-      id: null, name: '', note: '', portionQty: 400,
+      id: null, name: '', note: '', portionQty: 1000,
       portionUnitId: this.units().find((u) => u.code === 'г')?.id ?? null,
+      catalogId: null,
       items: [],
     });
     this.buildDiagram();
@@ -327,7 +508,11 @@ export class CardsComponent implements OnInit {
     this.draft.set({
       id: c.id, name: c.name, note: c.note,
       portionQty: c.portionQty, portionUnitId: c.portionUnitId,
-      items: c.items.map((i) => ({ sourceType: i.sourceType, refId: i.refId, qty: i.qty, unitId: i.unitId })),
+      catalogId: c.catalogId ?? null,
+      items: c.items.map((i) => ({
+        sourceType: i.sourceType, refId: i.refId, qty: i.qty, unitId: i.unitId,
+        refQuery: this.refLabel(i),
+      })),
     });
     this.buildDiagram();
     this.revealEditor();
@@ -358,7 +543,7 @@ export class CardsComponent implements OnInit {
   addItem(): void {
     const d = this.draft();
     if (!d) return;
-    d.items.push({ sourceType: 'raw', refId: null, qty: null, unitId: this.units().find((u) => u.code === 'г')?.id ?? null });
+    d.items.push({ sourceType: 'raw', refId: null, qty: null, unitId: this.units().find((u) => u.code === 'г')?.id ?? null, refQuery: '' });
     this.draft.set({ ...d });
     this.buildDiagram();
   }
@@ -368,7 +553,7 @@ export class CardsComponent implements OnInit {
     if (!d) return;
     this.err.set('');
     if (!d.name.trim() || !d.portionQty || !d.portionUnitId) {
-      this.err.set('Заполните название и размер порции');
+      this.err.set('Заполните название и выход');
       return;
     }
     const items = d.items
@@ -379,10 +564,10 @@ export class CardsComponent implements OnInit {
       this.err.set('Добавьте хотя бы одну позицию состава');
       return;
     }
-    const body = { name: d.name.trim(), note: d.note, portionQty: d.portionQty, portionUnitId: d.portionUnitId, items };
+    const body = { name: d.name.trim(), note: d.note, portionQty: d.portionQty, portionUnitId: d.portionUnitId, catalogId: d.catalogId, items };
     const sub = {
       next: () => {
-        this.msg.set(`Техкарта «${d.name}» сохранена ✓`);
+        this.msg.set(`Продукт «${d.name}» сохранён ✓`);
         this.reload();
       },
       error: (e: unknown) => this.err.set(httpErr(e)),
@@ -391,11 +576,30 @@ export class CardsComponent implements OnInit {
     else this.api.createCard(body).subscribe(sub);
   }
 
+  /** Копия продукта как новый черновик (без сохранения) — проверьте и сохраните. */
+  duplicate(): void {
+    const d = this.draft();
+    if (!d) return;
+    const name = d.name.trim() || 'продукт';
+    this.err.set('');
+    this.showPreview.set(false);
+    this.preview.set([]);
+    this.draft.set({
+      ...d,
+      id: null,
+      name: `${name} (копия)`,
+      items: d.items.map((i) => ({ ...i })),
+    });
+    this.msg.set(`Копия «${name}» создана — измените название и сохраните`);
+    this.buildDiagram();
+    this.revealEditor();
+  }
+
   remove(): void {
     const d = this.draft();
-    if (!d?.id || !confirm(`Удалить техкарту «${d.name}»?`)) return;
+    if (!d?.id || !confirm(`Удалить продукт «${d.name}»?`)) return;
     this.api.deleteCard(d.id).subscribe({
-      next: () => { this.draft.set(null); this.msg.set('Техкарта удалена'); this.reload(); },
+      next: () => { this.draft.set(null); this.msg.set('Продукт удалён'); this.reload(); },
       error: (e) => this.err.set(httpErr(e)),
     });
   }
@@ -420,13 +624,14 @@ export class CardsComponent implements OnInit {
     const d = this.draft();
     if (!d) { this.diagram.set({ nodes: [], edges: [], w: 10, h: 10 }); return; }
 
-    const NODE_H = 42, GAP = 14, HCOL = 54, W1 = 190, W2 = 210, W3 = 220, X1 = 16, y0 = 14;
-    const semiById = (id: number | null) => (id == null ? undefined : this.semis().find((x) => x.id === id));
+    const NODE_H = 42, GAP = 14, HCOL = 54, W1 = 190, W2 = 210, W3 = 210, W4 = 220, X1 = 16, y0 = 14;
+    const semiById = (id: number) => this.semis().find((x) => x.id === id);
+    const cardById = new Map(this.list().map((c) => [c.id, c]));
 
-    // рекурсивно собираем ВСЕ достижимые полуфабрикаты (включая вложенные) и листовое сырьё
+    // рекурсивно собираем все достижимые полуфабрикаты, продукты-ингредиенты и листовое сырьё
     const allSemis = new Map<number, Semi>();
+    const allProducts = new Map<number, TechCard>();
     const rawIds = new Set<number>();
-    for (const i of d.items) if (i.sourceType === 'raw' && i.refId) rawIds.add(i.refId);
 
     const visitSemi = (sid: number, path: Set<number>) => {
       if (path.has(sid)) return; // цикл
@@ -439,7 +644,26 @@ export class CardsComponent implements OnInit {
         else visitSemi(inp.refId, npath);
       }
     };
-    for (const it of d.items) if (it.sourceType === 'semi' && it.refId) visitSemi(it.refId, new Set());
+
+    const visitProduct = (pid: number, path: Set<number>) => {
+      if (path.has(pid)) return; // цикл
+      const c = cardById.get(pid);
+      if (!c) return;
+      allProducts.set(pid, c);
+      const npath = new Set([...path, pid]);
+      for (const it of c.items) {
+        if (it.sourceType === 'raw') rawIds.add(it.refId);
+        else if (it.sourceType === 'semi') visitSemi(it.refId, new Set());
+        else visitProduct(it.refId, npath);
+      }
+    };
+
+    for (const it of d.items) {
+      if (!it.refId) continue;
+      if (it.sourceType === 'raw') rawIds.add(it.refId);
+      else if (it.sourceType === 'semi') visitSemi(it.refId, new Set());
+      else visitProduct(it.refId, new Set<number>(d.id ? [d.id] : []));
+    }
 
     const rawList = [...rawIds]
       .map((id) => this.products().find((p) => p.id === id))
@@ -466,9 +690,10 @@ export class CardsComponent implements OnInit {
     const rawCols = Math.ceil((rawList.length || 1) / rowsPerCol);
     const rawBlockW = rawCols * W1 + (rawCols - 1) * HCOL;
     const X2 = X1 + rawBlockW + HCOL;
-    // колонки полуфабрикатов по уровням: уровень 0 ближе к сырьём
+    // колонки полуфабрикатов по уровням: уровень 0 ближе к сырью
     const semiBlockW = (maxLevel + 1) * W2 + maxLevel * HCOL;
-    const X3 = X2 + semiBlockW + HCOL;
+    const X3 = X2 + semiBlockW + HCOL; // продукты, входящие в состав
+    const X4 = X3 + W3 + HCOL; // текущий продукт
 
     const nodes: DNode[] = [];
     const edges: DEdge[] = [];
@@ -500,6 +725,17 @@ export class CardsComponent implements OnInit {
       nodes.push(n); posOf.set(n.id, n);
     });
 
+    // продукты-ингредиенты одной колонкой после полуфабрикатов
+    let productRow = 0;
+    for (const c of allProducts.values()) {
+      const n: DNode = {
+        id: `p${c.id}`, label: c.name,
+        sub: `продукт · выход ${trim(c.portionQty)} ${c.portionUnitCode}`,
+        cls: 'card', x: X3, y: y0 + productRow * (NODE_H + GAP), w: W3, h: NODE_H,
+      };
+      nodes.push(n); posOf.set(n.id, n); productRow++;
+    }
+
     // рёбра входов -> полуфабрикат (сырьё->semi и semi->semi одинаково)
     for (const s of semiList) {
       const to = posOf.get(`s${s.id}`)!;
@@ -518,21 +754,34 @@ export class CardsComponent implements OnInit {
       }
     }
 
-    const maxSemiRows = Math.max(1, ...[...perLevelCount.values()]);
-    const contentH = Math.max(rowsPerCol, maxSemiRows) * (NODE_H + GAP) - GAP;
+    // рёбра состава продукта-ингредиента -> узел продукта
+    for (const c of allProducts.values()) {
+      const to = posOf.get(`p${c.id}`)!;
+      for (const it of c.items) {
+        const from = posOf.get(this.nodeIdOf(it.sourceType, it.refId));
+        if (!from) continue;
+        edges.push({
+          x1: from.x + from.w, y1: from.y + from.h / 2, x2: to.x, y2: to.y + to.h / 2,
+          label: `${trim(it.qty)} ${it.unitCode ?? ''}`,
+        });
+      }
+    }
 
-    // узел техкарты
+    const maxSemiRows = Math.max(1, ...[...perLevelCount.values()]);
+    const contentH = Math.max(rowsPerCol, maxSemiRows, allProducts.size) * (NODE_H + GAP) - GAP;
+
+    // узел продукта
     const cardNode: DNode = {
-      id: 'card', label: d.name || 'новая техкарта',
-      sub: d.portionQty ? `порция ${trim(d.portionQty)} ${this.unitCode(d.portionUnitId)}` : '',
-      cls: 'card', x: X3, y: y0 + contentH / 2 - NODE_H / 2, w: W3, h: NODE_H,
+      id: 'card', label: d.name || 'новый продукт',
+      sub: d.portionQty ? `выход ${trim(d.portionQty)} ${this.unitCode(d.portionUnitId)}` : '',
+      cls: 'card', x: X4, y: y0 + contentH / 2 - NODE_H / 2, w: W4, h: NODE_H,
     };
     nodes.push(cardNode);
 
-    // рёбра составных позиций техкарты -> карточка
+    // рёбра составных позиций продукта -> карточка
     for (const it of d.items) {
       if (!it.refId) continue;
-      const from = posOf.get(it.sourceType === 'semi' ? `s${it.refId}` : `r${it.refId}`);
+      const from = posOf.get(this.nodeIdOf(it.sourceType, it.refId));
       if (!from) continue;
       edges.push({
         x1: from.x + from.w, y1: from.y + from.h / 2, x2: cardNode.x, y2: cardNode.y + cardNode.h / 2,
@@ -541,7 +790,12 @@ export class CardsComponent implements OnInit {
     }
 
     const bottom = Math.max(y0 + contentH, cardNode.y + NODE_H) + 16;
-    this.diagram.set({ nodes, edges, w: X3 + W3 + 16, h: bottom });
+    this.diagram.set({ nodes, edges, w: X4 + W4 + 16, h: bottom });
+  }
+
+  /** id узла схемы для позиции состава. */
+  private nodeIdOf(sourceType: 'raw' | 'semi' | 'product', refId: number): string {
+    return sourceType === 'semi' ? `s${refId}` : sourceType === 'product' ? `p${refId}` : `r${refId}`;
   }
 
   /** Адаптивная кривизна bezier: не больше половины горизонтального зазора, чтобы линии не петляли. */

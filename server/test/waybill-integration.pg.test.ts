@@ -1,7 +1,7 @@
 /**
  * Интеграционные тесты умного прихода и отката накладной на РЕАЛЬНОМ Postgres.
- * Поднимает отдельную базу mixmarkt_crm_test (не трогает рабочую), прогоняет все
- * миграции sql/ и проверяет ключевые сценарии настоящим SQL: перевод единиц,
+ * Поднимает отдельную базу mixmarkt_crm_test (не трогает рабочую), прогоняет
+ * единый sql/init.sql и проверяет ключевые сценарии настоящим SQL: перевод единиц,
  * средневзвешенная себестоимость (numeric, а не строка), сторно «как будто не было»,
  * псевдонимы при подтверждении импорта и защиту от отката уже растащенного товара.
  *
@@ -57,10 +57,10 @@ async function ensureReady(): Promise<Ctx | null> {
     await probe.end();
   }
 
-  // 3) перевести пул приложения на тестовую базу (db.ts читает env при импорте) и прогнать миграции
+  // 3) перевести пул приложения на тестовую базу (db.ts читает env при импорте) и инициализировать схему
   process.env.PGDATABASE = TEST_DB;
-  const { migrate } = await import('../src/migrate');
-  await migrate();
+  const { initDb } = await import('../src/init-db');
+  await initDb();
   const dbMod = await import('../src/db');
   const pool = dbMod.pool;
   const wbMod = await import('../src/routes/waybills');
@@ -70,7 +70,7 @@ async function ensureReady(): Promise<Ctx | null> {
     const { rows } = await pool.query('select id from units where code = $1', [code]);
     return rows[0].id as number;
   };
-  // после миграции 009 в справочнике units остаются только базовые единицы (г/мл/шт) — схема это закрепляет check-констрейнтом
+  // в справочнике units остаются только базовые единицы (г/мл/шт) — схема это закрепляет check-констрейнтом
   const U = { g: await uid('г'), ml: await uid('мл'), pcs: await uid('шт') };
 
   const S = Math.random().toString(36).slice(2, 7).toUpperCase();

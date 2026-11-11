@@ -11,6 +11,10 @@ export class ApiService {
   // ---- meta ----
   units$(): Observable<M.Unit[]> { return this.http.get<M.Unit[]>(`${this.base}/meta/units`); }
   categories$(): Observable<string[]> { return this.http.get<string[]>(`${this.base}/meta/categories`); }
+  /** Справочник категорий номенклатуры (управляется в настройках). */
+  categoriesDictionary$(): Observable<{ id: number; name: string }[]> {
+    return this.http.get<{ id: number; name: string }[]>(`${this.base}/meta/categories-dictionary`);
+  }
 
   // ---- products ----
   products$(params?: Record<string, string>): Observable<M.Product[]> {
@@ -79,6 +83,9 @@ export class ApiService {
 
   // ---- cards ----
   cards$(): Observable<M.TechCard[]> { return this.http.get<M.TechCard[]>(`${this.base}/cards`); }
+  productCatalogs$(): Observable<M.ProductCatalog[]> {
+    return this.http.get<M.ProductCatalog[]>(`${this.base}/meta/product-catalogs`);
+  }
   createCard(body: unknown): Observable<{ id: number }> { return this.http.post<{ id: number }>(`${this.base}/cards`, body); }
   patchCard(id: number, body: unknown): Observable<unknown> { return this.http.patch(`${this.base}/cards/${id}`, body); }
   deleteCard(id: number): Observable<unknown> { return this.http.delete(`${this.base}/cards/${id}`); }
@@ -112,8 +119,9 @@ export class ApiService {
 
   // ---- страница своего магазина (магазинный сотрудник) ----
   myStore$(): Observable<M.MyStore> { return this.http.get<M.MyStore>(`${this.base}/store`); }
-  patchMyStore$(body: unknown): Observable<{ ok: boolean }> {
-    return this.http.patch<{ ok: boolean }>(`${this.base}/store`, body);
+  /** Продукция производства для формы заказа магазина (только чтение). */
+  storeOrderCatalog$(): Observable<M.OrderCatalogItem[]> {
+    return this.http.get<M.OrderCatalogItem[]>(`${this.base}/store/order-catalog`);
   }
 
   // ---- журнал действий (кто, что, когда) ----
@@ -134,23 +142,31 @@ export class ApiService {
 
   // ---- категории сырья (в настройках, только админ) ----
   rawCategories$(): Observable<M.RawCategory[]> { return this.http.get<M.RawCategory[]>(`${this.base}/settings/raw-categories`); }
-  createRawCategory$(name: string): Observable<{ id: number; name: string }> {
-    return this.http.post<{ id: number; name: string }>(`${this.base}/settings/raw-categories`, { name });
+  createRawCategory$(name: string, icon = '', color = ''): Observable<{ id: number; name: string }> {
+    return this.http.post<{ id: number; name: string }>(`${this.base}/settings/raw-categories`, { name, icon, color });
   }
-  renameRawCategory$(id: number, name: string): Observable<{ ok: boolean }> {
-    return this.http.patch<{ ok: boolean }>(`${this.base}/settings/raw-categories/${id}`, { name });
+  updateRawCategory$(id: number, patch: { name?: string; icon?: string; color?: string }): Observable<{ ok: boolean }> {
+    return this.http.patch<{ ok: boolean }>(`${this.base}/settings/raw-categories/${id}`, patch);
   }
   deleteRawCategory$(id: number): Observable<{ ok: boolean }> {
     return this.http.delete<{ ok: boolean }>(`${this.base}/settings/raw-categories/${id}`);
   }
-  rawCategoryProducts$(id: number): Observable<M.RawProductRef[]> {
-    return this.http.get<M.RawProductRef[]>(`${this.base}/settings/raw-categories/${id}/products`);
-  }
-  assignRawProducts$(catId: number, productIds: number[]): Observable<{ ok: boolean }> {
-    return this.http.put<{ ok: boolean }>(`${this.base}/settings/raw-categories/${catId}/products`, { productIds });
-  }
   allRawProducts$(): Observable<M.RawProductRef[]> {
     return this.http.get<M.RawProductRef[]>(`${this.base}/settings/raw-products-all`);
+  }
+
+  // ---- каталог продукции (в настройках, только админ) ----
+  productCatalogList$(): Observable<M.ProductCatalog[]> {
+    return this.http.get<M.ProductCatalog[]>(`${this.base}/settings/product-catalogs`);
+  }
+  createProductCatalog$(name: string, icon = '', color = ''): Observable<M.ProductCatalog> {
+    return this.http.post<M.ProductCatalog>(`${this.base}/settings/product-catalogs`, { name, icon, color });
+  }
+  updateProductCatalog$(id: number, patch: { name?: string; icon?: string; color?: string }): Observable<{ ok: boolean }> {
+    return this.http.patch<{ ok: boolean }>(`${this.base}/settings/product-catalogs/${id}`, patch);
+  }
+  deleteProductCatalog$(id: number): Observable<{ ok: boolean }> {
+    return this.http.delete<{ ok: boolean }>(`${this.base}/settings/product-catalogs/${id}`);
   }
 
   // ---- подсказки ИИ: спросить значение, подставить в поле (сохраняет человек) ----

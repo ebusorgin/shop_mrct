@@ -11,7 +11,8 @@ import { Conv, Dim, toBaseClient } from './units';
  *   нужно входа = qty × (желаемый выход ÷ out_qty), дополнительно ÷ (yield_pct / 100), если выход задан
  * Выход после обработки — отношение МАСС, а не штук: для штучного входа потери считаются
  * через «грамм в 1 шт» самого входа, иначе «÷ 90 %» делил бы яйца.
- * Никаких своих домыслов: выход НЕ равняется сумме входящих, размерности переводятся
+ * Выход заготовки — сумма количеств входов, приведённая к единице выхода (потери влияют
+ * только на расход сырья, а не на вес готовой заготовки); размерности переводятся
  * только по заданным коэффициентам (g_per_pcs / ml_per_pcs / g_per_ml).
  */
 
@@ -192,6 +193,62 @@ function missingConvHint(from: Dim, to: Dim): { text: string; field: ConvField }
 }
 
 /**
+ * Дыра в пересчёте к единице ВЫХОДА: такой вход не свести к «выходу по составу»,
+ * пока у записи (или у самой заготовки) не задан коэффициент.
+ * `target=self` — выход в штуках, коэффициент живёт в самой заготовке (блок A);
+ * `target=input` — коэффициент живёт в записи входа (продукт/вложенная заготовка).
+ */
+export interface OutGap {
+  /** Стабильный ключ: одна и та же запись в составе даёт одну правку. */
+  key: string;
+  /** Чья это запись (или сама заготовка) — что показываем в предупреждении. */
+  name: string;
+  text: string;
+  field: ConvField;
+  target: { kind: 'input'; sourceType: SourceKind; refId: number } | { kind: 'self' };
+}
+
+/**
+ * Почему «Выход по составу» не считается: для каждого входа без пути пересчёта
+ * к единице выхода отдаём место, где задаётся недостающий коэффициент.
+ */
+export function outputGaps(ctx: SemiCtx, d: SemiDraft): OutGap[] {
+  const outU = d.unitId == null ? undefined : ctx.units.find((u) => u.id === d.unitId);
+  if (!outU) return [];
+  const seen = new Set<string>();
+  const out: OutGap[] = [];
+  for (const a of d.inputs) {
+    if (a.refId == null) continue;
+    const q = Number(a.qty ?? 0);
+    if (!(q > 0)) continue;
+    const ref = refInfo(ctx, a.sourceType, a.refId);
+    const inU = ref?.unitId == null ? undefined : ctx.units.find((u) => u.id === ref.unitId);
+    if (!ref || !inU || inU.dimension === outU.dimension) continue;
+    // зеркало compositionOut: для штучного выхода коэффициенты берём у самой заготовки
+    const conv =
+      outU.dimension === 'count'
+        ? { ...ref.conv, gPerPcs: d.gPerPcs ?? ref.conv.gPerPcs, mlPerPcs: d.mlPerPcs ?? ref.conv.mlPerPcs }
+        : ref.conv;
+    if (toBaseClient(ctx.units, q, ref.unitId, d.unitId, conv) != null) continue;
+    const hint = missingConvHint(inU.dimension as Dim, outU.dimension as Dim);
+    const self = outU.dimension === 'count';
+    const key = self
+      ? `out|self|${hint.field}`
+      : `out|input|${a.sourceType}|${a.refId}|${hint.field}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      key,
+      name: self ? 'Выход заготовки в штуках' : ref.name,
+      text: self ? `${hint.text} — коэффициент нужен у самой заготовки` : hint.text,
+      field: hint.field,
+      target: self ? { kind: 'self' } : { kind: 'input', sourceType: a.sourceType, refId: a.refId },
+    });
+  }
+  return out;
+}
+
+/**
  * Перевести количество ВХОДА в каноничную единицу этого входа.
  * Возвращает { qty, warn } — warn ставится, когда пути пересчёта нет (число остаётся
  * в исходной размерности; молча подменять коэффициент не будем).
@@ -356,7 +413,8 @@ export function expandComposition(
     // количество входа в его собственной базовой единице
     let q = q0 * k;
     let inGrams = false;
-    let basis = `на партию ${trimNum(q0)} ${ref.unitCode} × (${trimNum(outQty)} ÷ партия ${trimNum(batchOut)})`;
+    let basis = `на партию ${trimNum(q0)} ${ref.unitCode}`;
+    if (k !== 1) basis += ` × (${trimNum(outQty)} ÷ партия ${trimNum(batchOut)})`;
     const y = Number(edge.yieldPct ?? 0);
     if (y > 0 && y < 100) {
       const dim = ref.unitId == null ? undefined : ctx.units.find((u) => u.id === ref.unitId)?.dimension;
@@ -699,4 +757,9 @@ export function fmtBase(qty: number, unitCode: string): string {
   if (unitCode === 'г') return abs >= 1000 ? `${trimNum(abs / 1000)} кг` : `${trimNum(abs)} г`;
   if (unitCode === 'мл') return abs >= 1000 ? `${trimNum(abs / 1000)} л` : `${trimNum(abs)} мл`;
   return `${trimNum(abs)} ${unitCode}`;
+}
+
+/** Количество ровно как посчитано, в базовой единице — без укрупнения в кг/л. */
+export function fmtExact(qty: number, unitCode: string): string {
+  return `${trimNum(qty)} ${unitCode}`.trim();
 }

@@ -106,11 +106,11 @@ settingsRouter.get(
   '/raw-categories',
   wrap(async (_req, res) => {
     const { rows } = await pool.query(
-      `select pc.id, pc.name,
+      `select pc.id, pc.name, pc.icon, pc.color,
               count(p.id) filter (where p.active)::int as "productCount"
          from product_categories pc
          left join products p on lower(btrim(p.category)) = pc.name
-        group by pc.id, pc.name
+        group by pc.id, pc.name, pc.icon, pc.color
         order by pc.name`
     );
     res.json(rows);
@@ -123,9 +123,16 @@ settingsRouter.post(
   wrap(async (req, res) => {
     const name = reqStr(req.body, 'name').toLowerCase().trim();
     if (!name || name === 'прочее') return res.status(400).json({ error: 'Некорректное имя' });
+    const icon = catalogIcon(req.body.icon);
+    const color = catalogColor(req.body.color);
+    if (icon) {
+      const { rows: busy } = await pool.query('select name from product_categories where icon = $1', [icon]);
+      if (busy.length) throw new ApiError(409, `Иконка ${icon} уже используется категорией «${busy[0].name}»`);
+    }
     const { rows } = await pool.query(
-      `insert into product_categories (name) values ($1) on conflict (name) do nothing returning id, name`,
-      [name]
+      `insert into product_categories (name, icon, color) values ($1, $2, $3)
+       on conflict (name) do nothing returning id, name, icon, color`,
+      [name, icon, color]
     );
     if (!rows.length) return res.status(409).json({ error: 'Уже существует' });
     await audit(req.user, { action: 'create', entity: 'setting', entityId: `rawcat:${rows[0].id}`, title: `Категория сырья «${name}»` });
@@ -133,25 +140,35 @@ settingsRouter.post(
   })
 );
 
-/** Переименовать категорию сырья (каскадно правит products.category). */
+/** Изменить категорию сырья: имя, иконку и/или цвет (поле отсутствует — не трогаем). */
 settingsRouter.patch(
   '/raw-categories/:id',
   wrap(async (req, res) => {
     const id = Number(req.params.id);
-    const name = reqStr(req.body, 'name').toLowerCase().trim();
+    const { rows: cur } = await pool.query('select name, icon, color from product_categories where id = $1', [id]);
+    if (!cur.length) throw new ApiError(404, 'Категория не найдена');
+    const has = (field: string) => Object.prototype.hasOwnProperty.call(req.body ?? {}, field);
+    const name = has('name') ? reqStr(req.body, 'name').toLowerCase().trim() : (cur[0].name as string);
     if (!name || name === 'прочее') return res.status(400).json({ error: 'Некорректное имя' });
+    const icon = has('icon') ? catalogIcon(req.body.icon) : (cur[0].icon as string);
+    const color = has('color') ? catalogColor(req.body.color) : (cur[0].color as string);
+    if (icon) {
+      const { rows: busy } = await pool.query(
+        'select name from product_categories where icon = $1 and id <> $2',
+        [icon, id]
+      );
+      if (busy.length) throw new ApiError(409, `Иконка ${icon} уже используется категорией «${busy[0].name}»`);
+    }
     await tx(async (client) => {
-      const { rows: cur } = await client.query('select name from product_categories where id = $1', [id]);
-      if (!cur.length) throw new ApiError(404, 'Категория не найдена');
-      const old = cur[0].name as string;
-      if (old === name) return;
-      const { rows: clash } = await client.query('select 1 from product_categories where name = $2 and id <> $1', [id, name]);
-      if (clash.length) throw new ApiError(409, 'Такая категория уже есть');
-      await client.query('update product_categories set name = $2 where id = $1', [id, name]);
-      await client.query('update products set category = $2 where lower(btrim(category)) = $1', [old, name]);
+      if (name !== cur[0].name) {
+        const { rows: clash } = await client.query('select 1 from product_categories where name = $2 and id <> $1', [id, name]);
+        if (clash.length) throw new ApiError(409, 'Такая категория уже есть');
+        await client.query('update products set category = $2 where lower(btrim(category)) = $1', [cur[0].name, name]);
+      }
+      await client.query('update product_categories set name = $2, icon = $3, color = $4 where id = $1', [id, name, icon, color]);
     });
     await audit(req.user, { action: 'update', entity: 'setting', entityId: `rawcat:${id}`, title: `Категория сырья → «${name}»` });
-    res.json({ ok: true });
+    res.json({ ok: true, name, icon, color });
   })
 );
 
@@ -171,58 +188,114 @@ settingsRouter.delete(
   })
 );
 
-/** Позиции сырья в категории (активные) — для дерева. */
-settingsRouter.get(
-  '/raw-categories/:id/products',
-  wrap(async (req, res) => {
-    const { rows } = await pool.query(
-      `select p.id, p.name
-         from products p
-         join product_categories pc on pc.id = $1 and lower(btrim(p.category)) = pc.name
-        where p.active
-        order by p.name`,
-      [Number(req.params.id)]
-    );
-    res.json(rows);
-  })
-);
-
-/** Замена набора позиций категории: перечисленные → в категорию, прочие активные из неё → «прочее». */
-settingsRouter.put(
-  '/raw-categories/:id/products',
-  wrap(async (req, res) => {
-    const catId = Number(req.params.id);
-    const raw = Array.isArray(req.body?.productIds) ? req.body.productIds : [];
-    const ids = (raw as unknown[]).map(Number).filter((n) => Number.isFinite(n));
-    await tx(async (client) => {
-      const { rows: cur } = await client.query('select name from product_categories where id = $1', [catId]);
-      if (!cur.length) throw new ApiError(404, 'Категория не найдена');
-      const name = cur[0].name as string;
-      await client.query(
-        `update products set category = 'прочее'
-          where active and lower(btrim(category)) = $1 and not (id = any($2::int[]))`,
-        [name, ids]
-      );
-      if (ids.length) {
-        await client.query('update products set category = $1 where id = any($2::int[]) and active', [name, ids]);
-      }
-    });
-    await audit(req.user, { action: 'update', entity: 'setting', entityId: `rawcat:${catId}`, title: `Привязка сырья (${ids.length})` });
-    res.json({ ok: true });
-  })
-);
-
-/** Все активные позиции сырья с категорией (null — «прочее»/вне словаря) для дерева и пикера. */
+/** Все активные позиции сырья с категорией (null — «прочее»/вне словаря) и параметрами карточки. */
 settingsRouter.get(
   '/raw-products-all',
   wrap(async (_req, res) => {
     const { rows } = await pool.query(
-      `select p.id, p.name, pc.id as "categoryId"
+      `select p.id, p.name, pc.id as "categoryId", u.code as "unitCode",
+              p.min_stock::float8 as "minStock", p.shelf_life_days as "shelfLifeDays"
          from products p
          left join product_categories pc on pc.name = lower(btrim(p.category))
+         left join units u on u.id = p.unit_id
         where p.active
         order by p.name`
     );
     res.json(rows);
+  })
+);
+
+// ============ КАТАЛОГ ПРОДУКЦИИ (готовые продукты, tech_cards) ============
+
+/** Иконка каталога — эмодзи, не больше нескольких символов. */
+function catalogIcon(v: unknown): string {
+  return typeof v === 'string' ? Array.from(v.trim()).slice(0, 8).join('') : '';
+}
+
+/** Фоновый цвет каталога — только #rrggbb (пустая строка = без цвета). */
+function catalogColor(v: unknown): string {
+  const s = typeof v === 'string' ? v.trim() : '';
+  return /^#[0-9a-f]{6}$/i.test(s) ? s.toLowerCase() : '';
+}
+
+/** Список каталогов продукции с количеством продуктов. */
+settingsRouter.get(
+  '/product-catalogs',
+  wrap(async (_req, res) => {
+    const { rows } = await pool.query(
+      `select pc.id, pc.name, pc.icon, pc.color, count(tc.id)::int as "cardCount"
+         from product_catalogs pc
+         left join tech_cards tc on tc.catalog_id = pc.id
+        group by pc.id, pc.name, pc.position, pc.icon, pc.color
+        order by pc.position, pc.name`
+    );
+    res.json(rows);
+  })
+);
+
+/** Создать каталог продукции. */
+settingsRouter.post(
+  '/product-catalogs',
+  wrap(async (req, res) => {
+    const name = reqStr(req.body, 'name').toLowerCase().trim();
+    if (!name) return res.status(400).json({ error: 'Некорректное имя' });
+    const icon = catalogIcon(req.body.icon);
+    const color = catalogColor(req.body.color);
+    if (icon) {
+      const { rows: busy } = await pool.query('select name from product_catalogs where icon = $1', [icon]);
+      if (busy.length) throw new ApiError(409, `Иконка ${icon} уже используется каталогом «${busy[0].name}»`);
+    }
+    const { rows } = await pool.query(
+      `insert into product_catalogs (name, position, icon, color)
+       values ($1, coalesce((select max(position) + 1 from product_catalogs), 1), $2, $3)
+       on conflict (name) do nothing
+       returning id, name, icon, color`,
+      [name, icon, color]
+    );
+    if (!rows.length) return res.status(409).json({ error: 'Уже существует' });
+    await audit(req.user, { action: 'create', entity: 'setting', entityId: `prodcat:${rows[0].id}`, title: `Каталог продукции «${name}»` });
+    res.status(201).json(rows[0]);
+  })
+);
+
+/** Изменить каталог продукции: имя, иконку и/или цвет (поле отсутствует — не трогаем). */
+settingsRouter.patch(
+  '/product-catalogs/:id',
+  wrap(async (req, res) => {
+    const id = Number(req.params.id);
+    const { rows: cur } = await pool.query('select name, icon, color from product_catalogs where id = $1', [id]);
+    if (!cur.length) throw new ApiError(404, 'Каталог не найден');
+    const has = (field: string) => Object.prototype.hasOwnProperty.call(req.body ?? {}, field);
+    const name = has('name') ? reqStr(req.body, 'name').toLowerCase().trim() : cur[0].name;
+    if (!name) return res.status(400).json({ error: 'Некорректное имя' });
+    const icon = has('icon') ? catalogIcon(req.body.icon) : cur[0].icon;
+    const color = has('color') ? catalogColor(req.body.color) : cur[0].color;
+    if (icon) {
+      const { rows: busy } = await pool.query(
+        'select name from product_catalogs where icon = $1 and id <> $2',
+        [icon, id]
+      );
+      if (busy.length) throw new ApiError(409, `Иконка ${icon} уже используется каталогом «${busy[0].name}»`);
+    }
+    if (name !== cur[0].name) {
+      const { rows: clash } = await pool.query('select 1 from product_catalogs where name = $2 and id <> $1', [id, name]);
+      if (clash.length) throw new ApiError(409, 'Такой каталог уже есть');
+    }
+    if (name === cur[0].name && icon === cur[0].icon && color === cur[0].color) return res.json({ ok: true });
+    await pool.query('update product_catalogs set name = $2, icon = $3, color = $4 where id = $1', [id, name, icon, color]);
+    await audit(req.user, { action: 'update', entity: 'setting', entityId: `prodcat:${id}`, title: `Каталог продукции → «${name}»` });
+    res.json({ ok: true, name, icon, color });
+  })
+);
+
+/** Удалить каталог продукции (продукты остаются, но без каталога). */
+settingsRouter.delete(
+  '/product-catalogs/:id',
+  wrap(async (req, res) => {
+    const id = Number(req.params.id);
+    const { rows } = await pool.query('delete from product_catalogs where id = $1 returning id, name', [id]);
+    if (!rows.length) return res.json({ ok: true });
+    await audit(req.user, { action: 'delete', entity: 'setting', entityId: `prodcat:${id}`, title: `Каталог продукции «${rows[0].name}» удалён` });
+    res.json({ ok: true });
   })
 );

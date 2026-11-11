@@ -151,7 +151,7 @@ export async function assertBaseUnit(client: PoolClient, unitId: number, what: s
 
 /**
  * Раскрывает позиции техкарты (кол-во на порцию × порции) в ЧИСТОЕ сырьё со склада.
- * Рекурсия: полуфабрикат может состоять из других полуфабрикатов — разворачиваем цепочку
+ * Рекурсия: позиция может быть полуфабрикатом или другим продуктом — разворачиваем цепочку
  * до листовых сырьевых продуктов с учётом выхода после обработки на каждом уровне.
  * Состав заготовки — АБСОЛЮТНЫЕ количества на партию: вход = количество × (нужный выход ÷ размер партии),
  * а если у входа задан свой выход после обработки — количество делится на него (см. resolveSemi).
@@ -166,34 +166,116 @@ export async function expandCard(
   const semiConv = await loadSemiConv(client);
   const ctx: ExpCtx = { client, units, prodConv, semiConv };
 
-  const { rows: itemRows } = await client.query(
-    `select i.source_type, i.ref_id, i.qty::float8 as qty, i.unit_id,
-            coalesce(p.unit_id, su.unit_id) as ref_unit_id
-       from tech_card_items i
-       left join products p on i.source_type = 'raw'  and p.id = i.ref_id
-       left join semi_products su on i.source_type = 'semi' and su.id = i.ref_id
-      where i.card_id = $1
-      order by i.position, i.id`,
-    [cardId]
-  );
-  if (itemRows.length === 0) throw new ApiError(400, 'В техкарте нет позиций');
+  const items = await loadCardItems(client, cardId);
+  if (items.length === 0) throw new ApiError(400, 'В составе продукта нет позиций');
 
   const need = new Map<number, number>();
   const add = (productId: number, qty: number) =>
     need.set(productId, (need.get(productId) ?? 0) + qty);
 
-  for (const it of itemRows) {
-    const conv = it.source_type === 'raw' ? prodConv.get(it.ref_id) : semiConv.get(it.ref_id);
-    // Рубеж 1: позиция карты (в любой размерности) -> базовая единица выхода товара/полуфабриката.
-    const qtyBase = toBaseCross(it.qty, it.unit_id, it.ref_unit_id, units, conv) * portions;
-    if (it.source_type === 'raw') {
-      add(it.ref_id, qtyBase);
-    } else {
-      await resolveSemi(ctx, it.ref_id, qtyBase, it.ref_unit_id, (await semiUnit(client, it.ref_id)).batchOut, add, new Set([it.ref_id]));
+  const cardPath = new Set<number>([cardId]);
+  for (const it of items) {
+    if (!it.ref_unit_id) {
+      throw new ApiError(400, `В составе продукта: позиция #${it.ref_id} не связана с единицей измерения`);
     }
+    // Рубеж 1: позиция карты (в любой размерности) -> базовая единица выхода товара/полуфабриката/продукта.
+    const qtyBase = toBaseCross(it.qty, it.unit_id, it.ref_unit_id, units, itemConv(ctx, it.source_type, it.ref_id)) * portions;
+    await resolveItem(ctx, it.source_type, it.ref_id, qtyBase, it.ref_unit_id, add, cardPath);
   }
 
   return [...need.entries()].map(([productId, qty]) => ({ productId, qty: round3(qty) }));
+}
+
+type CardSourceType = 'raw' | 'semi' | 'product';
+
+interface CardItemRow {
+  source_type: CardSourceType;
+  ref_id: number;
+  qty: number; // количество на порцию, в базовых единицах самой позиции
+  unit_id: number;
+  ref_unit_id: number | null; // каноничная единица сырья/полуфабриката/продукта
+}
+
+/** Позиции состава техкарты с единицей связанной сущности (products / semi_products / tech_cards). */
+async function loadCardItems(client: PoolClient, cardId: number): Promise<CardItemRow[]> {
+  const { rows } = await client.query(
+    `select i.source_type, i.ref_id, i.qty::float8 as qty, i.unit_id,
+            coalesce(p.unit_id, su.unit_id, tc.portion_unit_id) as ref_unit_id
+       from tech_card_items i
+       left join products p on i.source_type = 'raw'  and p.id = i.ref_id
+       left join semi_products su on i.source_type = 'semi' and su.id = i.ref_id
+       left join tech_cards tc on i.source_type = 'product' and tc.id = i.ref_id
+      where i.card_id = $1
+      order by i.position, i.id`,
+    [cardId]
+  );
+  return rows;
+}
+
+/** Коэффициенты пересчёта размерностей позиции: у продукта (tech_card) их нет. */
+function itemConv(ctx: ExpCtx, sourceType: CardSourceType, refId: number): ProdConv | undefined {
+  if (sourceType === 'raw') return ctx.prodConv.get(refId);
+  if (sourceType === 'semi') return ctx.semiConv.get(refId);
+  return undefined;
+}
+
+/**
+ * Раскрывает одну позицию состава: сырьё добавляется как есть, полуфабрикат/продукт
+ * разворачиваются рекурсивно. `cardPath` — продукты на текущей ветке (защита от циклов).
+ */
+async function resolveItem(
+  ctx: ExpCtx,
+  sourceType: CardSourceType,
+  refId: number,
+  qtyBase: number,
+  refUnitId: number,
+  add: (productId: number, qty: number) => void,
+  cardPath: Set<number>
+): Promise<void> {
+  if (sourceType === 'raw') {
+    add(refId, qtyBase);
+    return;
+  }
+  if (sourceType === 'semi') {
+    const s = await semiUnit(ctx.client, refId);
+    await resolveSemi(ctx, refId, qtyBase, refUnitId, s.batchOut, add, new Set([refId]));
+    return;
+  }
+  if (cardPath.has(refId)) throw new ApiError(400, 'Обнаружен цикл в составе продуктов');
+  await resolveCard(ctx, refId, qtyBase, refUnitId, add, new Set([...cardPath, refId]));
+}
+
+/**
+ * Раскрывает продукт `cardId` (нужно `outQtyBase` баз. ед. его выхода) в сырьё.
+ * Состав продукта задан на порцию `portion_qty`, поэтому все позиции масштабируются на
+ * `outQtyBase / portion_qty`.
+ */
+async function resolveCard(
+  ctx: ExpCtx,
+  cardId: number,
+  outQtyBase: number,
+  cardUnitId: number,
+  add: (productId: number, qty: number) => void,
+  cardPath: Set<number>
+): Promise<void> {
+  const { rows } = await ctx.client.query(
+    'select portion_qty::float8 as qty, portion_unit_id from tech_cards where id = $1',
+    [cardId]
+  );
+  if (!rows.length) throw new ApiError(400, `Продукт #${cardId} не найден`);
+  const portionBase = toBaseCross(Number(rows[0].qty), rows[0].portion_unit_id, cardUnitId, ctx.units);
+  if (!(portionBase > 0)) throw new ApiError(400, `У продукта #${cardId} не задан выход`);
+  const k = outQtyBase / portionBase;
+
+  const items = await loadCardItems(ctx.client, cardId);
+  if (!items.length) throw new ApiError(400, `У продукта #${cardId} пустой состав`);
+  for (const it of items) {
+    if (!it.ref_unit_id) {
+      throw new ApiError(400, `У продукта #${cardId}: позиция #${it.ref_id} не связана с единицей измерения`);
+    }
+    const qtyBase = toBaseCross(it.qty, it.unit_id, it.ref_unit_id, ctx.units, itemConv(ctx, it.source_type, it.ref_id)) * k;
+    await resolveItem(ctx, it.source_type, it.ref_id, qtyBase, it.ref_unit_id, add, cardPath);
+  }
 }
 
 /** Composition of one semi (may reference raw or other semis). */

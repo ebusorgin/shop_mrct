@@ -1,5 +1,5 @@
 import { pool, tx } from './db';
-import { migrate } from './migrate';
+import { initDb } from './init-db';
 import { applyMovement } from './services/stock';
 
 /**
@@ -8,7 +8,7 @@ import { applyMovement } from './services/stock';
  * Идемпотентно: повторно запускать безопасно.
  */
 async function seed(): Promise<void> {
-  await migrate();
+  await initDb();
 
   const unit = async (code: string): Promise<number> => {
     const { rows } = await pool.query('select id from units where code = $1', [code]);
@@ -169,7 +169,7 @@ async function seed(): Promise<void> {
     await tx(async (client) => {
       const { rows } = await client.query(
         `insert into tech_cards (name, portion_qty, portion_unit_id, note)
-         values ('Борщ (порция)', 400, $1, 'Демо-техкарта из ТЗ') returning id`,
+         values ('Борщ (порция)', 400, $1, 'Демо-продукт из ТЗ') returning id`,
         [uG]
       );
       const cardId = rows[0].id as number;
@@ -207,7 +207,7 @@ async function seed(): Promise<void> {
     });
   }
 
-  console.log('[seed] демо-данные загружены: склад + полуфабрикаты + техкарта «Борщ»');
+  console.log('[seed] демо-данные загружены: склад + полуфабрикаты + продукт «Борщ»');
   await pool.end();
 }
 

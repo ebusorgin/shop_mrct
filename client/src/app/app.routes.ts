@@ -24,6 +24,7 @@ export const routes: Routes = [
           { path: 'semis', loadComponent: () => import('./pages/semis.component').then((m) => m.SemisComponent) },
           { path: 'cards', loadComponent: () => import('./pages/cards.component').then((m) => m.CardsComponent) },
           { path: 'constructor', loadComponent: () => import('./pages/constructor.component').then((m) => m.ConstructorComponent) },
+          { path: 'orders', loadComponent: () => import('./orders/orders.component').then((m) => m.OrdersComponent) },
           { path: 'points', loadComponent: () => import('./pages/points.component').then((m) => m.PointsComponent) },
           { path: 'audit', loadComponent: () => import('./pages/audit.component').then((m) => m.AuditComponent) },
           {

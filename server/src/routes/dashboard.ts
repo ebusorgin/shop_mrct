@@ -9,7 +9,7 @@ dashboardRouter.get(
   wrap(async (req, res) => {
     // полные списки (страница «Сроки годности») просят больше строк; панель по умолчанию компактна
     const expiryLimit = Math.min(500, Number(req.query.expiryLimit) || 30);
-    const [stock, today, low, recentBatches, waybills, pendingOrders, nearExpiry] = await Promise.all([
+    const [stock, today, low, recentBatches, waybills, nearExpiry] = await Promise.all([
       pool.query(`
         select count(*) filter (where s.qty > 0)::int as "productsInStock",
                coalesce(sum(s.qty * s.avg_cost), 0)::float8 as "stockValue"
@@ -37,18 +37,6 @@ dashboardRouter.get(
         select count(*)::int as cnt, coalesce(sum(i.qty * i.price), 0)::float8 as total
           from waybills w left join waybill_items i on i.waybill_id = w.id
          where w.doc_date >= date_trunc('month', current_date) and w.status <> 'reversed'`),
-      // Ожидают обработки: позиции ближайшего листа каждого магазина, ещё не принятые производством
-      // (synced / placed). Отмены и собранное не считаем.
-      pool.query(`
-        select o.store_id as "storeId", st.name as "storeName",
-               max(o.date_tab)::text as "dateTab", count(*)::int as cnt
-          from orders o
-          join stores st on st.id = o.store_id and st.active
-         where o.status in ('synced', 'placed')
-           and o.date_tab = (select max(o2.date_tab) from orders o2
-                              where o2.store_id = o.store_id and o2.status in ('synced', 'placed'))
-         group by o.store_id, st.name
-        order by count(*) desc`),
       // Сроки годности по партиям (FIFO). Партий в хранении нет, поэтому остаток склада
       // раскладываем по приходам от самых ранних: расход (и отрицательные корректировки)
       // сначала «съедает» самую старую партию. Так новая партия не продлевает старую и
@@ -123,7 +111,6 @@ dashboardRouter.get(
       lowStock: low.rows,
       recentBatches: recentBatches.rows,
       monthWaybills: waybills.rows[0],
-      pendingOrders: pendingOrders.rows,
       nearExpiry: nearExpiry.rows,
     });
   })

@@ -1,20 +1,14 @@
 /**
  * API магазинного сотрудника: он видит и меняет только свою точку.
  *
- *   GET   /api/store — карточка своей точки + сводка по заказам
+ *   GET   /api/store — карточка своей точки
  *   PATCH /api/store — правка информации о магазине (адрес, телефоны, контакты…)
- *
- * Заказы магазина живут в /api/orders — там те же ручки, что у офиса, но
- * для магазинного сотрудника они автоматически сужены до его точки.
  */
 import { Router } from 'express';
 import { pool } from '../db';
 import { ApiError, wrap } from '../http';
 import { requireStore } from '../services/auth';
 import { audit, diff } from '../services/audit';
-import { deliverySettings } from '../services/settings';
-import { nextDue } from '../services/writeoff';
-import { upcomingDeliveryDates } from '../services/delivery';
 
 export const storeRouter = Router();
 
@@ -33,15 +27,6 @@ const CARD_SQL = `
          s.contact_person as "contactPerson",
          s.opening_hours as "openingHours",
          s.note,
-         (select max(o.date_tab)::text from orders o where o.store_id = s.id) as "lastOrderDate",
-         (select count(distinct o.date_tab)::int from orders o where o.store_id = s.id) as "orderDays",
-         (select count(*)::int from orders o
-           where o.store_id = s.id
-             and o.date_tab = (select max(date_tab) from orders where store_id = s.id)) as "lastDateLines",
-         (select count(*)::int from orders o
-           where o.store_id = s.id and o.status in ('synced', 'placed', 'confirmed')) as "openLines",
-         (select count(*)::int from orders o
-           where o.store_id = s.id and o.date_tab = current_date) as "todayLines",
          (select count(*)::int from users u where u.store_id = s.id and u.active) as "employees"
     from stores s where s.id = $1`;
 
@@ -52,15 +37,7 @@ storeRouter.get(
     const storeId = req.user?.storeId as number;
     const { rows } = await pool.query(CARD_SQL, [storeId]);
     if (!rows.length) throw new ApiError(404, 'Магазин не найден');
-    const delivery = await deliverySettings();
-    const deliveryNext = nextDue(delivery);
-    const deliveryUpcoming = upcomingDeliveryDates(delivery, 4);
-    res.json({
-      ...rows[0],
-      deliveryNext,
-      deliveryUpcoming,
-      deliveryEnabled: delivery.enabled,
-    });
+    res.json(rows[0]);
   })
 );
 
@@ -77,7 +54,7 @@ storeRouter.patch(
     const cur = rows[0];
     if (!cur) throw new ApiError(404, 'Магазин не найден');
 
-    // код/номер/активность меняет только офис: по ним заказы привязаны к точке
+    // код/номер/активность меняет только офис
     const name = optStr(req.body?.name, 120, 'Название');
     if (!name) throw new ApiError(400, 'Название магазина не может быть пустым');
 

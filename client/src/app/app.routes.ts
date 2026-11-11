@@ -25,10 +25,6 @@ export const routes: Routes = [
           { path: 'cards', loadComponent: () => import('./pages/cards.component').then((m) => m.CardsComponent) },
           { path: 'constructor', loadComponent: () => import('./pages/constructor.component').then((m) => m.ConstructorComponent) },
           { path: 'points', loadComponent: () => import('./pages/points.component').then((m) => m.PointsComponent) },
-          { path: 'points/:id', loadComponent: () => import('./pages/point-detail.component').then((m) => m.PointDetailComponent) },
-          { path: 'orders', loadComponent: () => import('./pages/orders-board.component').then((m) => m.OrdersBoardComponent) },
-          { path: 'orders/journal', loadComponent: () => import('./pages/orders-journal.component').then((m) => m.OrdersJournalComponent) },
-          { path: 'orders/:storeId', loadComponent: () => import('./pages/order-store.component').then((m) => m.OrderStoreComponent) },
           { path: 'audit', loadComponent: () => import('./pages/audit.component').then((m) => m.AuditComponent) },
           {
             path: 'users',

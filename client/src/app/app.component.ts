@@ -3,7 +3,6 @@ import { NavigationEnd, Router, RouterOutlet } from '@angular/router';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { TranslatePipe, TranslateDirective } from '@ngx-translate/core';
 import { AuthService } from './core/auth.service';
-import { LiveService } from './core/live.service';
 import { LangService, AppLang } from './core/lang.service';
 import { ToastComponent } from './shared/toast.component';
 
@@ -75,16 +74,11 @@ export class AppComponent {
   auth = inject(AuthService);
   langSvc = inject(LangService);
   private router = inject(Router);
-  private live = inject(LiveService);
   private destroyRef = inject(DestroyRef);
 
   readonly langs: AppLang[] = ['ru', 'en', 'sr'];
 
   constructor() {
-    effect(() => {
-      if (this.auth.user()) this.live.connect();
-      else this.live.disconnect();
-    });
     effect(() => {
       document.documentElement.classList.toggle('menu-lock', this.menu());
     });
@@ -114,12 +108,9 @@ export class AppComponent {
       ],
     },
     {
-      titleKey: 'nav.groupOrders',
-      items: [{ path: 'orders', icon: '🧾', labelKey: 'nav.orders', also: ['points'] }],
-    },
-    {
       titleKey: 'nav.groupOther',
       items: [
+        { path: 'points', icon: '🏪', labelKey: 'nav.points' },
         { path: 'audit', icon: '📜', labelKey: 'nav.audit' },
         { path: 'users', icon: '👤', labelKey: 'nav.users', admin: true },
         { path: 'settings', icon: '⚙️', labelKey: 'nav.settings', admin: true },

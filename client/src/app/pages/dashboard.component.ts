@@ -35,10 +35,6 @@ import { fmtCost, fmtDateTime, fmtMoney, fmtQty, httpErr, trim } from '../core/f
           <a class="quick-btn" routerLink="/stock" [queryParams]="{ tab: 'journal', type: 'writeoff' }">
             <span class="qi">📉</span><span class="qt">Списать продукты<small>расход и корректировки</small></span>
           </a>
-          <a class="quick-btn" [class.hot]="pendingTotal() > 0" routerLink="/orders">
-            <span class="qi">🧾</span><span class="qt">Обработать заказы<small>ждут производства</small></span>
-            @if (pendingTotal() > 0) { <span class="pill amber">{{ pendingTotal() }}</span> }
-          </a>
           <a class="quick-btn" routerLink="/waybills" [queryParams]="{ panel: 'smart' }">
             <span class="qi">🤖</span><span class="qt">Умный приход<small>фото или PDF накладной</small></span>
           </a>
@@ -60,14 +56,10 @@ import { fmtCost, fmtDateTime, fmtMoney, fmtQty, httpErr, trim } from '../core/f
               <div class="t-head"><span class="t-count">{{ soonRows().length }}</span><span class="t-title">истекают партии</span></div>
               <div class="t-sub">@if (expiredCount() > 0) { ⚠ просрочено: {{ expiredCount() }} партий · } ближайшие {{ soonRows().length }} — открыть список</div>
             </a>
-            <a class="tile" routerLink="/orders">
-              <div class="t-head"><span class="t-count">{{ pendingTotal() }}</span><span class="t-title">ожидают обработки</span></div>
-              <div class="t-sub">позиции ближайших листов магазинов · к сборке</div>
-            </a>
           </div>
         }
 
-        @if (data.lowStock.length || data.nearExpiry.length || data.pendingOrders.length) {
+        @if (data.lowStock.length || data.nearExpiry.length) {
           <div class="grid2" style="margin-top:14px">
             <div>
               <h3>📉 Заканчивается на складе</h3>
@@ -181,16 +173,14 @@ export class DashboardComponent implements OnInit {
   trim = trim;
   fmtWhen = fmtDateTime;
 
-  /** сколько позиций заказа ждут производства (сумма по магазинам ближайших листов) */
-  pendingTotal = computed(() => (this.d()?.pendingOrders ?? []).reduce((s, r) => s + r.cnt, 0));
   expiredCount = computed(() => (this.d()?.nearExpiry ?? []).filter((r) => r.status === 'expired').length);
   /**
    * На панели показываем только то, что ещё можно успеть продать/использовать:
    * просроченные партии — отдельным счётчиком, их разбор ведётся на странице «Сроки годности».
    */
   soonRows = computed(() => (this.d()?.nearExpiry ?? []).filter((r) => r.status === 'soon').slice(0, 6));
-  /** «всё спокойно» считается по всем трём группам предупреждений */
-  calm = computed(() => this.lowCount() === 0 && this.expiryCount() === 0 && this.pendingTotal() === 0);
+  /** «всё спокойно» — когда нет ни низких остатков, ни истекающих партий */
+  calm = computed(() => this.lowCount() === 0 && this.expiryCount() === 0);
   lowCount = computed(() => (this.d()?.lowStock ?? []).length);
   expiryCount = computed(() => (this.d()?.nearExpiry ?? []).length);
 

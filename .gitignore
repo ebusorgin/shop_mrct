@@ -29,3 +29,6 @@ client/tmp-*
 *.jpeg
 *.png
 .deploy-tmp/
+
+# ключ сервисного аккаунта Google (устаревшая интеграция) — не коммитить
+server/credentials.json

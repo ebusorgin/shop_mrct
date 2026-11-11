@@ -1,7 +1,7 @@
 /**
  * Настройки CRM (только администратор).
  *
- * Блоки: транспорт GPT + категории товаров (CRUD, привязка/отвязка tech_cards).
+ * Блоки: транспорт GPT + категории сырья (номенклатура склада).
  */
 import { Router } from 'express';
 import { pool, tx } from '../db';
@@ -12,25 +12,11 @@ import {
   GPT_DEFAULTS,
   gptSettings,
   normalizeProxyUrl,
-  normalizeWriteoffSchedule,
-  normalizeDeliverySchedule,
-  deliverySettings,
-  saveDeliverySettings,
-  DELIVERY_DEFAULTS,
   proxyTarget,
   saveGptSettings,
-  saveWriteoffSettings,
   tcpProbe,
-  WRITEOFF_DEFAULTS,
-  writeoffSettings,
-  productionSettings,
-  saveProductionSettings,
-  PRODUCTION_DEFAULTS,
 } from '../services/settings';
-import { nextDue, runWriteOff, writeOffReport, recentWriteOffRuns } from '../services/writeoff';
-import { upcomingDeliveryDates, nextDeliveryDate } from '../services/delivery';
 import { createGptClient } from '../services/gpt-transport';
-import { diff } from '../services/audit';
 
 export const settingsRouter = Router();
 
@@ -40,22 +26,11 @@ settingsRouter.get(
   wrap(async (_req, res) => {
     const gpt = await gptSettings();
     const target = proxyTarget(gpt.proxyUrl);
-    const delivery = await deliverySettings();
-    const production = await productionSettings();
     res.json({
       gpt,
       defaults: GPT_DEFAULTS,
       openai: { keyConfigured: Boolean(config.openaiKey), model: config.openaiModel },
       proxy: { ...target, reachable: await tcpProbe(target.host, target.port) },
-      delivery,
-      deliveryDefaults: DELIVERY_DEFAULTS,
-      deliveryUpcoming: upcomingDeliveryDates(delivery, 4),
-      deliveryNext: nextDue(delivery),
-      writeoff: delivery,
-      writeoffDefaults: DELIVERY_DEFAULTS,
-      writeoffNext: nextDue(delivery),
-      production,
-      productionDefaults: PRODUCTION_DEFAULTS,
     });
   })
 );
@@ -84,32 +59,6 @@ settingsRouter.patch(
   })
 );
 
-/** Сохранить реквизиты производства (Dobavljač). */
-settingsRouter.patch(
-  '/production',
-  wrap(async (req, res) => {
-    const body = req.body ?? {};
-    const before = await productionSettings();
-    const production = await saveProductionSettings(
-      {
-        name: String(body.name ?? ''),
-        address: String(body.address ?? ''),
-        pib: String(body.pib ?? ''),
-        mbr: String(body.mbr ?? ''),
-        accountNo: String(body.accountNo ?? body.account_no ?? ''),
-      },
-      req.user
-    );
-    await audit(req.user, {
-      action: 'update',
-      entity: 'setting',
-      entityId: 'production',
-      title: 'Реквизиты производства',
-      details: diff(before as unknown as Record<string, unknown>, production as unknown as Record<string, unknown>),
-    });
-    res.json({ ok: true, production });
-  })
-);
 
 /**
  * Проверка связи с GPT текущим транспортом: настоящий (короткий) запрос к модели.
@@ -145,222 +94,6 @@ settingsRouter.post(
           : '';
       res.json({ ok: false, ms: Date.now() - started, transport, error: (detail + hint).slice(0, 400) });
     }
-  })
-);
-
-// ============ РАСПИСАНИЕ АВТОСПИСАНИЯ ЗАКАЗОВ ============
-
-/** Сохранить расписание: вкл/выкл, дни недели, список времён, таймзона. */
-settingsRouter.patch(
-  '/writeoff',
-  wrap(async (req, res) => {
-    const before = await writeoffSettings();
-    const next = normalizeWriteoffSchedule(req.body ?? {});
-    const writeoff = await saveWriteoffSettings(next, req.user);
-    await audit(req.user, {
-      action: 'update',
-      entity: 'setting',
-      entityId: 'writeoff',
-      title: writeoff.enabled
-        ? `Автосписание: ${writeoff.dates.length} дн. × ${writeoff.time || '—'}`
-        : 'Автосписание выключено',
-      details: { from: before, to: writeoff },
-    });
-    res.json({ ok: true, writeoff, writeoffNext: nextDue(writeoff) });
-  })
-);
-
-/**
- * Ручной прогон списания (админ): по умолчанию — за сегодняшнюю MSK-дату.
- * firedSlot уникализируется временем запуска, чтобы не упираться в автослот.
- */
-settingsRouter.post(
-  '/writeoff/run',
-  wrap(async (req, res) => {
-    const body = req.body ?? {};
-    const cfg = await writeoffSettings();
-    // дата доставки по таймзоне расписания (en-CA => YYYY-MM-DD); без тела — сегодняшняя
-    const msk = new Intl.DateTimeFormat('en-CA', { timeZone: cfg.tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
-    const deliveryDate = typeof body.deliveryDate === 'string' && body.deliveryDate ? body.deliveryDate : msk;
-    const firedSlot =
-      typeof body.firedSlot === 'string' && body.firedSlot
-        ? body.firedSlot
-        : `manual-${new Date().toISOString().slice(11, 19).replace(/:/g, '')}`;
-    const result = await runWriteOff(deliveryDate, firedSlot, req.user);
-    await audit(req.user, {
-      action: 'post',
-      entity: 'setting',
-      entityId: `writeoff:${deliveryDate}`,
-      title: `Ручное автосписание ${deliveryDate} (${firedSlot})`,
-      details: { deliveryDate, firedSlot, skipped: result.skipped, linesWritten: result.linesWritten, batches: result.batches },
-    });
-    res.json({
-      ok: !result.error,
-      skipped: result.skipped,
-      deliveryDate,
-      firedSlot,
-      linesWritten: result.linesWritten,
-      batches: result.batches,
-      error: result.error,
-    });
-  })
-);
-
-// ============ РАСПИСАНИЕ ДОСТАВОК ============
-
-/** Сохранить дни доставки: какие дни недели + таймзона. */
-settingsRouter.patch(
-  '/delivery',
-  wrap(async (req, res) => {
-    const before = await deliverySettings();
-    const next = normalizeDeliverySchedule(req.body ?? {});
-    const delivery = await saveDeliverySettings(next, req.user);
-    await audit(req.user, {
-      action: 'update',
-      entity: 'setting',
-      entityId: 'delivery',
-      title: `Дни доставки: ${delivery.dates.length} дат`,
-      details: { from: before, to: delivery },
-    });
-    res.json({ ok: true, delivery, deliveryUpcoming: upcomingDeliveryDates(delivery, 4), deliveryNext: nextDue(delivery) });
-  })
-);
-
-/** Отчёт по автосписанию за дату доставки (админ): готовая продукция + сырьё + стоимость. */
-settingsRouter.get(
-  '/writeoff/report',
-  wrap(async (req, res) => {
-    const cfg = await writeoffSettings();
-    const date =
-      typeof req.query.date === 'string' && req.query.date
-        ? req.query.date
-        : new Intl.DateTimeFormat('en-CA', { timeZone: cfg.tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
-    res.json(await writeOffReport(date));
-  })
-);
-
-/** Последние прогоны списания (для журнала/архива). */
-settingsRouter.get(
-  '/writeoff/runs',
-  wrap(async (_req, res) => {
-    res.json(await recentWriteOffRuns());
-  })
-);
-
-// ============ КАТЕГОРИИ ТОВАРОВ ============
-
-/** Список категорий с количеством привязанных tech_cards. */
-settingsRouter.get(
-  '/categories',
-  wrap(async (_req, res) => {
-    const { rows } = await pool.query(
-      `select oc.id, oc.name, count(tc.id)::int as "cardCount"
-         from order_categories oc
-         left join tech_cards tc on tc.category_id = oc.id
-        group by oc.id, oc.name
-        order by oc.name`
-    );
-    res.json(rows);
-  })
-);
-
-/** Создать категорию. */
-settingsRouter.post(
-  '/categories',
-  wrap(async (req, res) => {
-    const name = reqStr(req.body, 'name').toLowerCase().trim();
-    if (!name) return res.status(400).json({ error: 'Пустое имя' });
-    const { rows } = await pool.query(
-      `insert into order_categories (name) values ($1) on conflict (name) do nothing returning id, name`,
-      [name]
-    );
-    if (!rows.length) return res.status(409).json({ error: 'Уже существует' });
-    await audit(req.user, { action: 'create', entity: 'setting', entityId: `cat:${rows[0].id}`, title: `Категория «${name}»` });
-    res.status(201).json(rows[0]);
-  })
-);
-
-/** Переименовать. */
-settingsRouter.patch(
-  '/categories/:id',
-  wrap(async (req, res) => {
-    const id = Number(req.params.id);
-    const name = reqStr(req.body, 'name').toLowerCase().trim();
-    if (!name) return res.status(400).json({ error: 'Пустое имя' });
-    await pool.query('update order_categories set name = $2 where id = $1', [id, name]);
-    await audit(req.user, { action: 'update', entity: 'setting', entityId: `cat:${id}`, title: `Категория → «${name}»` });
-    res.json({ ok: true });
-  })
-);
-
-/** Удалить (tech_cards.category_id и orders.category_id обнуляются ON DELETE SET NULL). */
-settingsRouter.delete(
-  '/categories/:id',
-  wrap(async (req, res) => {
-    const id = Number(req.params.id);
-    const { rows } = await pool.query('select name from order_categories where id = $1', [id]);
-    if (!rows.length) return res.status(404).json({ error: 'Не найдена' });
-    await pool.query('delete from order_categories where id = $1', [id]);
-    await audit(req.user, { action: 'delete', entity: 'setting', entityId: `cat:${id}`, title: `Категория «${rows[0].name}»` });
-    res.json({ ok: true });
-  })
-);
-
-/** Товары в категории (для редактирования привязок). */
-settingsRouter.get(
-  '/categories/:id/cards',
-  wrap(async (req, res) => {
-    const { rows } = await pool.query(
-      `select tc.id, tc.name, tc.plu from tech_cards tc where tc.category_id = $1 order by tc.name`,
-      [Number(req.params.id)]
-    );
-    res.json(rows);
-  })
-);
-
-/** Привязать товары к категории (массовая замена). */
-settingsRouter.put(
-  '/categories/:id/cards',
-  wrap(async (req, res) => {
-    const catId = Number(req.params.id);
-    const raw = Array.isArray(req.body?.cardIds) ? req.body.cardIds : [];
-    const ids = (raw as unknown[]).map(Number).filter((n) => Number.isFinite(n));
-    await tx(async (client) => {
-      // отвязать все, кто был в категории, но не в новом списке
-      await client.query(
-        `update tech_cards set category_id = null where category_id = $1 and not (id = any($2::int[]))`,
-        [catId, ids]
-      );
-      // привязать указанных
-      for (const id of ids) {
-        await client.query('update tech_cards set category_id = $1 where id = $2', [catId, id]);
-      }
-    });
-    await audit(req.user, { action: 'update', entity: 'setting', entityId: `cat:${catId}`, title: `Привязка товаров (${ids.length})` });
-    res.json({ ok: true });
-  })
-);
-
-/** Не привязанные к категории tech_cards (для пикера). */
-settingsRouter.get(
-  '/cards-unassigned',
-  wrap(async (_req, res) => {
-    const { rows } = await pool.query(
-      `select tc.id, tc.name, tc.plu from tech_cards tc where tc.category_id is null order by tc.name`
-    );
-    res.json(rows);
-  })
-);
-
-/** Все tech_cards (в т.ч. с категорией) для выбора. */
-settingsRouter.get(
-  '/all-cards',
-  wrap(async (_req, res) => {
-    const { rows } = await pool.query(
-      `select tc.id, tc.name, tc.plu, tc.category_id as "categoryId"
-         from tech_cards tc order by tc.name`
-    );
-    res.json(rows);
   })
 );
 

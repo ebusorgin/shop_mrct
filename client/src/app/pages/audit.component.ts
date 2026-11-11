@@ -259,7 +259,6 @@ export class AuditComponent implements OnInit {
     semi: 'Полуфабрикат',
     tech_card: 'Техкарта',
     batch: 'Партия',
-    order: 'Заказ',
     store: 'Точка',
     user: 'Пользователь',
     stock: 'Склад',

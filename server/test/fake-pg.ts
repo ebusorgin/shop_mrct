@@ -130,29 +130,6 @@ export interface FakeBatchItem {
   qty: number;
   unit_cost: number;
 }
-export interface FakeStore {
-  id: number;
-  name: string;
-  active: boolean;
-}
-export interface FakeOrder {
-  id: number;
-  tab_id: number | null;
-  store_id: number;
-  card_id: number | null;
-  source_name: string;
-  min_qty: number | null;
-  quantity: number;
-  sheet_qty: number | null;
-  unit_code: string | null;
-  date_tab: string;
-  status: string;
-  source: string;
-  note: string;
-  created_by: number | null;
-  db_edited_at: string | null;
-  pushed_at: string | null;
-}
 export interface FakeAuditRow {
   user_id: number | null;
   user_login: string;
@@ -178,8 +155,6 @@ export interface FakeState {
   semi_inputs: FakeSemiInput[];
   production_batches: FakeBatch[];
   production_batch_items: FakeBatchItem[];
-  stores: FakeStore[];
-  orders: FakeOrder[];
 }
 
 export function emptyState(): FakeState {
@@ -188,7 +163,6 @@ export function emptyState(): FakeState {
     product_aliases: [], audit_log: [],
     tech_cards: [], tech_card_items: [], semi_products: [], semi_inputs: [],
     production_batches: [], production_batch_items: [],
-    stores: [], orders: [],
   };
 }
 
@@ -199,7 +173,7 @@ export class FakePg {
   readonly state: FakeState;
   private seq = {
     units: 0, products: 0, movements: 0, waybills: 0, waybill_items: 0, aliases: 0,
-    cards: 0, semis: 0, batches: 0, batch_items: 0, orders: 0,
+    cards: 0, semis: 0, batches: 0, batch_items: 0,
   };
 
   constructor(state?: FakeState) {
@@ -214,7 +188,6 @@ export class FakePg {
     for (const s of this.state.semi_products) this.seq.semis = Math.max(this.seq.semis, s.id);
     for (const b of this.state.production_batches) this.seq.batches = Math.max(this.seq.batches, b.id);
     for (const bi of this.state.production_batch_items) this.seq.batch_items = Math.max(this.seq.batch_items, bi.id);
-    for (const o of this.state.orders) this.seq.orders = Math.max(this.seq.orders, o.id);
   }
 
   private next(what: keyof FakePg['seq']): number {
@@ -264,12 +237,6 @@ export class FakePg {
   /** Себестоимость списания по партии: Σ количество × цена списания. */
   batchCost(id: number): number {
     return this.batchItems(id).reduce((s, i) => s + i.qty * i.unit_cost, 0);
-  }
-
-  order(id: number): FakeOrder {
-    const o = this.state.orders.find((x) => x.id === id);
-    if (!o) throw new Error(`FakePg: линия заказа #${id} не найдена`);
-    return o;
   }
 
   async query(sql: string, params: unknown[] = []): Promise<Pick<QueryResult, 'rows'>> {
@@ -403,40 +370,6 @@ export class FakePg {
       return { rows: this.batchItems(num(1)).map((i) => ({ product_id: i.product_id, qty: i.qty })) };
     }
     if (/from production_batches b/i.test(s)) throw new Error(`FakePg: production_batches SQL не описан:\n${s}`);
-    // линия заказа по store/date/имени — слияние при повторном оформлении (/place)
-    if (/select id, quantity::float8 as qty, status from orders/i.test(s)) {
-      const store = num(1);
-      const date = String(P(2));
-      const name = String(P(3)).trim().toLowerCase();
-      const o = this.state.orders.find(
-        (x) => x.store_id === store && x.date_tab === date && x.source_name.trim().toLowerCase() === name
-      );
-      return { rows: o ? [{ id: o.id, qty: o.quantity, status: o.status }] : [] };
-    }
-    // строка заказа с текущим статусом (PATCH /orders/:id)
-    if (/select o.id, o.store_id as "storeId", o.status, o.date_tab/i.test(s)) {
-      const o = this.state.orders.find((x) => x.id === num(1));
-      return { rows: o ? [{ id: o.id, storeId: o.store_id, status: o.status }] : [] };
-    }
-    // единица выхода + вес порции линии заказа (PATCH /orders/:id с unit)
-    if (/from orders o left join tech_cards/i.test(s)) {
-      const line = this.state.orders.find((x) => x.id === num(1));
-      const card = line?.card_id ? this.state.tech_cards.find((x) => x.id === line.card_id) : undefined;
-      const u = card ? this.state.units.find((x) => x.id === card.portion_unit_id) : undefined;
-      return { rows: [{ baseUnit: u?.code ?? line?.unit_code ?? null, portionQty: card?.portion_qty ?? 0 }] };
-    }
-    // свежий минимум строки источника (route /place)
-    if (/select min_qty::float8 as mn\s+from orders/i.test(s)) {
-      const list = this.state.orders.filter((o) => {
-        if (o.min_qty === null) return false;
-        const byCard = P(1) != null && o.card_id === num(1);
-        const byName = P(1) == null && o.source_name === String(P(2));
-        return byCard || byName;
-      });
-      list.sort((a, b) => String(b.date_tab).localeCompare(String(a.date_tab)) || b.id - a.id);
-      return { rows: list.length ? [{ mn: list[0].min_qty }] : [] };
-    }
-    if (/from orders/i.test(s)) throw new Error(`FakePg: orders SQL не описан:\n${s}`);
     if (/from tech_cards tc\s+join units u on u.id = tc.portion_unit_id where tc.id/i.test(s)) {
       const c = this.state.tech_cards.find((x) => x.id === num(1));
       if (!c) return { rows: [] };
@@ -448,11 +381,6 @@ export class FakePg {
       return { rows: c ? [{ name: c.name }] : [] };
     }
     if (/from tech_cards/i.test(s)) throw new Error(`FakePg: tech_cards SQL не описан:\n${s}`);
-    // активный магазин (route /place)
-    if (/from stores where id/i.test(s)) {
-      const st = this.state.stores.find((x) => x.id === num(1) && x.active);
-      return { rows: st ? [{ id: st.id, name: st.name }] : [] };
-    }
     if (/from movements/i.test(s)) {
       const excluded = new Set(this.state.waybills.filter((w) => w.status === 'reversed').map((w) => w.id));
       const rows = this.state.movements
@@ -500,40 +428,6 @@ export class FakePg {
       b.cost_total = 0;
       return { rows: [] };
     }
-    // переналожение отменённой линии (/place): новое количество + возврат в работу
-    if (/^update orders set quantity = \$2::numeric, status = 'placed'/i.test(s)) {
-      const o = this.state.orders.find((x) => x.id === num(1));
-      if (!o) throw new Error(`FakePg: update orders для несуществующей линии #${num(1)}`);
-      o.quantity = num(2);
-      o.status = 'placed';
-      o.db_edited_at = 'now()';
-      return { rows: [] };
-    }
-    // слияние с существующей линией: количество прирастает
-    if (/^update orders set quantity = quantity \+ /i.test(s)) {
-      const o = this.state.orders.find((x) => x.id === num(1));
-      if (!o) throw new Error(`FakePg: update orders для несуществующей линии #${num(1)}`);
-      o.quantity += num(2);
-      o.db_edited_at = 'now()';
-      return { rows: [] };
-    }
-    if (/^update orders set/i.test(s)) {
-      const id = num(params.length);
-      const o = this.state.orders.find((x) => x.id === id);
-      if (!o) throw new Error(`FakePg: update orders для несуществующей линии #${id}`);
-      for (const set of /set (.*) where id/i.exec(s)?.[1].split(', ') ?? []) {
-        const col = set.split(' = ')[0];
-        if (!/\$\d/.test(set)) continue; // updated_at = now() и т.п.
-        const idx = Number(/\$(\d)/.exec(set)![1]);
-        const v = P(idx);
-        if (col === 'quantity' || col === 'min_qty') o[col] = v === null ? null : Number(v);
-        else if (col === 'status') o.status = String(v);
-        else if (col === 'note') o.note = String(v);
-        else (o as Record<string, unknown>)[col] = v;
-      }
-      return { rows: [] };
-    }
-
     // ---------- INSERT ----------
     if (/^insert into audit_log/i.test(s)) {
       this.state.audit_log.push({
@@ -645,28 +539,6 @@ export class FakePg {
       const id = this.next('batch_items');
       this.state.production_batch_items.push({ id, batch_id: num(1), product_id: num(2), qty: num(3), unit_cost: num(4) });
       return { rows: [] };
-    }
-    if (/^insert into orders/i.test(s)) {
-      const id = this.next('orders');
-      this.state.orders.push({
-        id,
-        tab_id: null,
-        store_id: num(1),
-        card_id: P(2) as number | null,
-        source_name: String(P(3)),
-        min_qty: P(4) == null ? null : num(4),
-        quantity: num(5),
-        sheet_qty: null,
-        unit_code: P(6) as string | null,
-        date_tab: String(P(7)),
-        status: 'placed',
-        source: 'manual',
-        note: String(P(8) ?? ''),
-        created_by: P(9) as number | null,
-        db_edited_at: 'now()',
-        pushed_at: null,
-      });
-      return { rows: [{ id }] };
     }
     if (/^insert into product_aliases/i.test(s)) {
       if (/on conflict \(alias\) do update/i.test(s)) {

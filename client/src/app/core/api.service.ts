@@ -96,54 +96,9 @@ export class ApiService {
     return this.http.get<M.Dashboard>(`${this.base}/dashboard`, { params: hp });
   }
 
-  // ---- заказы магазинов ----
-  orderStores$(): Observable<M.Store[]> { return this.http.get<M.Store[]>(`${this.base}/orders/stores`); }
-  orderDates$(store: number): Observable<M.OrderDate[]> {
-    return this.http.get<M.OrderDate[]>(`${this.base}/orders/dates`, { params: new HttpParams().set('store', String(store)) });
-  }
-  orderCategories$(): Observable<string[]> { return this.http.get<string[]>(`${this.base}/orders/categories`); }
-  orderCatalog$(): Observable<M.OrderCatalogItem[]> { return this.http.get<M.OrderCatalogItem[]>(`${this.base}/orders/catalog`); }
-  orders$(params: Record<string, string>): Observable<M.OrdersResult> {
-    let hp = new HttpParams();
-    Object.entries(params).forEach(([k, v]) => (hp = hp.set(k, v)));
-    return this.http.get<M.OrdersResult>(`${this.base}/orders`, { params: hp });
-  }
-  /** Доска производства: все активные магазины за один лист-дату (только просмотр). */
-  ordersBoard$(params: Record<string, string> = {}): Observable<M.OrdersBoard> {
-    let hp = new HttpParams();
-    Object.entries(params).forEach(([k, v]) => (hp = hp.set(k, v)));
-    return this.http.get<M.OrdersBoard>(`${this.base}/orders/board`, { params: hp });
-  }
-  placeOrder$(store: number, body: unknown): Observable<M.PlaceOrderResult> {
-    return this.http.post<M.PlaceOrderResult>(
-      `${this.base}/orders/place`, body, { params: new HttpParams().set('store', String(store)) });
-  }
-  patchOrder$(id: number, body: unknown): Observable<{ ok: boolean }> {
-    return this.http.patch<{ ok: boolean }>(`${this.base}/orders/${id}`, body);
-  }
-  orderJournal$(params: Record<string, string> = {}): Observable<M.OrderJournal> {
-    let hp = new HttpParams();
-    Object.entries(params).forEach(([k, v]) => (hp = hp.set(k, v)));
-    return this.http.get<M.OrderJournal>(`${this.base}/orders/journal`, { params: hp });
-  }
-  exportOtpremnice$(date: string): Observable<Blob> {
-    return this.http.get(`${this.base}/orders/export-otpremnice`, {
-      params: new HttpParams().set('date', date),
-      responseType: 'blob',
-    });
-  }
-
-  // ---- точки продаж (управление магазинами + карточки) ----
+  // ---- точки продаж (справочник магазинов) ----
   points$(): Observable<M.PointCard[]> { return this.http.get<M.PointCard[]>(`${this.base}/points`); }
   point$(id: number): Observable<M.PointCard> { return this.http.get<M.PointCard>(`${this.base}/points/${id}`); }
-  pointVolume$(id: number, months: number): Observable<M.PointTrendPoint[]> {
-    return this.http.get<M.PointTrendPoint[]>(`${this.base}/points/${id}/volume`, {
-      params: new HttpParams().set('months', String(months)),
-    });
-  }
-  pointDay$(id: number, date: string): Observable<M.PointDayOrder> {
-    return this.http.get<M.PointDayOrder>(`${this.base}/points/${id}/day/${date}`);
-  }
   createPoint(body: unknown): Observable<{ id: number }> { return this.http.post<{ id: number }>(`${this.base}/points`, body); }
   patchPoint(id: number, body: unknown): Observable<{ ok: boolean }> {
     return this.http.patch<{ ok: boolean }>(`${this.base}/points/${id}`, body);
@@ -175,51 +130,7 @@ export class ApiService {
   saveGptSettings$(body: M.GptSettings): Observable<{ ok: boolean; gpt: M.GptSettings }> {
     return this.http.patch<{ ok: boolean; gpt: M.GptSettings }>(`${this.base}/settings/gpt`, body);
   }
-  saveProductionSettings$(body: M.ProductionDetails): Observable<{ ok: boolean; production: M.ProductionDetails }> {
-    return this.http.patch<{ ok: boolean; production: M.ProductionDetails }>(`${this.base}/settings/production`, body);
-  }
   testGpt$(): Observable<M.GptTestResult> { return this.http.post<M.GptTestResult>(`${this.base}/settings/gpt/test`, {}); }
-
-  /** Расписание доставок и закрытия заказов (сохранение). */
-  saveDelivery$(body: M.DeliverySettings): Observable<{ ok: boolean; delivery: M.DeliverySettings; deliveryUpcoming: string[]; deliveryNext: { dateIso: string; time: string } | null }> {
-    return this.http.patch<{ ok: boolean; delivery: M.DeliverySettings; deliveryUpcoming: string[]; deliveryNext: { dateIso: string; time: string } | null }>(`${this.base}/settings/delivery`, body);
-  }
-  /** Ручной прогон списания за дату доставки (по умолчанию — сегодняшняя). */
-  runWriteoffNow$(date?: string): Observable<{ ok: boolean; skipped: boolean; deliveryDate: string; firedSlot: string; linesWritten: number; batches: number; error?: string }> {
-    return this.http.post<{ ok: boolean; skipped: boolean; deliveryDate: string; firedSlot: string; linesWritten: number; batches: number; error?: string }>(
-      `${this.base}/settings/writeoff/run`, date ? { deliveryDate: date } : {}, {});
-  }
-  /** Отчёт по автосписанию за дату доставки (по умолчанию — сегодняшняя MSK). */
-  writeoffReport$(date?: string): Observable<M.WriteOffReport> {
-    let hp = new HttpParams();
-    if (date) hp = hp.set('date', date);
-    return this.http.get<M.WriteOffReport>(`${this.base}/settings/writeoff/report`, { params: hp });
-  }
-  /** Последние прогоны списания (архив). */
-  writeoffRuns$(): Observable<M.WriteOffRun[]> {
-    return this.http.get<M.WriteOffRun[]>(`${this.base}/settings/writeoff/runs`);
-  }
-
-  // ---- категории товаров (в настройках, только админ) ----
-  cardCategories$(): Observable<M.CardCategory[]> { return this.http.get<M.CardCategory[]>(`${this.base}/settings/categories`); }
-  createCategory$(name: string): Observable<{ id: number; name: string }> {
-    return this.http.post<{ id: number; name: string }>(`${this.base}/settings/categories`, { name });
-  }
-  renameCategory$(id: number, name: string): Observable<{ ok: boolean }> {
-    return this.http.patch<{ ok: boolean }>(`${this.base}/settings/categories/${id}`, { name });
-  }
-  deleteCategory$(id: number): Observable<{ ok: boolean }> {
-    return this.http.delete<{ ok: boolean }>(`${this.base}/settings/categories/${id}`);
-  }
-  categoryCards$(id: number): Observable<M.CardRef[]> {
-    return this.http.get<M.CardRef[]>(`${this.base}/settings/categories/${id}/cards`);
-  }
-  assignCards$(catId: number, cardIds: number[]): Observable<{ ok: boolean }> {
-    return this.http.put<{ ok: boolean }>(`${this.base}/settings/categories/${catId}/cards`, { cardIds });
-  }
-  allCards$(): Observable<M.CardRef[]> {
-    return this.http.get<M.CardRef[]>(`${this.base}/settings/all-cards`);
-  }
 
   // ---- категории сырья (в настройках, только админ) ----
   rawCategories$(): Observable<M.RawCategory[]> { return this.http.get<M.RawCategory[]>(`${this.base}/settings/raw-categories`); }

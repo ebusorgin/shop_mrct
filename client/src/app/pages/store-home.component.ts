@@ -6,16 +6,10 @@ import { AuthService } from '../core/auth.service';
 import { MyStore } from '../core/models';
 import { httpErr } from '../core/format';
 import { ModalComponent } from '../shared/modal.component';
-import { OrdersBoardComponent } from './orders-board.component';
 
 /**
- * Страница магазинного сотрудника: только своя точка.
- *
- *   • карточка магазина (адрес, телефоны, контакты, часы работы, примечание) + правка;
- *   • заказы с производства в виде доски-таблицы (товары × магазины),
- *     только своя колонка; оформление на сегодня и архив по датам
- *     (порядок заказов живёт в app-orders-board — без выбора магазина
- *      и без подтверждений, это делает производство).
+ * Страница магазинного сотрудника: карточка своей точки (адрес, телефоны,
+ * контакты, часы работы, примечание) и её правка.
  *
  * Доступна только пользователю с привязкой к точке (storeGuard), и все
  * запросы на сервере всё равно сужены до его store_id.
@@ -23,7 +17,7 @@ import { OrdersBoardComponent } from './orders-board.component';
 @Component({
   selector: 'app-store-home',
   standalone: true,
-  imports: [CommonModule, FormsModule, ModalComponent, OrdersBoardComponent],
+  imports: [CommonModule, FormsModule, ModalComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="bar">
@@ -39,35 +33,13 @@ import { OrdersBoardComponent } from './orders-board.component';
     @if (msg()) { <div class="ok-msg">{{ msg() }}</div> }
 
     @if (store(); as s) {
-      @if (s.deliveryEnabled && s.deliveryNext; as nx) {
-        <div class="panel" style="background:#f4f8fb; border-color:#d0e1f9; margin-bottom:14px; padding:12px 16px;">
-          <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-            <span style="font-weight:600; color:#1a73e8;">🚚 Ближайшая дата и время списания:</span>
-            <span class="badge blue" style="font-size:14px; padding:4px 10px;">{{ fmtDate(nx.dateIso) }} в {{ nx.time }}</span>
-            @if (s.deliveryUpcoming && s.deliveryUpcoming.length > 1) {
-              <span class="muted small" style="margin-left:auto;">
-                Далее: @for (dt of s.deliveryUpcoming.slice(1, 4); track dt) { <span class="chip" style="margin:0 2px">{{ fmtDate(dt) }}</span> }
-              </span>
-            }
-          </div>
-        </div>
-      }
-
       <div class="kpis">
-        <div class="kpi"><div class="v">{{ s.todayLines }}</div><div class="l">позиций в заказе сегодня</div></div>
-        <div class="kpi"><div class="v" [class.red]="s.openLines > 0">{{ s.openLines }}</div><div class="l">в работе (ждёт производства)</div></div>
-        <div class="kpi"><div class="v">{{ s.orderDays }}</div><div class="l">дней с заказами в архиве</div></div>
         <div class="kpi"><div class="v">{{ s.employees }}</div><div class="l">сотрудников точки</div></div>
       </div>
 
       <div class="panel">
         <div class="row" style="align-items:center">
           <h3 style="margin:0">Информация о магазине</h3>
-          <span class="spacer"></span>
-          <span class="muted small">
-            последний заказ: {{ s.lastOrderDate ? fmtDate(s.lastOrderDate) : '—' }} ·
-            позиций в листе: {{ s.lastDateLines }}
-          </span>
         </div>
         <div class="info">
           <div><span class="k">Адрес</span><span class="v">{{ s.address || '—' }}</span></div>
@@ -78,13 +50,9 @@ import { OrdersBoardComponent } from './orders-board.component';
           <div><span class="k">Примечание</span><span class="v">{{ s.note || '—' }}</span></div>
         </div>
         <div class="muted small" style="margin-top:8px">
-          Номер, код точки и её активность меняет офис. Заказы и их статусы — в разделе ниже.
+          Номер, код точки и её активность меняет офис.
         </div>
       </div>
-
-      <!-- раздел «Заказы»: доска-таблица заказов, только своя колонка -->
-      <h3 style="margin:14px 0 6px">Заказы</h3>
-      <app-orders-board [embedded]="true" />
     } @else if (!err()) {
       <p class="muted">Загрузка…</p>
     }
@@ -225,12 +193,6 @@ export class StoreHomeComponent implements OnInit {
           this.err.set(httpErr(e));
         },
       });
-  }
-
-  /** YYYY-MM-DD -> ДД.ММ.ГГГГ (для даты последнего заказа). */
-  fmtDate(iso: string): string {
-    const [y, m, d] = iso.slice(0, 10).split('-');
-    return d && m && y ? `${d}.${m}.${y}` : iso;
   }
 
   private flash(text: string): void {

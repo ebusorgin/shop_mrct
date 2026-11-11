@@ -2,7 +2,6 @@ import { createApp } from './app';
 import { config } from './config';
 import { migrate } from './migrate';
 import { pool } from './db';
-import { startWriteOffLoop } from './services/writeoff';
 import { ensureAdminUser, purgeExpiredSessions } from './services/auth';
 
 async function main(): Promise<void> {
@@ -13,7 +12,6 @@ async function main(): Promise<void> {
   app.listen(config.port, config.host, () => {
     console.log(`MIX markt CRM API: http://${config.host}:${config.port}/api`);
   });
-  startWriteOffLoop();
 }
 
 main().catch(async (e: unknown) => {

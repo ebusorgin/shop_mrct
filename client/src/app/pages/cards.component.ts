@@ -19,7 +19,6 @@ interface CardDraft {
   note: string;
   portionQty: number | null;
   portionUnitId: number | null;
-  minQty: number | null;
   items: CardDraftItem[];
 }
 
@@ -38,17 +37,6 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
       .cf-search { width: 100%; box-sizing: border-box; padding: 6px 10px; font-size: 13px;
         border: 1px solid #c9c9c9; border-radius: 6px; }
       .cf-search:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
-      .cf-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-      .chip { padding: 3px 11px; border: 1px solid #c9c9c9; border-radius: 999px; background: #f3f2f1;
-        color: #242424; font-size: 12px; cursor: pointer; text-transform: capitalize; white-space: nowrap; }
-      .chip:hover { border-color: var(--accent); color: #1d5c2e; }
-      .chip.on { background: var(--accent); color: #fff; border-color: var(--accent); }
-      /* заголовок категории — визуально отделяет группы в списке */
-      .group-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: baseline; gap: 8px;
-        margin: 10px 0 4px; padding: 4px 6px; border-radius: 5px; background: #e5efe6; color: #1d5c2e;
-        font-weight: 700; font-size: 12px; letter-spacing: .2px; text-transform: capitalize; }
-      .group-head:first-child { margin-top: 0; }
-      .group-cnt { font-weight: 400; color: #5c7a63; font-size: 11px; }
       /* заголовок панели: название слева, заметная кнопка создания справа (всегда на виду, над списком) */
       .list-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 12px; }
       .list-head h3 { margin: 0; }
@@ -70,27 +58,15 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
         <div class="card-filter">
           <input type="search" class="cf-search" placeholder="🔍 Поиск по названию"
                  [ngModel]="q()" (ngModelChange)="q.set($event)" />
-          <div class="cf-chips">
-            <button class="chip" [class.on]="!cats().length" (click)="cats.set([])">Все</button>
-            @for (c of categories(); track c) {
-              <button class="chip" [class.on]="cats().includes(c)" (click)="toggleCat(c)">{{ c }}</button>
-            }
-          </div>
         </div>
         <div class="list-pick">
-          @for (g of groups(); track g.name) {
-            <div class="group-head">
-              <span>{{ g.name ?? 'Без категории' }}</span>
-              <span class="group-cnt">{{ g.cards.length }}</span>
-            </div>
-            @for (c of g.cards; track c.id) {
-              <button [class.on]="draft()?.id === c.id" (click)="editCard(c)">
-                <b>{{ c.name }}</b>
-                <div class="muted" style="font-size:12px">
-                  порция {{ trim(c.portionQty) }} {{ c.portionUnitCode }} · позиций {{ c.items.length }}
-                </div>
-              </button>
-            }
+          @for (c of filtered(); track c.id) {
+            <button [class.on]="draft()?.id === c.id" (click)="editCard(c)">
+              <b>{{ c.name }}</b>
+              <div class="muted" style="font-size:12px">
+                порция {{ trim(c.portionQty) }} {{ c.portionUnitCode }} · позиций {{ c.items.length }}
+              </div>
+            </button>
           } @empty {
             <p class="muted">{{ list().length ? 'Ничего не найдено' : 'Техкарт пока нет' }}</p>
           }
@@ -109,7 +85,6 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
                 @for (u of units(); track u.id) { <option [ngValue]="u.id">{{ u.code }}</option> }
               </select>
             </label>
-            <label class="f">Мин. заказ<input type="number" step="0.1" [(ngModel)]="d.minQty" placeholder="по умолч." /></label>
             <label class="f" style="flex:1">Примечание<input [(ngModel)]="d.note" /></label>
           </div>
           <hr class="hr" />
@@ -228,46 +203,15 @@ export class CardsComponent implements OnInit {
 
   diagram = signal<{ nodes: DNode[]; edges: DEdge[]; w: number; h: number }>({ nodes: [], edges: [], w: 10, h: 10 });
 
-  /** Фильтр списка техкарт: поиск по названию и мультивыбор категорий (пусто — «Все»). */
+  /** Фильтр списка техкарт по названию. */
   q = signal('');
-  cats = signal<string[]>([]);
 
-  /** Категории, реально представленные в списке, по алфавиту. */
-  categories = computed(() => {
-    const set = new Set<string>();
-    for (const c of this.list()) if (c.category) set.add(c.category);
-    return [...set].sort((a, b) => a.localeCompare(b, 'ru'));
-  });
-
-  /** Список после фильтра по чипу/поиску, сгруппированный по категории; «без категории» — в конце. */
-  groups = computed(() => {
+  filtered = computed(() => {
     const needle = this.q().trim().toLowerCase();
-    const sel = this.cats();
-    const src = this.list().filter(
-      (c) => (!sel.length || (c.category != null && sel.includes(c.category))) && (!needle || c.name.toLowerCase().includes(needle))
-    );
-    const map = new Map<string | null, TechCard[]>();
-    for (const c of src) {
-      const arr = map.get(c.category);
-      if (arr) arr.push(c);
-      else map.set(c.category, [c]);
-    }
-    const out = [...map.entries()].map(([name, cards]) => ({
-      name,
-      cards: cards.sort((a, b) => a.name.localeCompare(b.name, 'ru')),
-    }));
-    out.sort((a, b) => {
-      if (a.name === null) return b.name === null ? 0 : 1;
-      if (b.name === null) return -1;
-      return a.name.localeCompare(b.name, 'ru');
-    });
-    return out;
+    return [...this.list()]
+      .filter((c) => !needle || c.name.toLowerCase().includes(needle))
+      .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
   });
-
-  /** Переключить категорию в мультивыборе: повторно нажатая — снимается. */
-  toggleCat(c: string): void {
-    this.cats.update((sel) => (sel.includes(c) ? sel.filter((x) => x !== c) : [...sel, c]));
-  }
 
   trim = trim;
   fmtQty = fmtQty;
@@ -370,7 +314,6 @@ export class CardsComponent implements OnInit {
     this.draft.set({
       id: null, name: '', note: '', portionQty: 400,
       portionUnitId: this.units().find((u) => u.code === 'г')?.id ?? null,
-      minQty: null,
       items: [],
     });
     this.buildDiagram();
@@ -383,7 +326,7 @@ export class CardsComponent implements OnInit {
     this.preview.set([]);
     this.draft.set({
       id: c.id, name: c.name, note: c.note,
-      portionQty: c.portionQty, portionUnitId: c.portionUnitId, minQty: c.minQty ?? null,
+      portionQty: c.portionQty, portionUnitId: c.portionUnitId,
       items: c.items.map((i) => ({ sourceType: i.sourceType, refId: i.refId, qty: i.qty, unitId: i.unitId })),
     });
     this.buildDiagram();
@@ -436,7 +379,7 @@ export class CardsComponent implements OnInit {
       this.err.set('Добавьте хотя бы одну позицию состава');
       return;
     }
-    const body = { name: d.name.trim(), note: d.note, portionQty: d.portionQty, portionUnitId: d.portionUnitId, minQty: d.minQty, items };
+    const body = { name: d.name.trim(), note: d.note, portionQty: d.portionQty, portionUnitId: d.portionUnitId, items };
     const sub = {
       next: () => {
         this.msg.set(`Техкарта «${d.name}» сохранена ✓`);

@@ -258,10 +258,6 @@ export interface TechCard {
   portionQty: number;
   portionUnitId: number;
   portionUnitCode: string;
-  minQty?: number | null;
-  /** категория техкарты (для группировки списка) */
-  category: string | null;
-  categoryId?: number | null;
   items: CardItem[];
 }
 
@@ -320,25 +316,16 @@ export interface NearExpiryRow {
   status: 'expired' | 'soon';
 }
 
-/** Магазин с позициями ближайшего листа, которые ещё не приняты производством. */
-export interface PendingOrdersRow {
-  storeId: number;
-  storeName: string;
-  dateTab: string | null;
-  cnt: number;
-}
-
 export interface Dashboard {
   stock: { productsInStock: number; stockValue: number };
   today: { todayCost: number; todayBatches: number };
   lowStock: { name: string; unitCode: string; qty: number; minStock: number }[];
   recentBatches: { id: number; cardName: string; portions: number; batchDate: string; status: string; costTotal: number }[];
   monthWaybills: { cnt: number; total: number };
-  pendingOrders: PendingOrdersRow[];
   nearExpiry: NearExpiryRow[];
 }
 
-// ================= ЗАКАЗЫ МАГАЗИНОВ =================
+// ================= ТОЧКИ ПРОДАЖ =================
 
 /** Точка продаж (витрина-магазин). id = номер точки (103..110 и далее). */
 export interface Store {
@@ -365,42 +352,6 @@ export interface Store {
   updatedByName?: string | null;
 }
 
-/** Разрез тренда: один лист-дата доставки с итогом по точке. */
-export interface PointTrendPoint {
-  tabDate: string;
-  positions: number;
-  totalCost: number | null;
-}
-
-/** Одна позиция заказа за день-лист (для подсказки на графике). */
-export interface PointDayLine {
-  /** техкарта (товар); для строк без карточки — отрицательный номер строки заказа */
-  id: number;
-  name: string;
-  category: string | null;
-  /** печатное количество (в единице unit) */
-  qty: number;
-  unit: string;
-  sum: number | null;
-}
-
-/** Заказ точки за конкретную дату-лист. */
-export interface PointDayOrder {
-  date: string;
-  positions: number;
-  lines: PointDayLine[];
-  totalCost: number | null;
-}
-
-/** «Здоровье» точки — read-only агрегаты по зеркалу заказов. */
-export interface PointHealth {
-  lastOrderDate: string | null;
-  daysSince: number | null;
-  onLatestTab: number;
-  latestTab: string | null;
-  badge: 'inactive' | 'none' | 'missed' | 'stale' | 'ok';
-}
-
 /** Карточка точки продаж для раздела «Точки продаж». */
 export interface PointCard extends Store {
   active: boolean;
@@ -413,165 +364,6 @@ export interface PointCard extends Store {
   note: string;
   createdAt: string;
   updatedAt: string;
-  health: PointHealth;
-  trend: PointTrendPoint[];
-}
-
-/** Одна строка заказа (позиция товара в листе магазина). */
-export interface OrderItem {
-  id: number;
-  storeId: number;
-  storeName: string;
-  cardId: number | null;
-  name: string;
-  sourceName: string;
-  plu: string | null;
-  category: string | null;
-  /** минимальное количество заказа в базовой единице */
-  minQty: number | null;
-  /** количество в базовой единице (г/мл/шт) */
-  qty: number;
-  unitCode: string | null;
-  /** базовая единица техкарты (г/мл/шт) */
-  cardUnit: string | null;
-  ek: number | null;
-  vk: number | null;
-  dateTab: string;
-  status: string;
-  source: string;
-  note: string;
-  createdAt: string;
-  updatedAt: string;
-  /** Кто оформил заказ и кто последним сменил статус (логин). */
-  createdByLogin?: string | null;
-  createdByName?: string | null;
-  statusByLogin?: string | null;
-  statusByName?: string | null;
-  statusAt?: string | null;
-}
-
-export interface OrdersSummary {
-  lines: number;
-  totalQty: number;
-  qtyByUnit: Record<string, number>;
-  baseUnit: string;
-  totalCost: number | null;
-  costLines: number;
-  minOkLines: number;
-  minBadLines: number;
-}
-
-export interface OrdersResult {
-  items: OrderItem[];
-  summary: OrdersSummary;
-}
-
-/** Колонка-магазин на доске производства. */
-export interface BoardStore {
-  id: number;
-  code: string;
-  name: string;
-}
-
-/** Строка доски-пивота: товар × количество по магазинам + деньги. */
-export interface BoardRow {
-  key: string;
-  name: string;
-  category: string | null;
-  plu: string | null;
-  /** печатная единица: 'порц' | 'шт' | 'кг' | 'л' | базовая */
-  unit: string;
-  totalQty: number;
-  pricePer: number | null;
-  fullPrice: number;
-  byStore: Record<number, number>;
-  /** id линии заказа — правка на доске; null — строка из каталога без линии (0) или из нескольких линий */
-  orderId?: number | null;
-  /** строку можно редактировать прямо на доске (магазин): есть линия или это позиция каталога для добавления */
-  editable?: boolean;
-  /** id техкарты для строк каталога без линии заказа — добавление в заказ через POST /place */
-  cardId?: number | null;
-  /** id товара (техкарты) в БД — показывается рядом с наименованием */
-  productId?: number | null;
-  /** минимальный заказ (кратность) в печатной единице строки; null/0 — не задан (шаг по умолчанию) */
-  minOrder?: number | null;
-}
-
-/**
- * Доска производства (пивот «как в Excel»): строки = товары, колонки = магазины 103..110.
- * rows уже содержат byStore; stores — порядок колонок; totals — итоги по колонкам и полная сумма.
- */
-export interface OrdersBoard {
-  date: string | null;
-  dates: OrderDate[];
-  stores: BoardStore[];
-  rows: BoardRow[];
-  totals: { positions: number; full: number; stores: number; byStore: Record<number, number> };
-}
-
-/** Дата-лист, за который у магазина есть заказы. */
-export interface OrderDate {
-  date: string;
-  cnt: number;
-  tabId: number;
-  /** лист закрыт после автосписания — магазин правки не вносит. */
-  locked?: boolean;
-}
-
-/** Каталог техкарт для оформления заказа. */
-export interface OrderCatalogItem {
-  id: number;
-  name: string;
-  plu: string | null;
-  unitCode: string;
-  portionQty: number;
-}
-
-/** Оформленная позиция (ответ /place). qty — в базовой единице карточки. */
-export interface OrderCreatedLine {
-  id: number;
-  name: string;
-  qty: number;
-  unit: string;
-}
-
-/** Позиция ниже минимального количества (ответ /place). */
-export interface OrderViolation {
-  name: string;
-  qty: number;
-  minQty: number;
-  unit: string;
-}
-
-export interface PlaceOrderResult {
-  ok: boolean;
-  created: OrderCreatedLine[];
-  merged: number[];
-  violations: OrderViolation[];
-  message: string;
-}
-
-/** Одна запись журнала изменений заказа. */
-export interface OrderChange {
-  id: number;
-  changeType: string;
-  sourceName: string;
-  storeId: number | null;
-  storeName: string | null;
-  sheetName: string | null;
-  tabDate: string | null;
-  details: Record<string, unknown> | null;
-  actor: string;
-  /** Логин автора изменения (user_login; для старых записей — actor). */
-  userLogin?: string | null;
-  /** ФИО автора изменения (без ФИО — логин). */
-  userName?: string | null;
-  createdAt: string;
-}
-
-export interface OrderJournal {
-  lastTab: { sheetName: string; tabDate: string } | null;
-  changes: OrderChange[];
 }
 
 /** Вошедший пользователь CRM. */
@@ -607,21 +399,8 @@ export interface MyStore {
   contactPerson: string | null;
   openingHours: string | null;
   note: string | null;
-  /** Последняя дата-лист с заказами (архив). */
-  lastOrderDate: string | null;
-  /** Сколько дней-листов с заказами всего. */
-  orderDays: number;
-  /** Позиций в последнем листе. */
-  lastDateLines: number;
-  /** Позиций в работе (оформлен/подтверждён). */
-  openLines: number;
-  /** Позиций за сегодня. */
-  todayLines: number;
   /** Активных сотрудников точки. */
   employees: number;
-  deliveryNext?: { dateIso: string; time: string } | null;
-  deliveryUpcoming?: string[];
-  deliveryEnabled?: boolean;
 }
 
 // ================= ЖУРНАЛ ДЕЙСТВИЙ =================
@@ -634,7 +413,7 @@ export type AuditAction =
 /** Раздел системы, к которому относится запись. */
 export type AuditEntity =
   | 'product' | 'waybill' | 'semi' | 'tech_card' | 'batch'
-  | 'order' | 'store' | 'user' | 'stock' | 'setting';
+  | 'store' | 'user' | 'stock' | 'setting';
 
 /** Одна запись журнала: кто, что, когда и с какими деталями. */
 export interface AuditEntry {
@@ -678,57 +457,6 @@ export interface AppSettings {
   defaults: GptSettings;
   openai: { keyConfigured: boolean; model: string };
   proxy: { scheme: string; host: string; port: number; reachable: boolean };
-  delivery: DeliverySettings;
-  deliveryDefaults: DeliverySettings;
-  deliveryUpcoming: string[];
-  deliveryNext: { dateIso: string; time: string } | null;
-  writeoff: DeliverySettings;
-  writeoffDefaults: DeliverySettings;
-  writeoffNext: { dateIso: string; time: string } | null;
-  production: ProductionDetails;
-  productionDefaults: ProductionDetails;
-}
-
-/** Реквизиты производства (Dobavljač). */
-export interface ProductionDetails {
-  name: string;
-  address: string;
-  pib: string;
-  mbr: string;
-  accountNo: string;
-}
-
-/** Расписание доставок и закрытия заказов: включено, даты, время, таймзона. */
-export interface DeliverySettings {
-  enabled: boolean;
-  /** Даты доставок в формате YYYY-MM-DD. */
-  dates: string[];
-  /** Время закрытия/списания 'HH:MM'. */
-  time: string;
-  /** IANA-таймзона, по умолчанию Europe/Moscow. */
-  tz: string;
-}
-
-/** Отчёт по автосписанию за дату доставки: выдано продукции + списано сырья. */
-export interface WriteOffReport {
-  deliveryDate: string;
-  goods: { cardId: number; name: string; portions: number; costTotal: number }[];
-  raw: { productId: number; name: string; unitCode: string; qty: number; cost: number }[];
-  totalCost: number;
-}
-
-/** Одна запись прогона автосписания (архив). */
-export interface WriteOffRun {
-  id: number;
-  deliveryDate: string;
-  firedSlot: string;
-  status: string;
-  linesWritten: number;
-  batches: number;
-  startedAt: string;
-  finishedAt: string | null;
-  createdBy: string;
-  error: string | null;
 }
 
 /** Результат кнопки «Проверить связь»: настоящий запрос к модели текущим транспортом. */
@@ -738,21 +466,6 @@ export interface GptTestResult {
   transport: string;
   reply?: string;
   error?: string;
-}
-
-/** Категория товаров (order_categories) для управления в Настройках. */
-export interface CardCategory {
-  id: number;
-  name: string;
-  cardCount: number;
-}
-
-/** Ссылка на техкарту (товар) для привязки к категории. */
-export interface CardRef {
-  id: number;
-  name: string;
-  plu: string | null;
-  categoryId?: number | null;
 }
 
 /** Категория сырья (product_categories) для управления в Настройках. */

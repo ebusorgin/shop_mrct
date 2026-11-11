@@ -13,12 +13,10 @@ import { semisRouter } from './routes/semis';
 import { cardsRouter } from './routes/cards';
 import { batchesRouter } from './routes/batches';
 import { dashboardRouter } from './routes/dashboard';
-import { ordersRouter } from './routes/orders';
 import { pointsRouter } from './routes/points';
 import { auditRouter } from './routes/audit';
 import { authRouter } from './routes/auth';
 import { storeRouter } from './routes/store';
-import { eventsRouter } from './routes/events';
 import { settingsRouter } from './routes/settings';
 import { aiRouter } from './routes/ai';
 import { requireAdmin, requireAuth, requireOffice } from './services/auth';
@@ -47,8 +45,7 @@ export function createApp(): express.Express {
   app.use('/api/cards', requireOffice, cardsRouter);
   app.use('/api/batches', requireOffice, batchesRouter);
   app.use('/api/dashboard', requireOffice, dashboardRouter);
-  // заказы: офисная ручка /stores закрыта внутри, остальные сужены до своей точки
-  app.use('/api/orders', ordersRouter);
+  // торговые точки: справочник магазинов
   app.use('/api/points', requireOffice, pointsRouter);
   // журнал действий: кто, что и когда сделал
   app.use('/api/audit', requireOffice, auditRouter);
@@ -56,8 +53,6 @@ export function createApp(): express.Express {
   app.use('/api/settings', requireAdmin, settingsRouter);
   // подсказки ИИ (спросить — и подставить в поле): читают справочник, в базу не пишут
   app.use('/api/ai', requireOffice, aiRouter);
-  // живой канал «сервер -> браузер» (SSE): плашка «заказ изменён»
-  app.use('/api/events', eventsRouter);
 
   app.use('/api', (_req, res) => res.status(404).json({ error: 'Не найдено' }));
 

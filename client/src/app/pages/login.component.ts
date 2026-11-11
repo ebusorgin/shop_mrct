@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, effect, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 import { AuthService } from '../core/auth.service';
@@ -64,6 +64,13 @@ export class LoginComponent {
   busy = signal(false);
   err = signal('');
 
+  constructor() {
+    // Сессия поднимается асинхронно: если она уже действует, не показываем форму входа
+    effect(() => {
+      if (this.auth.user()) void this.router.navigateByUrl(this.nextUrl());
+    });
+  }
+
   submit(): void {
     if (this.busy()) return;
     const login = this.login.trim();
@@ -76,7 +83,6 @@ export class LoginComponent {
     this.auth.login$(login, this.password).subscribe({
       next: () => {
         this.busy.set(false);
-        void this.router.navigateByUrl(this.nextUrl());
       },
       error: (e) => {
         this.busy.set(false);

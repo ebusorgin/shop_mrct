@@ -1,1 +1,55 @@
-<p>orders works!</p>
+<div class="head">
+  <h1 class="page-title">Заказы</h1>
+  @if (!loading() && !err()) { <span class="badge blue">Продукция: {{ products().length }}</span> }
+  <div class="spacer"></div>
+  <button type="button" class="btn" (click)="load()" [disabled]="loading()">Обновить</button>
+</div>
+
+<section class="panel" aria-labelledby="products-title" [attr.aria-busy]="loading()">
+  <h2 id="products-title">Продукция производства</h2>
+  <div class="filters">
+    <input type="search" placeholder="Поиск по названию или каталогу…" aria-label="Поиск продукции"
+           [ngModel]="query()" (ngModelChange)="query.set($event)" />
+    <select aria-label="Каталог продукции" [ngModel]="catalogFilter()" (ngModelChange)="catalogFilter.set($event)">
+      <option value="">Все каталоги</option>
+      <option value="none">Без каталога</option>
+      @for (c of catalogs(); track c.id) { <option [value]="c.id.toString()">{{ c.name }}</option> }
+    </select>
+    @if (hasFilters()) { <button type="button" class="btn sm" (click)="resetFilters()">Сбросить фильтры</button> }
+  </div>
+
+  @if (loading()) {
+    <p class="muted state" role="status">Загружаем продукцию…</p>
+  } @else if (err()) {
+    <div class="err" role="alert">
+      Не удалось загрузить продукцию. {{ err() }}
+      <button type="button" class="btn sm" (click)="load()">Повторить</button>
+    </div>
+  } @else {
+    <p class="muted found" role="status">Найдено: {{ filtered().length }} из {{ products().length }}</p>
+    @if (filtered().length) {
+      <table class="tbl stack" aria-label="Список продукции">
+        <thead>
+          <tr><th scope="col">Продукция</th><th scope="col">Каталог</th><th scope="col" class="num">Выход</th></tr>
+        </thead>
+        <tbody>
+          @for (p of filtered(); track p.id) {
+            <tr>
+              <td class="product-name"><b>{{ p.name }}</b></td>
+              <td data-l="Каталог">
+                @if (catalogsById().get(p.catalogId ?? -1); as catalog) {
+                  <span class="cat-chip" [style.background]="catalog.color || '#eef2f7'">{{ catalog.icon ? catalog.icon + ' ' : '' }}{{ catalog.name }}</span>
+                } @else {
+                  <span class="muted">{{ p.catalogName || 'Без каталога' }}</span>
+                }
+              </td>
+              <td class="num" data-l="Выход">{{ fmtQty(p.portionQty, p.portionUnitCode) }}</td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    } @else {
+      <p class="muted state">{{ products().length ? 'По запросу ничего не найдено. Измените поиск или сбросьте фильтры.' : 'Продукция производства пока не заведена.' }}</p>
+    }
+  }
+</section>

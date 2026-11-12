@@ -1,0 +1,170 @@
+:host { display: block; }
+
+.head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.head .page-title { margin: 0; }
+
+.state { padding: 20px 0; text-align: center; }
+.err .btn { margin-left: 8px; }
+
+/* ---------- каркас «каталог + чек» ---------- */
+.order { padding: 0; overflow: hidden; }
+.layout { display: grid; grid-template-columns: 200px minmax(0, 1fr) 262px; }
+
+/* Цвет каталога: стабильная пара «акцент/подложка» по порядку каталогов. */
+.tone-0 { --cat: #5b6b7d; --cat-soft: #eef2f7; }
+.tone-1 { --cat: #1a7a4c; --cat-soft: #e8f7ee; }
+.tone-2 { --cat: #1f6fa8; --cat-soft: #e9f3fc; }
+.tone-3 { --cat: #a85a12; --cat-soft: #fff1e1; }
+.tone-4 { --cat: #7d5a23; --cat-soft: #fbf2df; }
+.tone-5 { --cat: #96374d; --cat-soft: #fcecf0; }
+
+/* ---------- рейл каталогов ---------- */
+.rail { padding: 14px 10px; border-right: 1px solid var(--border); background: #f8fafd; }
+.rail-cap {
+  display: flex; align-items: baseline; justify-content: space-between;
+  padding: 0 8px 8px; color: var(--muted); font-size: 11px; font-weight: 700;
+  letter-spacing: .5px; text-transform: uppercase;
+}
+.rail-btn {
+  position: relative; display: flex; align-items: center; gap: 7px;
+  width: 100%; min-height: 34px; padding: 5px 8px 5px 10px;
+  border: 0; border-radius: 7px; background: transparent; color: var(--text);
+  font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+}
+.rail-btn:hover { background: #e9eff6; }
+.rail-btn.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.rail-btn.on::before {
+  content: ""; position: absolute; left: 0; top: 8px; bottom: 8px;
+  width: 3px; border-radius: 2px; background: var(--accent);
+}
+.dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--cat, #9fb0c2); }
+.dot.all { background: conic-gradient(#1a7a4c, #1f6fa8, #a85a12, #7d5a23, #96374d, #1a7a4c); }
+.rail-name { min-width: 0; overflow-wrap: anywhere; }
+.rail-btn .cnt {
+  margin-left: auto; min-width: 22px; padding: 1px 6px; border-radius: 999px;
+  background: #e9eff6; color: var(--muted); font-size: 11px; text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.rail-btn.on .cnt { background: #fff; color: var(--accent); }
+
+/* ---------- список продукции ---------- */
+.list { min-width: 0; padding: 14px 16px 18px; }
+.listbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.search { position: relative; display: flex; align-items: center; flex: 1 1 240px; min-width: 0; color: var(--muted); }
+.search svg { position: absolute; left: 10px; pointer-events: none; }
+.search input { width: 100%; padding-left: 32px; }
+.search .x {
+  position: absolute; right: 4px; width: 28px; height: 28px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--muted); font: inherit; font-size: 16px; line-height: 1; cursor: pointer;
+}
+.search .x:hover { background: #eef2f7; color: var(--text); }
+.found { flex: none; color: var(--muted); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+.group { margin-bottom: 14px; }
+.group:last-child { margin-bottom: 0; }
+.group-head {
+  display: flex; align-items: center; gap: 7px; padding: 4px 2px 6px;
+  border-bottom: 1px solid var(--border); color: var(--muted);
+  font-size: 11px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase;
+}
+.group-head .cnt { margin-left: auto; font-weight: 400; font-variant-numeric: tabular-nums; }
+
+.prod-row {
+  display: flex; align-items: center; gap: 10px; min-height: 50px;
+  padding: 6px 4px 6px 8px; border-bottom: 1px solid var(--border);
+}
+.prod-row:last-child { border-bottom: 0; }
+.prod-row:hover { background: #f8fafd; }
+.prod-row.on { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+.thumb {
+  flex: none; width: 36px; height: 36px; display: grid; place-items: center;
+  border-radius: 7px; background: var(--cat-soft, #eef2f7);
+}
+.art { width: 31px; height: 31px; display: block; }
+.info { flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
+.info b { min-width: 0; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.info span { color: var(--muted); font-size: 11px; white-space: nowrap; }
+
+.stepper { flex: none; display: flex; align-items: center; gap: 3px; }
+.step {
+  display: grid; place-items: center; width: 30px; height: 30px; padding: 0;
+  border: 1px solid var(--border); border-radius: 7px; background: #fff; color: var(--text);
+  font: inherit; font-size: 17px; line-height: 1; cursor: pointer;
+}
+.step:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.step:disabled { opacity: .4; cursor: not-allowed; }
+.qty { min-width: 26px; text-align: center; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.empty { padding: 34px 16px; text-align: center; color: var(--muted); line-height: 1.55; }
+.empty b { display: block; margin-bottom: 2px; color: var(--text); font-weight: 600; }
+
+/* ---------- чек ---------- */
+.receipt {
+  display: flex; flex-direction: column; border-left: 1px solid var(--border);
+  padding: 14px 14px 16px;
+  background: linear-gradient(180deg, #fdf7cf 0, var(--panel) 112px);
+}
+.kicker { color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; }
+.receipt h3 { margin: 2px 0 0; font-size: 16px; font-weight: 700; }
+.date { margin-top: 2px; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.rule { height: 1px; margin: 12px 0 10px; background: repeating-linear-gradient(90deg, var(--border) 0 4px, transparent 4px 8px); }
+.r-body { flex: 0 1 auto; }
+.r-empty { margin: 0; padding: 4px 0 12px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.r-list { display: flex; flex-direction: column; gap: 7px; }
+.r-row { display: flex; align-items: baseline; gap: 7px; font-size: 12px; }
+.r-row span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.r-row .dots { flex: 1 1 auto; min-width: 8px; border-bottom: 1px dotted #b9c7d6; transform: translateY(-2px); }
+.r-row b { flex: none; font-variant-numeric: tabular-nums; }
+.total {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  margin-top: 12px; padding-top: 10px; border-top: 1px dashed #b9c7d6;
+}
+.total span { color: var(--muted); font-size: 11px; letter-spacing: .4px; text-transform: uppercase; }
+.total b { font-size: 21px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.unit { margin-top: -2px; color: var(--muted); font-size: 11px; text-align: right; }
+.actions { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.actions .btn { width: 100%; justify-content: center; }
+.note { margin-top: 8px; color: var(--muted); font-size: 10.5px; text-align: center; }
+
+/* ---------- адаптив ---------- */
+@media (max-width: 1100px) {
+  .layout { grid-template-columns: 176px minmax(0, 1fr); }
+  .receipt {
+    grid-column: 1 / -1; flex-direction: row; flex-wrap: wrap; align-items: flex-start;
+    gap: 10px 24px; border-left: 0; border-top: 1px solid var(--border);
+    background: linear-gradient(90deg, #fdf7cf 0, var(--panel) 220px);
+  }
+  .r-head { flex: 1 1 160px; }
+  .r-head .rule { display: none; }
+  .r-body { flex: 2 1 300px; }
+  .r-foot { flex: 1 1 210px; }
+  .total { margin-top: 0; padding-top: 0; border-top: 0; }
+  .unit { text-align: left; }
+  .actions { margin-top: 0; }
+  .note { text-align: left; }
+}
+
+@media (max-width: 700px) {
+  .layout { display: block; }
+  .rail { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 9px; border-right: 0; border-bottom: 1px solid var(--border); }
+  .rail-cap { display: none; }
+  .rail-btn { width: auto; min-height: 32px; padding: 4px 8px; }
+  .rail-btn.on::before { display: none; }
+  .rail-btn .cnt { padding: 1px 5px; }
+  .list { padding: 11px 11px 14px; }
+  .receipt { flex-direction: column; padding: 12px; }
+  .r-head .rule { display: block; margin: 10px 0 8px; }
+  .r-body, .r-foot { flex: none; }
+  .total { margin-top: 10px; padding-top: 8px; border-top: 1px dashed #b9c7d6; }
+  .unit { text-align: right; }
+  .info span { flex-basis: 100%; }
+}
+
+@media (max-width: 430px) {
+  .prod-row { gap: 7px; padding-left: 4px; }
+  .thumb { width: 31px; height: 31px; }
+  .art { width: 27px; height: 27px; }
+  .info b { font-size: 12.5px; }
+  .step { width: 28px; height: 28px; font-size: 16px; }
+  .unit { text-align: left; }
+}

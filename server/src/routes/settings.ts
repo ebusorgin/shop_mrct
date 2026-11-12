@@ -1,13 +1,14 @@
 /**
  * Настройки CRM (только администратор).
  *
- * Блоки: транспорт GPT + категории сырья (номенклатура склада).
+ * Блоки: календарь доставок производства, транспорт GPT и каталоги.
  */
 import { Router } from 'express';
 import { pool, tx } from '../db';
 import { wrap, reqStr, ApiError } from '../http';
 import { config } from '../config';
-import { audit } from '../services/audit';
+import { audit, auditTx } from '../services/audit';
+import { requireOffice } from '../services/auth';
 import {
   GPT_DEFAULTS,
   gptSettings,
@@ -19,6 +20,97 @@ import {
 import { createGptClient } from '../services/gpt-transport';
 
 export const settingsRouter = Router();
+
+// ============ КАЛЕНДАРЬ ДОСТАВОК ПРОИЗВОДСТВА ============
+
+/** Строгая календарная дата без часового пояса, включая годы 0001–0099. */
+export function deliveryDate(value: unknown, field = 'date'): string {
+  const invalid = () => new ApiError(400, `Поле «${field}»: укажите существующую дату в формате YYYY-MM-DD, год от 0001 до 9999`);
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) throw invalid();
+  const [year, month, day] = value.split('-').map(Number);
+  if (year === 0) throw invalid();
+  // Date.UTC(1, ...) означал бы 1901 год; setUTCFullYear сохраняет исходный год.
+  const utc = new Date(0);
+  utc.setUTCFullYear(year, month - 1, day);
+  if (utc.toISOString().slice(0, 10) !== value) throw invalid();
+  return value;
+}
+
+export function deliveryRange(rawFrom: unknown, rawTo: unknown): { from: string; to: string } {
+  const from = deliveryDate(rawFrom, 'from');
+  const to = deliveryDate(rawTo, 'to');
+  if (from > to) throw new ApiError(400, 'Начальная дата не может быть позже конечной');
+  const days = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000 + 1;
+  if (days > 93) throw new ApiError(400, 'Диапазон не должен превышать 93 дня включительно');
+  return { from, to };
+}
+
+export function deliveryEnabled(body: unknown): boolean {
+  if (
+    body === null || typeof body !== 'object' || Array.isArray(body) ||
+    !Object.prototype.hasOwnProperty.call(body, 'enabled') ||
+    typeof (body as Record<string, unknown>).enabled !== 'boolean'
+  ) {
+    throw new ApiError(400, 'Поле «enabled» обязательно и должно быть логическим значением true или false');
+  }
+  return (body as { enabled: boolean }).enabled;
+}
+
+/** Родительский роутер требует администратора; здесь дополнительно исключаем магазины. */
+settingsRouter.get(
+  '/delivery-calendar',
+  requireOffice,
+  wrap(async (req, res) => {
+    const { from, to } = deliveryRange(req.query.from, req.query.to);
+    const { rows } = await pool.query<{ today: string; dates: string[] }>(
+      `select to_char(current_date, 'YYYY-MM-DD') as today,
+              coalesce(array_agg(to_char(delivery_date, 'YYYY-MM-DD') order by delivery_date), '{}'::text[]) as dates
+         from delivery_schedule
+        where delivery_date between $1::date and $2::date`,
+      [from, to]
+    );
+    res.json(rows[0]);
+  })
+);
+
+/** Меняем только одну дату; повтор того же запроса не меняет данные и журнал. */
+settingsRouter.put(
+  '/delivery-calendar/:date',
+  requireOffice,
+  wrap(async (req, res) => {
+    const date = deliveryDate(req.params.date);
+    const enabled = deliveryEnabled(req.body);
+    const result = await tx(async (client) => {
+      const { rows: [clock] } = await client.query<{ today: string }>(
+        "select to_char(current_date, 'YYYY-MM-DD') as today"
+      );
+      if (date <= clock.today) throw new ApiError(400, 'Сегодняшнюю и прошедшие даты доставки нельзя изменять');
+      const { rows } = enabled
+        ? await client.query<{ date: string }>(
+          `insert into delivery_schedule (delivery_date, created_by) values ($1::date, $2)
+           on conflict (delivery_date) do nothing
+           returning to_char(delivery_date, 'YYYY-MM-DD') as date`,
+          [date, req.user?.id ?? null]
+        )
+        : await client.query<{ date: string }>(
+          `delete from delivery_schedule where delivery_date = $1::date
+           returning to_char(delivery_date, 'YYYY-MM-DD') as date`,
+          [date]
+        );
+      if (rows.length) {
+        await auditTx(client, req.user, {
+          action: 'update',
+          entity: 'setting',
+          entityId: 'delivery-calendar',
+          title: enabled ? `Доставка ${date} включена` : `Доставка ${date} отключена`,
+          details: { date, enabled },
+        });
+      }
+      return { date: rows[0]?.date ?? date, enabled };
+    });
+    res.json(result);
+  })
+);
 
 /** Что включено сейчас + доступен ли порт прокси (для индикатора на странице). */
 settingsRouter.get(

@@ -13,6 +13,11 @@ export const routes: Routes = [
         canActivate: [storeGuard],
         loadComponent: () => import('./pages/store-home.component').then((m) => m.StoreHomeComponent),
       },
+      {
+        path: 'store/orders',
+        canActivate: [storeGuard],
+        loadComponent: () => import('./orders/store-orders.component').then((m) => m.StoreOrdersComponent),
+      },
       // офисная CRM: магазинному сотруднику закрыта (уводим на /store)
       {
         path: '',

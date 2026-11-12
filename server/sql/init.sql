@@ -273,6 +273,13 @@ create table if not exists users (
   store_id      int
 );
 
+-- Даты доставок производства; магазинные пользователи не управляют календарём.
+create table if not exists delivery_schedule (
+  delivery_date date primary key,
+  created_at    timestamptz not null default now(),
+  created_by    int references users(id) on delete set null
+);
+
 create table if not exists sessions (
   token_hash text primary key,
   user_id    int not null,

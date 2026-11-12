@@ -2,6 +2,7 @@
  * «Спросить у ИИ» — подсказки, которые человек потом сохраняет сам.
  *
  * POST /api/ai/coefficient  { sourceType: 'raw'|'semi', refId, field: 'gPerPcs'|'mlPerPcs'|'gPerMl' }
+ *   либо для ещё не сохранённой позиции: { sourceType, name, unitCode?, context?, field }
  *   → { field, value, confidence, reason, model }
  *
  * Спрашиваем только то, что можно проверить: физическую величину для записи справочника
@@ -11,7 +12,7 @@
  */
 import { Router } from 'express';
 import { pool } from '../db';
-import { ApiError, reqInt, wrap } from '../http';
+import { ApiError, reqInt, reqStr, wrap } from '../http';
 import { askConvCoefficient, isConvField, CONV_FIELDS } from '../services/llm-facts';
 
 export const aiRouter = Router();
@@ -38,28 +39,51 @@ const SQL_SEMI = `
     left join units u on u.id = sp.unit_id
    where sp.id = $1`;
 
+/** Необязательный текст из тела запроса: пустое/нестроковое значение — «не задано». */
+function optText(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const s = v.trim();
+  return s || null;
+}
+
 aiRouter.post(
   '/coefficient',
   wrap(async (req, res) => {
-    const body = req.body ?? {};
+    const body = (req.body ?? {}) as Record<string, unknown>;
     const sourceType = body.sourceType === 'semi' ? 'semi' : 'raw';
     const field = body.field;
     if (!isConvField(field)) throw new ApiError(400, 'field должен быть gPerPcs, mlPerPcs или gPerMl');
-    const refId = reqInt(body, 'refId');
 
-    const { rows } = await pool.query(sourceType === 'semi' ? SQL_SEMI : SQL_PRODUCT, [refId]);
-    if (!rows.length) {
-      throw new ApiError(404, sourceType === 'semi' ? 'Полуфабрикат не найден' : 'Продукт не найден');
+    // Сохранённая позиция: описание и текущее значение берём из базы. Новую позицию
+    // (модалка «Новая позиция») описывает клиент — до сохранения записи в базе ещё нет.
+    const hasId = body.refId !== undefined && body.refId !== null && body.refId !== '';
+    let what: Parameters<typeof askConvCoefficient>[0];
+    if (hasId) {
+      const refId = reqInt(body, 'refId');
+      const { rows } = await pool.query(sourceType === 'semi' ? SQL_SEMI : SQL_PRODUCT, [refId]);
+      if (!rows.length) {
+        throw new ApiError(404, sourceType === 'semi' ? 'Полуфабрикат не найден' : 'Продукт не найден');
+      }
+      const row = rows[0];
+      what = {
+        name: row.name,
+        kind: sourceType === 'semi' ? 'вложенная заготовка цеха' : 'продукт номенклатуры',
+        unitCode: row.unitCode ?? null,
+        context: row.context ?? null,
+        field,
+        current: row[field] ?? null,
+      };
+    } else {
+      what = {
+        name: reqStr(body, 'name'),
+        kind: sourceType === 'semi' ? 'вложенная заготовка цеха' : 'продукт номенклатуры',
+        unitCode: optText(body.unitCode),
+        context: optText(body.context),
+        field,
+        current: null,
+      };
     }
-    const row = rows[0];
-    const answer = await askConvCoefficient({
-      name: row.name,
-      kind: sourceType === 'semi' ? 'вложенная заготовка цеха' : 'продукт номенклатуры',
-      unitCode: row.unitCode ?? null,
-      context: row.context ?? null,
-      field,
-      current: row[field] ?? null,
-    });
+    const answer = await askConvCoefficient(what);
     res.json({ field, unit: CONV_FIELDS[field].unit, ...answer });
   })
 );

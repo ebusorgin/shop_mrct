@@ -1,0 +1,172 @@
+<div class="head">
+  <h1 class="page-title">Заказ продукции</h1>
+  @if (auth.user()?.storeName; as storeName) { <span class="badge gray">{{ storeName }}</span> }
+  @if (!loading() && !err()) {
+    <span class="badge blue">Продукция: {{ items().length }}</span>
+    @if (selectedCount()) { <span class="badge green">В заказе: {{ selectedCount() }}</span> }
+  }
+  <div class="spacer"></div>
+  <button type="button" class="btn" (click)="load()" [disabled]="loading()">Обновить</button>
+</div>
+
+@if (msg()) { <div class="ok-msg" role="status">{{ msg() }}</div> }
+
+@if (loading()) {
+  <section class="panel"><p class="muted state" role="status">Загружаем продукцию…</p></section>
+} @else if (err()) {
+  <section class="panel">
+    <div class="err" role="alert">
+      Не удалось загрузить продукцию. {{ err() }}
+      <button type="button" class="btn sm" (click)="load()">Повторить</button>
+    </div>
+  </section>
+} @else {
+  <section class="panel order" aria-label="Заказ продукции производства">
+    <div class="layout">
+      <aside class="rail" aria-label="Каталоги продукции">
+        <div class="rail-cap"><span>Каталоги</span><span>{{ items().length }}</span></div>
+        <button type="button" class="rail-btn" [class.on]="catalogFilter() === null"
+                (click)="selectCatalog(null)" [attr.aria-pressed]="catalogFilter() === null">
+          <span class="dot all" aria-hidden="true"></span>
+          <span class="rail-name">Вся продукция</span>
+          <span class="cnt">{{ queryTotal() }}</span>
+        </button>
+        @for (c of catalogs(); track c.key) {
+          <button type="button" class="rail-btn" [class.on]="catalogFilter() === c.id"
+                  (click)="selectCatalog(c.id)" [attr.aria-pressed]="catalogFilter() === c.id">
+            <span [class]="'dot tone-' + c.tone" aria-hidden="true"></span>
+            <span class="rail-name">{{ c.icon ? c.icon + ' ' : '' }}{{ c.name }}</span>
+            <span class="cnt">{{ queryCounts().get(c.id) ?? 0 }}</span>
+          </button>
+        }
+        @if (queryCounts().get(null)) {
+          <button type="button" class="rail-btn" [class.on]="catalogFilter() === 'none'"
+                  (click)="selectCatalog('none')" [attr.aria-pressed]="catalogFilter() === 'none'">
+            <span class="dot tone-0" aria-hidden="true"></span>
+            <span class="rail-name">Без каталога</span>
+            <span class="cnt">{{ queryCounts().get(null) }}</span>
+          </button>
+        }
+      </aside>
+
+      <div class="list" role="region" aria-label="Продукция производства">
+        <div class="listbar">
+          <label class="search">
+            <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+              <circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.5" />
+              <path d="M10.5 10.5L14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+            </svg>
+            <input type="search" placeholder="Найти продукцию или каталог…" aria-label="Поиск продукции"
+                   [ngModel]="query()" (ngModelChange)="query.set($event)" />
+            @if (query()) {
+              <button type="button" class="x" (click)="query.set('')" aria-label="Очистить поиск">×</button>
+            }
+          </label>
+          <span class="found" role="status">Найдено: {{ visibleCount() }} из {{ items().length }}</span>
+          @if (query() || catalogFilter() !== null) {
+            <button type="button" class="btn sm" (click)="resetFilters()">Сбросить</button>
+          }
+        </div>
+
+        @if (groups().length) {
+          @for (g of groups(); track g.key) {
+            <section class="group" [attr.aria-labelledby]="'g-' + g.key">
+              <div class="group-head" [id]="'g-' + g.key">
+                <span [class]="'dot tone-' + g.tone" aria-hidden="true"></span>
+                <span>{{ g.icon ? g.icon + ' ' : '' }}{{ g.name }}</span>
+                <span class="cnt">{{ g.items.length }}</span>
+              </div>
+              @for (p of g.items; track p.id) {
+                <div class="prod-row" [class.on]="qtyOf(p.id) > 0">
+                  <span [class]="'thumb tone-' + toneOf(p.catalogId)">
+                    @if (kindOf(p) === 'soup') {
+                      <svg class="art" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+                        <ellipse cx="32" cy="31" rx="20" ry="6" fill="var(--cat-soft)" stroke="var(--cat)" stroke-width="1.8" stroke-linejoin="round" />
+                        <path d="M12 31c1.5 13 9 20 20 20s18.5-7 20-20" fill="var(--cat-soft)" stroke="var(--cat)" stroke-width="1.8" stroke-linejoin="round" />
+                        <path d="M24 20c-3-4 3-6 0-10M33 20c-3-4 3-6 0-10M42 20c-3-4 3-6 0-10" fill="none" stroke="var(--cat)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                        <path d="M21 36h22" fill="none" stroke="var(--cat)" stroke-width="1.5" stroke-linecap="round" opacity=".6" />
+                      </svg>
+                    } @else if (kindOf(p) === 'frozen') {
+                      <svg class="art" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+                        <path d="M18 18h28l4 6v26a3 3 0 0 1-3 3H17a3 3 0 0 1-3-3V24z" fill="var(--cat-soft)" stroke="var(--cat)" stroke-width="1.8" stroke-linejoin="round" />
+                        <path d="M18 18l3 8h25l-3-8" fill="#ffffff" stroke="var(--cat)" stroke-width="1.5" stroke-linejoin="round" />
+                        <path d="M32 29v12M26.5 32.5l11 5M37.5 32.5l-11 5" fill="none" stroke="var(--cat)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                        <circle cx="32" cy="29" r="1.5" fill="var(--cat)" />
+                      </svg>
+                    } @else if (kindOf(p) === 'hot') {
+                      <svg class="art" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+                        <ellipse cx="32" cy="34" rx="22" ry="14" fill="var(--cat-soft)" stroke="var(--cat)" stroke-width="1.8" stroke-linejoin="round" />
+                        <ellipse cx="32" cy="34" rx="15" ry="9" fill="#ffffff" stroke="var(--cat)" stroke-width="1.2" />
+                        <path d="M24 33c2-6 6-8 10-6 4-3 8 1 7 5-1 4-6 7-11 6-4 0-7-2-6-5z" fill="none" stroke="var(--cat)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                        <path d="M17 20c1-4 5-5 5-1M40 13c-2 2-1 5 2 5" fill="none" stroke="var(--cat)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity=".65" />
+                      </svg>
+                    } @else {
+                      <svg class="art" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+                        <path d="M24 23h16l2 7v20a4 4 0 0 1-4 4H26a4 4 0 0 1-4-4V30z" fill="var(--cat-soft)" stroke="var(--cat)" stroke-width="1.8" stroke-linejoin="round" />
+                        <path d="M21 15h22v8H21z" fill="var(--cat)" opacity=".9" />
+                        <path d="M27 34c-4-5 2-6 0-10M33 34c-4-5 2-6 0-10M39 34c-4-5 2-6 0-10" fill="none" stroke="var(--cat)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity=".8" />
+                        <path d="M25 43c4-4 9-4 14 0" fill="none" stroke="var(--cat)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity=".55" />
+                      </svg>
+                    }
+                  </span>
+                  <div class="info">
+                    <b>{{ p.name }}</b>
+                    <span>выход {{ fmtQty(p.portionQty, p.portionUnitCode) }}</span>
+                  </div>
+                  <div class="stepper" role="group" [attr.aria-label]="'Количество: ' + p.name">
+                    <button type="button" class="step" (click)="dec(p.id)" [disabled]="qtyOf(p.id) === 0"
+                            [attr.aria-label]="'Убрать одну порцию: ' + p.name">−</button>
+                    <span class="qty" aria-live="polite">{{ qtyOf(p.id) }}</span>
+                    <button type="button" class="step" (click)="inc(p.id)"
+                            [attr.aria-label]="'Добавить одну порцию: ' + p.name">+</button>
+                  </div>
+                </div>
+              }
+            </section>
+          }
+        } @else {
+          <p class="empty">
+            <b>{{ items().length ? 'Ничего не найдено' : 'Продукция производства пока не заведена' }}</b>
+            {{ items().length ? 'Измените запрос или выберите другой каталог.' : 'Обратитесь в офис — продукция появится после настройки техкарт.' }}
+          </p>
+        }
+      </div>
+
+      <aside class="receipt" aria-label="Черновик заказа">
+        <div class="r-head">
+          <div class="kicker">Черновик заказа</div>
+          <h3>Заказ в производство</h3>
+          <div class="date">{{ today }} · не отправлено</div>
+          <div class="rule" aria-hidden="true"></div>
+        </div>
+        <div class="r-body">
+          @if (selected().length) {
+            <div class="r-list">
+              @for (p of selected(); track p.id) {
+                <div class="r-row">
+                  <span>{{ p.name }}</span>
+                  <span class="dots" aria-hidden="true"></span>
+                  <b>{{ qtyOf(p.id) }}</b>
+                </div>
+              }
+            </div>
+          } @else {
+            <p class="r-empty">Добавьте продукцию из списка — здесь появится состав заказа.</p>
+          }
+        </div>
+        <div class="r-foot">
+          <div class="total"><span>Всего</span><b>{{ totalPortions() }}</b></div>
+          <div class="unit">
+            {{ totalPortions() }} {{ plural(totalPortions(), 'порция', 'порции', 'порций') }} ·
+            {{ selectedCount() }} {{ plural(selectedCount(), 'позиция', 'позиции', 'позиций') }}
+          </div>
+          <div class="actions">
+            <button type="button" class="btn primary" (click)="submitOrder()" [disabled]="!selectedCount()">Оформить заказ</button>
+            <button type="button" class="btn" (click)="clearOrder()" [disabled]="!selectedCount()">Очистить</button>
+          </div>
+          <div class="note">Отправка на производство появится позже</div>
+        </div>
+      </aside>
+    </div>
+  </section>
+}

@@ -140,6 +140,13 @@ export class ApiService {
   }
   testGpt$(): Observable<M.GptTestResult> { return this.http.post<M.GptTestResult>(`${this.base}/settings/gpt/test`, {}); }
 
+  deliveryCalendar$(from: string, to: string): Observable<{ today: string; dates: string[] }> {
+    return this.http.get<{ today: string; dates: string[] }>(`${this.base}/settings/delivery-calendar`, { params: { from, to } });
+  }
+  setDeliveryDate$(date: string, enabled: boolean): Observable<{ date: string; enabled: boolean }> {
+    return this.http.put<{ date: string; enabled: boolean }>(`${this.base}/settings/delivery-calendar/${date}`, { enabled });
+  }
+
   // ---- категории сырья (в настройках, только админ) ----
   rawCategories$(): Observable<M.RawCategory[]> { return this.http.get<M.RawCategory[]>(`${this.base}/settings/raw-categories`); }
   createRawCategory$(name: string, icon = '', color = ''): Observable<{ id: number; name: string }> {
@@ -171,8 +178,13 @@ export class ApiService {
 
   // ---- подсказки ИИ: спросить значение, подставить в поле (сохраняет человек) ----
   askCoefficient$(body: {
-    sourceType: 'raw' | 'semi';
-    refId: number;
+    sourceType?: 'raw' | 'semi';
+    /** Сохранённая позиция: сервер сам возьмёт её карточку из базы. */
+    refId?: number;
+    /** Ещё не сохранённая позиция: описываем её сами. */
+    name?: string;
+    unitCode?: string | null;
+    context?: string | null;
     field: 'gPerPcs' | 'mlPerPcs' | 'gPerMl';
   }): Observable<M.AiCoefficient> {
     return this.http.post<M.AiCoefficient>(`${this.base}/ai/coefficient`, body);

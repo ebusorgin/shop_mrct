@@ -1,9 +1,9 @@
-import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { FormsModule } from '@angular/forms';
+import { Router } from '@angular/router';
 import { ApiService } from '../core/api.service';
-import { MyStore, OrderCatalogItem } from '../core/models';
-import { fmtQty, httpErr } from '../core/format';
+import { MyStore } from '../core/models';
+import { httpErr } from '../core/format';
 import { ModalComponent } from '../shared/modal.component';
 
 /**
@@ -17,7 +17,7 @@ import { ModalComponent } from '../shared/modal.component';
 @Component({
   selector: 'app-store-home',
   standalone: true,
-  imports: [CommonModule, FormsModule, ModalComponent],
+  imports: [CommonModule, ModalComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="bar">
@@ -26,64 +26,14 @@ import { ModalComponent } from '../shared/modal.component';
       @if (store() && !store()!.active) { <span class="badge red">точка закрыта</span> }
       <span class="spacer"></span>
       <button class="btn sm" (click)="load()">⟳</button>
-      <button class="btn sm primary" (click)="openOrder()" [disabled]="!store()">＋ Новый заказ товаров с производства</button>
+      <button class="btn sm primary" (click)="goOrder()" [disabled]="!store()">＋ Новый заказ товаров с производства</button>
       <button class="btn sm" (click)="infoOpen.set(true)" [disabled]="!store()">✎ Данные магазина</button>
     </div>
 
     @if (err()) { <div class="err">{{ err() }}</div> }
-    @if (msg()) { <div class="ok-msg">{{ msg() }}</div> }
 
     @if (!store() && !err()) {
       <p class="muted">Загрузка…</p>
-    }
-
-    @if (orderOpen()) {
-      <app-modal title="Новый заказ товаров с производства" (closed)="orderOpen.set(false)">
-        <div class="ord-tools">
-          <input type="search" placeholder="🔍 поиск продукции…" [ngModel]="orderQuery()" (ngModelChange)="orderQuery.set($event)" />
-          <span class="muted ord-cnt">В заказе: <b>{{ selectedCount() }}</b> из {{ orderCatalog().length }}</span>
-        </div>
-
-        @if (orderErr()) { <div class="err">{{ orderErr() }}</div> }
-        @if (orderLoading()) {
-          <p class="muted">Загружаем продукцию…</p>
-        } @else {
-          <div class="ord-list">
-            @for (g of orderGroups(); track g.key) {
-              <div class="ord-grp">
-                <div class="ord-grp-t">
-                  <span class="cat-chip" [style.background]="g.color || '#eef2f7'">{{ g.icon ? g.icon + ' ' : '' }}{{ g.name }}</span>
-                  <span class="muted">{{ g.items.length }}</span>
-                </div>
-                @for (p of g.items; track p.id) {
-                  <div class="ord-row" [class.on]="qtyOf(p.id) > 0" [title]="p.note || ''">
-                    <span class="ord-nm">
-                      <b>{{ p.name }}</b>
-                      <span class="muted">выход {{ fmtQty(p.portionQty, p.portionUnitCode) }}</span>
-                    </span>
-                    <span class="ord-qty">
-                      <input type="number" min="0" step="1" [value]="qtyOf(p.id)"
-                             (input)="setQty(p.id, $any($event.target).value)" aria-label="Количество" />
-                    </span>
-                  </div>
-                }
-              </div>
-            } @empty {
-              <p class="muted" style="text-align:center;padding:18px 0">
-                {{ orderQuery().trim() ? 'По запросу ничего не найдено' : 'Продукция производства пока не заведена' }}
-              </p>
-            }
-          </div>
-          @if (selectedCount()) {
-            <div class="ord-sum">Итого: <b>{{ selectedCount() }}</b> поз. · <b>{{ totalUnits() }}</b> порц.</div>
-          }
-        }
-
-        <div modalFooter>
-          <button type="button" class="btn" (click)="orderOpen.set(false)">Отмена</button>
-          <button type="button" class="btn primary" [disabled]="!selectedCount()" (click)="submitOrder()">Оформить заказ ({{ selectedCount() }})</button>
-        </div>
-      </app-modal>
     }
 
     @if (infoOpen()) {
@@ -123,24 +73,6 @@ import { ModalComponent } from '../shared/modal.component';
     .spacer { flex: 1 1 auto; }
     .small { font-size: 12px; }
 
-    /* форма заказа: поиск, группы каталогов, строки продукции */
-    .ord-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
-    .ord-tools input[type=search] { flex: 1 1 220px; max-width: 340px; }
-    .ord-cnt { font-size: 12px; white-space: nowrap; }
-    .ord-list { display: flex; flex-direction: column; gap: 10px; }
-    .ord-grp { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
-    .ord-grp-t { display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: #f7f9fc; border-bottom: 1px solid var(--border); font-size: 12px; }
-    .cat-chip { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px; line-height: 16px; color: #26303f; }
-    .ord-row { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-bottom: 1px solid #f0f3f8; }
-    .ord-row:last-child { border-bottom: 0; }
-    .ord-row:hover { background: #f8fafd; }
-    .ord-row.on { background: var(--accent-soft); }
-    .ord-nm { flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-    .ord-nm b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .ord-nm .muted { font-size: 11.5px; }
-    .ord-qty { flex: none; display: flex; align-items: center; gap: 5px; }
-    .ord-qty input { width: 70px; }
-    .ord-sum { margin-top: 10px; font-size: 12.5px; color: var(--muted); text-align: right; }
     .info { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 16px; }
     .info > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
     .info > .wide { grid-column: 1 / -1; }
@@ -152,102 +84,19 @@ import { ModalComponent } from '../shared/modal.component';
 })
 export class StoreHomeComponent implements OnInit {
   private api = inject(ApiService);
+  private router = inject(Router);
 
   store = signal<MyStore | null>(null);
   err = signal('');
-  msg = signal('');
   infoOpen = signal(false);
-  orderOpen = signal(false);
-
-  // ---------- заказ с производства (пока только интерфейс) ----------
-  orderCatalog = signal<OrderCatalogItem[]>([]);
-  orderLoaded = signal(false);
-  orderLoading = signal(false);
-  orderErr = signal('');
-  orderQuery = signal('');
-  /** id продукции -> количество порций в заказе; отсутствие ключа = 0 (не заказываем). */
-  orderQty = signal<Record<number, number>>({});
-
-  fmtQty = fmtQty;
-
-  orderFiltered = computed(() => {
-    const q = this.orderQuery().trim().toLowerCase();
-    if (!q) return this.orderCatalog();
-    return this.orderCatalog().filter((p) => `${p.name} ${p.note ?? ''}`.toLowerCase().includes(q));
-  });
-
-  /** Группы по каталогу производства — порядок задаёт сервер (position каталога). */
-  orderGroups = computed(() => {
-    const groups: { key: string; name: string; icon: string; color: string; items: OrderCatalogItem[] }[] = [];
-    const byKey = new Map<string, (typeof groups)[number]>();
-    for (const p of this.orderFiltered()) {
-      const key = p.catalogId != null ? `c${p.catalogId}` : 'none';
-      let g = byKey.get(key);
-      if (!g) {
-        g = {
-          key,
-          name: p.catalogName || 'Без каталога',
-          icon: p.catalogIcon || '',
-          color: p.catalogColor || '',
-          items: [],
-        };
-        byKey.set(key, g);
-        groups.push(g);
-      }
-      g.items.push(p);
-    }
-    return groups;
-  });
-
-  selectedCount = computed(() => Object.values(this.orderQty()).filter((q) => q > 0).length);
-  totalUnits = computed(() => Object.values(this.orderQty()).reduce((s, q) => s + Math.max(0, q), 0));
 
   ngOnInit(): void {
     this.load();
   }
 
-  openOrder(): void {
-    this.orderOpen.set(true);
-    this.orderQuery.set('');
-    this.orderErr.set('');
-    if (!this.orderLoaded()) this.loadOrderCatalog();
-  }
-
-  private loadOrderCatalog(): void {
-    this.orderLoading.set(true);
-    this.api.storeOrderCatalog$().subscribe({
-      next: (v) => {
-        this.orderLoading.set(false);
-        this.orderLoaded.set(true);
-        this.orderCatalog.set(v);
-      },
-      error: (e) => {
-        this.orderLoading.set(false);
-        this.orderErr.set(httpErr(e));
-      },
-    });
-  }
-
-  qtyOf(id: number): number {
-    return this.orderQty()[id] ?? 0;
-  }
-
-  setQty(id: number, value: string): void {
-    const q = Math.max(0, Math.floor(Number(value) || 0));
-    this.orderQty.update((m) => {
-      const n = { ...m };
-      if (q > 0) n[id] = q;
-      else delete n[id];
-      return n;
-    });
-  }
-
-  submitOrder(): void {
-    const n = this.selectedCount();
-    if (!n) return;
-    this.msg.set(`Черновик заказа: ${n} поз. · ${this.totalUnits()} порц. — отправка на производство появится позже`);
-    this.orderQty.set({});
-    this.orderOpen.set(false);
+  /** Заказ оформляется на отдельной странице аккаунта магазина. */
+  goOrder(): void {
+    this.router.navigate(['/store/orders']);
   }
 
   load(): void {

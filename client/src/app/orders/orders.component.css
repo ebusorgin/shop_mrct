@@ -1,0 +1,19 @@
+:host { display: block; }
+.head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.head .page-title { margin: 0; }
+h2 { margin: 0 0 12px; font-size: 15px; }
+.filters { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.filters input { flex: 1 1 240px; min-width: 0; }
+.filters select { flex: 0 1 240px; min-width: 0; }
+.found { margin: 12px 0; font-size: 12px; }
+.state { padding: 20px 0; text-align: center; }
+.err { margin: 12px 0 0; }
+.err .btn { margin-left: 8px; }
+.product-name { width: 55%; overflow-wrap: anywhere; }
+.cat-chip { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; color: #26303f; }
+
+@media (max-width: 640px) {
+  .filters input, .filters select { flex-basis: 100%; width: 100%; }
+  .product-name { width: auto; }
+  .tbl.stack td { grid-column: 1 / -1; }
+}

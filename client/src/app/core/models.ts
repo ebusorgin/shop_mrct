@@ -486,6 +486,18 @@ export interface GptTestResult {
   error?: string;
 }
 
+/** Все ручные даты расписания и сегодняшняя дата сервера. Дни правила клиент считает сам — их в расписании нет. */
+export interface DeliveryCalendar {
+  today: string;
+  dates: string[];
+}
+
+/** Повторяющиеся доставки: дни недели по ISO (1=пн) ИЛИ числа месяца (1..31). */
+export interface DeliveryRule {
+  weekdays: number[];
+  monthDays: number[];
+}
+
 /** Категория сырья (product_categories) для управления в Настройках. */
 export interface RawCategory {
   id: number;

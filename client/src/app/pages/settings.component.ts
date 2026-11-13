@@ -5,7 +5,7 @@ import { FormsModule } from '@angular/forms';
 import { CommonModule } from '@angular/common';
 import { TranslatePipe } from '@ngx-translate/core';
 import { ApiService } from '../core/api.service';
-import { AppSettings, GptTestResult, ProductCatalog, RawCategory } from '../core/models';
+import { AppSettings, DeliveryRule, GptTestResult, ProductCatalog, RawCategory } from '../core/models';
 import { httpErr } from '../core/format';
 import { PasswordFormComponent } from '../shared/password-form.component';
 
@@ -19,6 +19,36 @@ interface DeliveryDay {
 function calendarDate(date: Date): string {
   return `${String(date.getFullYear()).padStart(4, '0')}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
+
+/** Сдвиг календарной даты через UTC: без наложения поясов и перевода часов. */
+function shiftCalendarDate(value: string, days: number): string {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value)
+      ? new Date(Date.parse(`${value}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10)
+      : value;
+}
+
+/** Тот же признак, что считает сервер: чем именно дата покрыта правилом. */
+type RuleKind = 'week' | 'month' | 'both';
+
+function ruleDayKind(date: string, weekdays: number[], monthDays: number[]): RuleKind | null {
+  const day = new Date(`${date}T00:00:00Z`);
+  const weekly = weekdays.includes(day.getUTCDay() || 7);
+  const monthly = monthDays.includes(day.getUTCDate());
+  if (weekly && monthly) return 'both';
+  return weekly ? 'week' : monthly ? 'month' : null;
+}
+
+/** Совпадения правила ИЛИ за окно; прошлое отсечено, сегодня ещё считается. Только предпросмотр. */
+function ruleMatches(from: string, to: string, weekdays: number[], monthDays: number[], today: string): { date: string; kind: RuleKind }[] {
+  const out: { date: string; kind: RuleKind }[] = [];
+  const end = Date.parse(`${to}T00:00:00Z`);
+  for (let time = Date.parse(`${from}T00:00:00Z`); time <= end; time += 86_400_000) {
+    const date = new Date(time).toISOString().slice(0, 10);
+    const kind = date >= today ? ruleDayKind(date, weekdays, monthDays) : null;
+    if (kind) out.push({ date, kind });
+  }
+  return out;
+}
 @Component({
   selector: 'app-settings',
   standalone: true,
@@ -28,39 +58,92 @@ function calendarDate(date: Date): string {
     .cat-badge { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; border-radius:8px; margin-right:8px; font-size:15px; line-height:1; vertical-align:middle; }
     .pc-icon { width:150px; }
     .pc-color { width:46px; height:34px; padding:2px; }
-    .delivery-head, .delivery-nav, .delivery-footer, .delivery-legend { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
-    .delivery-head { justify-content:space-between; margin-bottom:20px; }
-    .delivery-head h2 { font-size:18px; margin:0 0 6px; }
+    /* ---------- блок «Доставки»: шапка, вкладки, календарь, правило ---------- */
+    .delivery-head, .delivery-nav, .delivery-footer, .delivery-legend, .delivery-summary { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+    .delivery-head { justify-content:space-between; margin-bottom:18px; }
+    .delivery-head h2 { font-size:19px; margin:0 0 6px; letter-spacing:-.02em; }
     .delivery-head p { margin:0; font-size:13px; color:var(--muted); }
-    .delivery-nav { gap:8px; }
-    .delivery-nav .btn { min-height:40px; justify-content:center; }
-    .delivery-arrow { width:40px; padding:8px; font-size:20px; }
-    .delivery-range { margin-bottom:16px; font-size:13px; font-weight:600; color:var(--muted); }
+    .delivery-summary { gap:8px; }
+    .delivery-tabs { margin:0 0 18px; padding:4px; gap:4px; border:1px solid var(--border); border-radius:12px; background:var(--bg); }
+    .delivery-tabs button { flex:1 1 auto; min-height:38px; padding:0 14px; border:0; border-radius:8px; background:transparent; color:var(--muted); font-size:13px; }
+    .delivery-tabs button.on { background:var(--brand-blue-dark); color:#fff; box-shadow:0 2px 6px rgba(0,102,153,.22); }
+    .delivery-nav { margin-bottom:14px; gap:8px; }
+    .delivery-nav .btn { min-height:38px; justify-content:center; }
+    .delivery-arrow { width:38px; padding:6px; font-size:18px; }
+    .delivery-range { margin-right:auto; font-size:13px; font-weight:600; color:var(--muted); }
     .delivery-months { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:20px; }
-    .delivery-month { min-width:0; border:1px solid var(--border); border-radius:10px; padding:16px 12px; }
-    .delivery-month-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:16px; }
-    .delivery-month h3 { margin:0; font-size:15px; text-transform:capitalize; }
+    .delivery-month { min-width:0; border:1px solid var(--border); border-radius:12px; background:var(--panel); padding:16px 12px; }
+    .delivery-month-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:14px; padding-bottom:10px; border-bottom:1px solid var(--border); }
+    .delivery-month h3 { margin:0; font-size:15px; font-weight:700; text-transform:capitalize; }
     .delivery-month-head span { color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; white-space:nowrap; }
     .delivery-grid { display:grid; grid-template-columns:repeat(7, minmax(0, 1fr)); gap:4px; }
     .delivery-weekday { padding:0 0 10px; text-align:center; color:var(--muted); font-size:11px; font-weight:600; }
-    .delivery-day { position:relative; min-width:0; height:40px; padding:0; border:1px solid transparent; border-radius:7px; background:transparent; color:var(--text); font:inherit; font-variant-numeric:tabular-nums; cursor:pointer; }
-    .delivery-day.weekend { background:var(--bg); }
-    .delivery-day:hover:not(:disabled) { background:var(--accent-soft); border-color:var(--brand-blue-dark); }
+    .delivery-day { position:relative; min-width:0; height:40px; padding:0; border:1px solid transparent; border-radius:7px; background:transparent; color:var(--text); font:inherit; font-size:13px; font-variant-numeric:tabular-nums; cursor:pointer; transition:background .12s ease,border-color .12s ease; }
+    .delivery-day.weekend { background:var(--bg); color:var(--muted); }
+    .delivery-day:hover:not(:disabled) { border-color:var(--brand-blue-dark); }
+    .delivery-day:hover:not(.rule):not(:disabled) { background:var(--accent-soft); }
     .delivery-day.today { border-color:var(--brand-blue-dark); font-weight:700; }
-    .delivery-day.selected { background:var(--brand-blue-dark); color:white; font-weight:700; }
-    .delivery-day.selected:hover:not(:disabled) { background:var(--brand-blue-dark); box-shadow:inset 0 0 0 2px var(--brand-yellow); }
+    .delivery-day.selected { background:var(--brand-blue-dark); color:white; font-weight:700; box-shadow:0 2px 5px rgba(15,23,42,.12); }
+    .delivery-day.selected:hover:not(.rule):not(:disabled) { background:var(--brand-blue-dark); box-shadow:inset 0 0 0 2px var(--brand-yellow); }
+    /* источники дня: ручная отметка, правило недели, правило месяца. Совпадения делят клетку полосами */
+    .delivery-day.rule { font-weight:700; box-shadow:none; }
+    .delivery-day.rule-week { border-color:var(--green); background:var(--green-soft); color:var(--green); }
+    .delivery-day.rule-month { border-color:var(--amber); background:var(--amber-soft); color:var(--amber); }
+    .delivery-day.rule-both { border-color:var(--green); color:var(--text); background:linear-gradient(135deg, var(--green-soft) 0 50%, var(--amber-soft) 50% 100%); box-shadow:inset 0 0 0 1px var(--amber); }
+    .delivery-day.selected.rule { color:var(--text); }
+    .delivery-day.selected.rule-week { background:linear-gradient(135deg, var(--accent-soft) 0 50%, var(--green-soft) 50% 100%); }
+    .delivery-day.selected.rule-month { background:linear-gradient(135deg, var(--accent-soft) 0 50%, var(--amber-soft) 50% 100%); }
+    .delivery-day.selected.rule-both { background:linear-gradient(135deg, var(--accent-soft) 0 33.4%, var(--green-soft) 33.4% 66.7%, var(--amber-soft) 66.7% 100%); box-shadow:none; }
+    .delivery-day.selected.rule svg { color:var(--brand-blue-dark); }
+    .delivery-day.rule:disabled { opacity:1; }
     .delivery-day svg { position:absolute; top:3px; right:3px; width:9px; height:9px; }
     .delivery-day:disabled { opacity:.45; cursor:wait; }
     .delivery-day.locked { opacity:.6; cursor:not-allowed; }
     .delivery-day.pending { background:var(--accent-soft); }
-    .delivery-day:focus-visible, .delivery-nav .btn:focus-visible { outline:3px solid var(--brand-blue-dark); outline-offset:2px; }
-    .delivery-footer { justify-content:space-between; border-top:1px solid var(--border); margin-top:20px; padding-top:14px; font-size:12px; color:var(--muted); }
+    .delivery-day:focus-visible, .delivery-nav .btn:focus-visible, .delivery-tabs button:focus-visible, .rule-chip:focus-visible { outline:3px solid var(--brand-blue-dark); outline-offset:2px; }
+    .delivery-footer { justify-content:space-between; border-top:1px solid var(--border); margin-top:18px; padding-top:14px; font-size:12px; color:var(--muted); gap:14px; }
     .delivery-legend span { display:inline-flex; align-items:center; gap:6px; }
     .delivery-swatch { width:14px; height:14px; border-radius:4px; display:inline-block; }
     .delivery-swatch.selected { background:var(--brand-blue-dark); }
     .delivery-swatch.today { border:1px solid var(--brand-blue-dark); }
-    .delivery-status { min-height:18px; }
+    .delivery-swatch.rule-week { border:1px solid var(--green); background:var(--green-soft); }
+    .delivery-swatch.rule-month { border:1px solid var(--amber); background:var(--amber-soft); }
+    .delivery-swatch.rule-both { border:1px solid var(--green); background:linear-gradient(135deg, var(--green-soft) 0 50%, var(--amber-soft) 50% 100%); box-shadow:inset 0 0 0 1px var(--amber); }
+    .delivery-swatch.selected.rule-week { border:1px solid var(--brand-blue-dark); background:linear-gradient(135deg, var(--accent-soft) 0 50%, var(--green-soft) 50% 100%); }
+    .delivery-swatch.selected.rule-both { border:1px solid var(--brand-blue-dark); background:linear-gradient(135deg, var(--accent-soft) 0 33.4%, var(--green-soft) 33.4% 66.7%, var(--amber-soft) 66.7% 100%); box-shadow:none; }
+    .delivery-status { min-height:18px; text-align:right; }
     .delivery-error { display:flex; align-items:center; gap:12px; justify-content:space-between; }
+
+    /* ---------- вкладки правила ---------- */
+    .rule-panel { padding:18px; border:1px solid var(--border); border-left:3px solid var(--brand-blue-dark); border-radius:12px; background:var(--bg); }
+    .rule-panel h3 { margin:0 0 6px; font-size:16px; }
+    .rule-panel > p { max-width:760px; margin:0 0 16px; color:var(--muted); font-size:12px; line-height:1.55; }
+    .rule-chips { display:grid; grid-template-columns:repeat(7, minmax(0, 1fr)); gap:8px; max-width:560px; }
+    .rule-chips-month { grid-template-columns:repeat(auto-fill, minmax(58px, 1fr)); max-width:none; }
+    .rule-chip { min-width:0; min-height:40px; padding:4px; border:1px solid var(--border); border-radius:8px; background:var(--panel); color:var(--text); font:inherit; font-variant-numeric:tabular-nums; cursor:pointer; transition:background .12s ease,border-color .12s ease; }
+    .rule-chip.active { background:var(--brand-blue-dark); border-color:var(--brand-blue-dark); color:#fff; font-weight:600; }
+    .rule-chip:hover:not(:disabled) { border-color:var(--brand-blue-dark); }
+    .rule-chip:disabled { opacity:.6; cursor:wait; }
+    /* цвет чипов повторяет цвет этих дат в календаре: неделя — зелёный, месяц — янтарный */
+    .rule-week-mode .rule-chip.active { background:var(--green); border-color:var(--green); }
+    .rule-month-mode .rule-chip.active { background:var(--amber); border-color:var(--amber); }
+    .rule-chip-head { display:flex; align-items:baseline; justify-content:space-between; gap:12px; margin-bottom:10px; font-size:12px; color:var(--muted); }
+    .rule-note { margin-top:12px; color:var(--muted); font-size:12px; line-height:1.5; }
+    .rule-upcoming { margin-top:18px; padding-top:14px; border-top:1px dashed var(--border); }
+    .rule-upcoming b { display:block; margin-bottom:8px; font-size:11px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; color:var(--muted); }
+    .rule-dates { display:flex; flex-wrap:wrap; gap:6px; margin:0; padding:0; list-style:none; }
+    .rule-dates li { padding:5px 10px; border:1px solid var(--border); border-radius:999px; background:var(--panel); font-size:12px; font-variant-numeric:tabular-nums; text-transform:capitalize; }
+    .rule-dates li.rule-week { border-color:var(--green); background:var(--green-soft); color:var(--green); }
+    .rule-dates li.rule-month { border-color:var(--amber); background:var(--amber-soft); color:var(--amber); }
+    .rule-dates li.rule-both { border-color:var(--green); color:var(--text); background:linear-gradient(135deg, var(--green-soft) 0 50%, var(--amber-soft) 50% 100%); box-shadow:inset 0 0 0 1px var(--amber); }
+    .rule-status { margin-top:14px; min-height:18px; font-size:12px; color:var(--muted); }
+    .rule-actions { display:flex; align-items:center; flex-wrap:wrap; gap:10px; margin-top:16px; }
+    @media (max-width:640px) {
+      .rule-panel { padding:14px 10px; }
+      .rule-chips { gap:6px; }
+      .rule-chip { min-height:44px; }
+      .delivery-months { grid-template-columns:1fr; }
+    }
     @media (max-width:1150px) and (min-width:901px) {
       .delivery-months { gap:10px; }
       .delivery-month { padding:12px 6px; }
@@ -72,13 +155,75 @@ function calendarDate(date: Date): string {
       .delivery-months { grid-template-columns:1fr; gap:14px; }
       .delivery-day { height:44px; }
     }
+
+    /* Settings page visual system */
+    :host { display:block; color:var(--text); }
+    .settings-topbar { align-items:center; gap:16px; margin-bottom:18px; }
+    .settings-heading { min-width:0; }
+    .settings-heading .page-title { display:flex; align-items:center; gap:10px; font-size:26px; font-weight:750; letter-spacing:-.035em; }
+    .settings-heading p { margin:6px 0 0; color:var(--muted); font-size:13px; line-height:1.5; }
+    .settings-top-actions { display:flex; align-items:center; gap:8px; margin-left:auto; }
+    /* ---------- верхнее меню: вкладки браузерного вида, у каждой свой контент ---------- */
+    .settings-tabs { margin:0 0 20px; }
+    .settings-nav { display:flex; align-items:flex-end; gap:2px; overflow-x:auto; padding:0 8px 1px; box-shadow:inset 0 -1px 0 var(--border); scrollbar-width:none; }
+    .settings-nav::-webkit-scrollbar { display:none; }
+    .settings-nav button { display:inline-flex; align-items:center; gap:8px; flex:0 0 auto; min-height:40px; margin-bottom:-1px; padding:0 16px; border:1px solid transparent; border-radius:11px 11px 0 0; background:transparent; color:var(--muted); font:inherit; font-size:13px; font-weight:600; cursor:pointer; transition:background .15s ease,color .15s ease,border-color .15s ease; }
+    .settings-nav button:hover { background:var(--bg); color:var(--text); }
+    .settings-nav button:focus-visible { outline:3px solid color-mix(in srgb,var(--brand-blue-dark) 30%,transparent); outline-offset:-3px; }
+    .settings-nav button.on { background:var(--panel); border-color:var(--border); border-bottom-color:var(--panel); color:var(--text); }
+    .settings-tabbody .settings-section { margin:0; border-top:0; border-radius:0 0 14px 14px; }
+    .settings-section { margin:0 0 18px; padding:22px; border:1px solid var(--border); border-radius:14px; background:var(--panel); box-shadow:0 5px 18px rgba(15,23,42,.035); }
+    .settings-section > h3 { display:flex; align-items:center; gap:9px; margin:0 0 7px; font-size:17px; font-weight:700; letter-spacing:-.015em; }
+    .settings-section > .muted { max-width:850px; margin-bottom:16px !important; line-height:1.55; }
+    .settings-section .hr { border:0; border-top:1px solid var(--border); margin:20px 0; }
+    .settings-section .btn { transition:background .15s ease,border-color .15s ease,transform .15s ease; }
+    .settings-section .btn:not(:disabled):active { transform:translateY(1px); }
+    .settings-section input:not([type="checkbox"]):not([type="color"]), .settings-section select { min-height:38px; border-radius:8px; }
+    .settings-section input:focus-visible, .settings-section select:focus-visible, .settings-section button:focus-visible { outline:3px solid color-mix(in srgb,var(--brand-blue-dark) 30%,transparent); outline-offset:2px; }
+    .settings-section .tbl { width:100%; border-collapse:separate; border-spacing:0; overflow:hidden; border:1px solid var(--border); border-radius:10px; }
+    .settings-section .tbl th { padding:11px 13px; background:var(--bg); color:var(--muted); font-size:11px; font-weight:700; letter-spacing:.055em; text-transform:uppercase; }
+    .settings-section .tbl td { padding:11px 13px; border-top:1px solid var(--border); vertical-align:middle; }
+    .settings-section .tbl tr:hover td { background:color-mix(in srgb,var(--bg) 55%,transparent); }
+    .settings-section .tbl .btn { min-width:34px; min-height:32px; }
+    .settings-section .row.mt { display:flex; align-items:center; flex-wrap:wrap; gap:9px; padding:14px; margin-top:12px; border:1px dashed var(--border); border-radius:10px; background:var(--bg); }
+    .settings-section .row.mt input:first-child { flex:1 1 200px; max-width:320px !important; }
+    .cat-badge { flex:0 0 28px; width:28px; height:28px; border:1px solid rgba(15,23,42,.06); }
+    .pc-icon { min-width:145px; }
+    .pc-color { cursor:pointer; border:1px solid var(--border); border-radius:7px; background:var(--panel); }
+    .settings-section .badge { vertical-align:middle; }
+    .settings-section .ok-msg, .settings-section .err { border-radius:9px; padding:10px 12px; }
+    @media (max-width:700px) {
+      .settings-heading .page-title { font-size:22px; }
+      .settings-topbar { align-items:flex-start; }
+      .settings-top-actions { gap:6px; }
+      .settings-section, .delivery-block { padding:16px 12px; border-radius:11px; }
+      .settings-tabbody .settings-section { border-radius:0 0 11px 11px; }
+      .settings-tabs { margin-bottom:14px; }
+      .settings-nav button { padding:0 12px; }
+      .settings-section .tbl { display:block; overflow-x:auto; white-space:nowrap; }
+      .delivery-head { gap:14px; }
+      .delivery-tabs { flex-wrap:wrap; }
+      .delivery-tabs button { flex:1 1 40%; }
+      .delivery-nav { width:100%; }
+      .delivery-nav .btn:not(.delivery-arrow) { flex:1; }
+      .delivery-footer { align-items:flex-start; flex-direction:column; }
+      .delivery-status { text-align:left; }
+      .settings-section .row.mt input:first-child { flex-basis:100%; max-width:none !important; }
+    }
+    @media (prefers-reduced-motion:reduce) {
+      .settings-section .btn, .delivery-day, .rule-chip, .settings-nav button { transition:none; }
+    }
   `],
   template: `
-    <div class="bar">
-      <h1 class="page-title" style="margin:0">⚙️ Настройки</h1>
-      <span class="spacer"></span>
-      <button class="btn sm" (click)="pwdOpen.set(true)">{{ 'common.password' | translate }}</button>
-      <button class="btn sm" (click)="load()" [disabled]="busy()">⟳</button>
+    <div class="bar settings-topbar">
+      <div class="settings-heading">
+        <h1 class="page-title" style="margin:0">⚙️ Настройки</h1>
+        <p>Управление доставками, интеграциями и справочниками производства</p>
+      </div>
+      <div class="settings-top-actions">
+        <button class="btn sm" (click)="pwdOpen.set(true)">🔒 {{ 'common.password' | translate }}</button>
+        <button class="btn sm" (click)="load()" [disabled]="busy()" aria-label="Обновить настройки" title="Обновить">⟳</button>
+      </div>
     </div>
     @if (pwdOpen()) {
       <app-password-form (closed)="pwdOpen.set(false)" />
@@ -86,78 +231,191 @@ function calendarDate(date: Date): string {
     @if (err()) { <div class="err">{{ err() }}</div> }
     @if (msg()) { <div class="ok-msg">{{ msg() }}</div> }
 
-    <section class="panel delivery-calendar" aria-labelledby="delivery-title" [attr.aria-busy]="calendarLoading()">
+    <div class="settings-tabs">
+      <div class="settings-nav" role="tablist" aria-label="Разделы настроек">
+        <button type="button" role="tab" id="settings-tab-delivery" aria-controls="settings-panel-delivery"
+                [class.on]="settingsTab() === 'delivery'" [attr.aria-selected]="settingsTab() === 'delivery'"
+                (click)="settingsTab.set('delivery')">📅 <span>Доставки</span></button>
+        <button type="button" role="tab" id="settings-tab-gpt" aria-controls="settings-panel-gpt"
+                [class.on]="settingsTab() === 'gpt'" [attr.aria-selected]="settingsTab() === 'gpt'"
+                (click)="settingsTab.set('gpt')">🤖 <span>GPT и прокси</span></button>
+        <button type="button" role="tab" id="settings-tab-categories" aria-controls="settings-panel-categories"
+                [class.on]="settingsTab() === 'categories'" [attr.aria-selected]="settingsTab() === 'categories'"
+                (click)="settingsTab.set('categories')">📦 <span>Категории склада</span></button>
+        <button type="button" role="tab" id="settings-tab-catalogs" aria-controls="settings-panel-catalogs"
+                [class.on]="settingsTab() === 'catalogs'" [attr.aria-selected]="settingsTab() === 'catalogs'"
+                (click)="settingsTab.set('catalogs')">🥗 <span>Каталоги продукции</span></button>
+      </div>
+      <div class="settings-tabbody">
+
+    <section id="settings-panel-delivery" class="panel settings-section delivery-block" role="tabpanel"
+             aria-labelledby="settings-tab-delivery" [hidden]="settingsTab() !== 'delivery'"
+             [attr.aria-busy]="calendarLoading()">
       <div class="delivery-head">
         <div>
-          <h2 id="delivery-title">Календарь доставок</h2>
-          <p>Выберите дни доставки товаров в магазины. Сегодняшнюю и прошедшие даты нельзя изменять.</p>
+          <h2 id="delivery-title">📅 Доставки</h2>
+          <p>Календарь производственных доставок и правила, которые заполняют его сами.</p>
         </div>
-        <div class="delivery-nav" aria-label="Период календаря">
-          <button type="button" class="btn delivery-arrow" aria-label="Предыдущие три месяца"
-                  [disabled]="calendarLoading() || calendarSaving().size > 0" (click)="moveCalendar(-3)">←</button>
-          <button type="button" class="btn" [disabled]="calendarLoading() || calendarSaving().size > 0 || calendarOffset() === 0"
-                  (click)="moveCalendar(-calendarOffset())">Текущий месяц</button>
-          <button type="button" class="btn delivery-arrow" aria-label="Следующие три месяца"
-                  [disabled]="calendarLoading() || calendarSaving().size > 0" (click)="moveCalendar(3)">→</button>
+        <div class="delivery-summary" aria-label="Сводка по доставкам">
+          <span class="pill blue">Ближайшая: {{ nextDeliveryLabel() }}</span>
+          <span class="pill gray">В периоде: {{ deliveriesInWindow() }}</span>
+          <span class="pill" [class.green]="ruleActive()" [class.gray]="!ruleActive()">Авто: {{ ruleSummaryLabel() }}</span>
         </div>
       </div>
-      <div class="delivery-range">{{ calendarMonths()[0].label }} — {{ calendarMonths()[2].label }}</div>
+
+      <div class="tabs delivery-tabs" role="tablist" aria-label="Разделы доставок">
+        <button type="button" role="tab" [class.on]="deliveryTab() === 'calendar'"
+                [attr.aria-selected]="deliveryTab() === 'calendar'" (click)="goDeliveryTab('calendar')">🗓 Календарь</button>
+        <button type="button" role="tab" [class.on]="deliveryTab() === 'week'"
+                [attr.aria-selected]="deliveryTab() === 'week'" (click)="goDeliveryTab('week')">🔁 Каждую неделю</button>
+        <button type="button" role="tab" [class.on]="deliveryTab() === 'month'"
+                [attr.aria-selected]="deliveryTab() === 'month'" (click)="goDeliveryTab('month')">📆 Каждый месяц</button>
+      </div>
+
+      @if (ruleErr()) { <div class="err" role="alert">{{ ruleErr() }}</div> }
       @if (calendarErr()) {
         <div class="err delivery-error" role="alert">
           <span>{{ calendarErr() }}</span>
-          <button type="button" class="btn sm" [disabled]="calendarLoading() || calendarSaving().size > 0" (click)="loadCalendar()">Обновить</button>
+          <button type="button" class="btn sm" [disabled]="calendarLoading() || calendarSaving().size > 0 || ruleSaving()" (click)="loadCalendar()">Обновить</button>
         </div>
       }
-      <div class="delivery-months">
-        @for (month of calendarMonths(); track month.key) {
-          <section class="delivery-month" [attr.aria-labelledby]="'delivery-month-' + month.key">
-            <div class="delivery-month-head">
-              <h3 [id]="'delivery-month-' + month.key">{{ month.label }}</h3>
-              <span>Доставок: {{ deliveriesInMonth(month.key) }}</span>
-            </div>
-            <div class="delivery-grid">
-              @for (weekday of calendarWeekdays; track weekday) {
-                <span class="delivery-weekday" aria-hidden="true">{{ weekday }}</span>
-              }
-              @for (day of month.days; track $index) {
-                @if (day) {
-                  <button type="button" class="delivery-day" [class.weekend]="day.weekend"
-                          [class.today]="day.date === calendarToday()" [class.selected]="deliveryDates().has(day.date)"
-                          [class.locked]="day.date <= calendarToday()"
-                          [class.pending]="calendarSaving().has(day.date)" [attr.data-date]="day.date"
-                          [attr.aria-label]="day.label" [attr.aria-pressed]="deliveryDates().has(day.date)"
-                          [attr.aria-current]="day.date === calendarToday() ? 'date' : null"
-                          [attr.title]="day.date <= calendarToday() ? 'Сегодняшнюю и прошедшие даты нельзя изменять' : null"
-                          [disabled]="!calendarReady() || day.date <= calendarToday() || calendarSaving().has(day.date)" (click)="toggleDelivery(day)">
-                    {{ day.number }}
-                    @if (deliveryDates().has(day.date)) {
-                      <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6l2.5 2.5L10 3" fill="none" stroke="currentColor" stroke-width="1.7" /></svg>
-                    }
-                  </button>
-                } @else { <span aria-hidden="true"></span> }
-              }
-            </div>
-          </section>
-        }
-      </div>
-      <div class="delivery-footer">
-        <div class="delivery-legend">
-          <span><i class="delivery-swatch selected" aria-hidden="true"></i>День доставки</span>
-          <span><i class="delivery-swatch today" aria-hidden="true"></i>Сегодня</span>
+
+      @if (deliveryTab() === 'calendar') {
+        <div class="delivery-nav" aria-label="Период календаря">
+          <span class="delivery-range">{{ calendarMonths()[0].label }} — {{ calendarMonths()[2].label }}</span>
+          <button type="button" class="btn delivery-arrow" aria-label="Предыдущие три месяца"
+                  [disabled]="calendarLoading() || calendarSaving().size > 0 || ruleSaving()" (click)="moveCalendar(-3)">←</button>
+          <button type="button" class="btn" [disabled]="calendarLoading() || calendarSaving().size > 0 || ruleSaving() || calendarOffset() === 0"
+                  (click)="moveCalendar(-calendarOffset())">Текущий месяц</button>
+          <button type="button" class="btn delivery-arrow" aria-label="Следующие три месяца"
+                  [disabled]="calendarLoading() || calendarSaving().size > 0 || ruleSaving()" (click)="moveCalendar(3)">→</button>
         </div>
-        <div class="delivery-status" role="status" aria-live="polite">
-          @if (calendarLoading()) { Загружаем расписание… }
-          @else if (calendarSaving().size) { Сохраняем… }
-          @else { {{ calendarMsg() || 'Изменения сохраняются автоматически. Повторный клик отменяет доставку.' }} }
+        <div class="delivery-months">
+          @for (month of calendarMonths(); track month.key) {
+            <section class="delivery-month" [attr.aria-labelledby]="'delivery-month-' + month.key">
+              <div class="delivery-month-head">
+                <h3 [id]="'delivery-month-' + month.key">{{ month.label }}</h3>
+                <span>Доставок: {{ deliveriesInMonth(month.key) }}</span>
+              </div>
+              <div class="delivery-grid">
+                @for (weekday of calendarWeekdays; track weekday) {
+                  <span class="delivery-weekday" aria-hidden="true">{{ weekday }}</span>
+                }
+                @for (day of month.days; track $index) {
+                  @if (day) {
+                    <button type="button" class="delivery-day" [class.weekend]="day.weekend"
+                            [class.today]="day.date === calendarToday()" [class.selected]="deliveryDates().has(day.date)"
+                            [class.rule]="ruleKind(day.date)" [class.rule-week]="ruleKind(day.date) === 'week'"
+                            [class.rule-month]="ruleKind(day.date) === 'month'" [class.rule-both]="ruleKind(day.date) === 'both'"
+                            [class.locked]="day.date <= calendarToday()"
+                            [class.pending]="calendarSaving().has(day.date)" [attr.data-date]="day.date"
+                            [attr.aria-label]="day.label" [attr.aria-pressed]="deliveryDates().has(day.date)"
+                            [attr.aria-current]="day.date === calendarToday() ? 'date' : null"
+                            [attr.title]="ruleHint(day.date)"
+                            [disabled]="!calendarReady() || ruleSaving() || day.date <= calendarToday() || calendarSaving().has(day.date)" (click)="toggleDelivery(day)">
+                      {{ day.number }}
+                      @if (deliveryDays().has(day.date)) {
+                        <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6l2.5 2.5L10 3" fill="none" stroke="currentColor" stroke-width="1.7" /></svg>
+                      }
+                    </button>
+                  } @else { <span aria-hidden="true"></span> }
+                }
+              </div>
+            </section>
+          }
         </div>
-      </div>
+        <div class="delivery-footer">
+          <div class="delivery-legend">
+            <span><i class="delivery-swatch selected" aria-hidden="true"></i>Вручную</span>
+            <span><i class="delivery-swatch rule-week" aria-hidden="true"></i>По правилу недели</span>
+            <span><i class="delivery-swatch rule-month" aria-hidden="true"></i>По правилу месяца</span>
+            <span><i class="delivery-swatch rule-both" aria-hidden="true"></i>Оба правила</span>
+            <span><i class="delivery-swatch selected rule-week" aria-hidden="true"></i>Вручную + правило</span>
+            <span><i class="delivery-swatch today" aria-hidden="true"></i>Сегодня</span>
+          </div>
+          <div class="delivery-status" role="status" aria-live="polite">
+            @if (calendarLoading()) { Загружаем расписание… }
+            @else if (calendarSaving().size) { Сохраняем… }
+            @else { {{ calendarMsg() || 'Изменения сохраняются автоматически. Клик ставит или снимает ручную отметку, правило он не выключает.' }} }
+          </div>
+        </div>
+      }
+
+      @if (deliveryTab() === 'week' || deliveryTab() === 'month') {
+        <div class="rule-panel" [class.rule-week-mode]="deliveryTab() === 'week'" [class.rule-month-mode]="deliveryTab() === 'month'">
+          <h3>{{ deliveryTab() === 'week' ? 'Доставки каждую неделю' : 'Доставки каждый месяц' }}</h3>
+          <p>
+            @if (deliveryTab() === 'week') {
+              Выберите дни недели — сервер сам добавит доставки во все будущие недели, пока правило включено.
+              Никакого периода указывать не нужно.
+            } @else {
+              Выберите числа месяца — сервер сам добавит доставки в каждый будущий месяц.
+              Если числа в месяце нет (например 31 февраля), оно просто пропускается.
+            }
+          </p>
+
+          <div class="rule-chip-head">
+            <span>{{ deliveryTab() === 'week' ? 'Дни недели' : 'Числа месяца' }}</span>
+            @if (deliveryTab() === 'week' ? !!ruleWeekdays().length : !!ruleMonthDays().length) {
+              <button type="button" class="btn sm" [disabled]="ruleSaving()" (click)="clearCurrentRule()">Сбросить выбор</button>
+            }
+          </div>
+          <div class="rule-chips" [class.rule-chips-month]="deliveryTab() === 'month'">
+            @if (deliveryTab() === 'week') {
+              @for (weekday of calendarWeekdays; track weekday; let i = $index) {
+                <button type="button" class="rule-chip" [class.active]="ruleWeekdays().includes(i + 1)"
+                        [attr.aria-label]="ruleWeekdayNames[i]" [attr.aria-pressed]="ruleWeekdays().includes(i + 1)"
+                        [disabled]="ruleSaving()" (click)="toggleRuleDay('week', i + 1)">{{ weekday }}</button>
+              }
+            } @else {
+              @for (day of ruleMonthDayOptions; track day) {
+                <button type="button" class="rule-chip" [class.active]="ruleMonthDays().includes(day)"
+                        [attr.aria-label]="day + '-е число каждого месяца'" [attr.aria-pressed]="ruleMonthDays().includes(day)"
+                        [disabled]="ruleSaving()" (click)="toggleRuleDay('month', day)">{{ day }}</button>
+              }
+            }
+          </div>
+
+          <div class="rule-note">
+            Дни недели и числа месяца складываются: дате достаточно совпасть с одним из списков.
+            В календаре дни недели окрашены зелёным, числа месяца — янтарным, совпадение обоих списков
+            делит клетку пополам, а ручная отметка на дне правила добавляет синюю полосу. Клик правило
+            не выключает: он ставит или снимает только ручную отметку.
+          </div>
+
+          <div class="rule-upcoming">
+            <b>Ближайшие даты по правилу</b>
+            @if (ruleUpcoming().length) {
+              <ul class="rule-dates">
+                @for (entry of ruleUpcoming(); track entry.date) {
+                  <li [class.rule-week]="entry.kind === 'week'" [class.rule-month]="entry.kind === 'month'"
+                      [class.rule-both]="entry.kind === 'both'">{{ entry.label }}</li>
+                }
+              </ul>
+            } @else {
+              <span class="muted">
+                {{ deliveryTab() === 'week' ? 'Ни один день недели не выбран — недели доставки не добавляют.' : 'Ни одно число месяца не выбрано — месяца доставку не добавляют.' }}
+              </span>
+            }
+          </div>
+
+          <div class="rule-actions">
+            <button type="button" class="btn" (click)="goDeliveryTab('calendar')">🗓 Открыть календарь</button>
+            <span class="rule-status" role="status" aria-live="polite">
+              @if (ruleSaving()) { Сохраняем правило… }
+              @else { {{ ruleMsg() || 'Выбор сохраняется сразу и действует, пока его не снять.' }} }
+            </span>
+          </div>
+        </div>
+      }
     </section>
 
     <!-- GPT -->
-    <div class="panel">
-      <h3>GPT (OpenAI)</h3>
+    <div id="settings-panel-gpt" class="panel settings-section" role="tabpanel"
+         aria-labelledby="settings-tab-gpt" [hidden]="settingsTab() !== 'gpt'">
+      <h3>🤖 GPT и подключение к OpenAI</h3>
       @if (st(); as s) {
-        <div class="row" style="gap:24px; align-items:flex-start">
+        <div class="row gpt-settings-grid" style="gap:24px; align-items:flex-start">
           <div style="flex:1 1 380px; min-width:0">
             <label style="display:flex; gap:10px; align-items:flex-start; cursor:pointer; font-weight:600">
               <input type="checkbox" [(ngModel)]="viaProxy" [disabled]="busy()" style="width:18px; height:18px; margin:1px 0 0; flex:none" />
@@ -200,14 +458,15 @@ function calendarDate(date: Date): string {
     </div>
 
     <!-- КАТЕГОРИИ НОМЕНКЛАТУРЫ -->
-    <div class="panel">
-      <h3>Категории номенклатуры</h3>
+    <div id="settings-panel-categories" class="panel settings-section" role="tabpanel"
+         aria-labelledby="settings-tab-categories" [hidden]="settingsTab() !== 'categories'">
+      <h3>📦 Категории номенклатуры</h3>
       <div class="muted" style="font-size:12px; margin-bottom:10px">
         Список предлагается при выборе категории у позиции склада. При удалении категории её позиции переходят в «прочее».
       </div>
       @if (catsErr()) { <div class="err">{{ catsErr() }}</div> }
       @if (catsMsg()) { <div class="ok-msg">{{ catsMsg() }}</div> }
-      <table class="tbl">
+      <table class="tbl" aria-label="Категории номенклатуры">
         <tr><th>Категория</th><th class="num">Позиций</th><th></th></tr>
         @for (c of cats(); track c.id) {
           <tr>
@@ -261,14 +520,15 @@ function calendarDate(date: Date): string {
     </div>
 
     <!-- КАТАЛОГ ПРОДУКЦИИ -->
-    <div class="panel">
-      <h3>Каталог продукции</h3>
+    <div id="settings-panel-catalogs" class="panel settings-section" role="tabpanel"
+         aria-labelledby="settings-tab-catalogs" [hidden]="settingsTab() !== 'catalogs'">
+      <h3>🥗 Каталог продукции</h3>
       <div class="muted" style="font-size:12px; margin-bottom:10px">
         Список предлагается при создании продукта. При удалении каталога продукты остаются, но без каталога.
       </div>
       @if (pcErr()) { <div class="err">{{ pcErr() }}</div> }
       @if (pcMsg()) { <div class="ok-msg">{{ pcMsg() }}</div> }
-      <table class="tbl">
+      <table class="tbl" aria-label="Каталоги продукции">
         <tr><th>Каталог</th><th class="num">Продуктов</th><th></th></tr>
         @for (c of productCatalogs(); track c.id) {
           <tr>
@@ -320,6 +580,8 @@ function calendarDate(date: Date): string {
         <button class="btn sm primary" [disabled]="!newPcName().trim()" (click)="createPc()">+ Добавить</button>
       </div>
     </div>
+      </div>
+    </div>
 
   `,
 })
@@ -330,6 +592,10 @@ export class SettingsComponent implements OnInit {
   private calendarAnchor = new Date();
   private monthFormat = new Intl.DateTimeFormat('ru-RU', { month: 'long', year: 'numeric' });
   private dayFormat = new Intl.DateTimeFormat('ru-RU', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  private shortDayFormat = new Intl.DateTimeFormat('ru-RU', { weekday: 'short', day: 'numeric', month: 'short' });
+
+  /** Верхнее меню настроек: одна вкладка — один раздел, как в браузере. */
+  settingsTab = signal<'delivery' | 'gpt' | 'categories' | 'catalogs'>('delivery');
 
   readonly calendarToday = signal(calendarDate(this.calendarAnchor));
   readonly calendarWeekdays = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
@@ -354,6 +620,117 @@ export class SettingsComponent implements OnInit {
     });
     return { key: calendarDate(first).slice(0, 7), label: this.monthFormat.format(first), first: calendarDate(first), last: calendarDate(last), days };
   }));
+
+  // ---- правило повторяющихся доставок: живёт в отдельных настройках БД ----
+  readonly ruleWeekdayNames = ['понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота', 'воскресенье'];
+  readonly ruleMonthDayOptions = Array.from({ length: 31 }, (_, index) => index + 1);
+  deliveryTab = signal<'calendar' | 'week' | 'month'>('calendar');
+  ruleWeekdays = signal<number[]>([]);
+  ruleMonthDays = signal<number[]>([]);
+  ruleSaving = signal(false);
+  ruleErr = signal('');
+  ruleMsg = signal('');
+  /** Даты окна из правила и чем они добавлены: цвет и запрет на отмену в календаре. */
+  readonly ruleDays = computed(() => {
+    const kinds = new Map<string, RuleKind>();
+    const today = this.calendarToday();
+    if (!today) return kinds;
+    const months = this.calendarMonths();
+    for (const match of ruleMatches(months[0].first, months[2].last, this.ruleWeekdays(), this.ruleMonthDays(), today)) {
+      kinds.set(match.date, match.kind);
+    }
+    return kinds;
+  });
+
+  /** Все дни доставки для отрисовки: все ручные даты плюс совпадения правила в окне. */
+  readonly deliveryDays = computed(() => {
+    const days = new Set(this.deliveryDates());
+    for (const date of this.ruleDays().keys()) days.add(date);
+    return days;
+  });
+
+  /** Сколько доставок в показанном окне: ручные даты и правило вместе. */
+  readonly deliveriesInWindow = computed(() => {
+    const from = this.calendarMonths()[0].first;
+    const to = this.calendarMonths()[2].last;
+    let total = 0;
+    for (const date of this.deliveryDays()) if (date >= from && date <= to) total++;
+    return total;
+  });
+
+  ruleKind(date: string): RuleKind | null {
+    return this.ruleDays().get(date) ?? null;
+  }
+
+  /** Подсказка дня календаря: сколько источников у дня и что сделает клик. */
+  ruleHint(date: string): string | null {
+    if (date <= this.calendarToday()) return 'Сегодняшнюю и прошедшие даты нельзя изменять';
+    const kind = this.ruleKind(date);
+    if (!kind) return null;
+    return this.deliveryDates().has(date)
+      ? `Ручная отметка совпадает с ${this.ruleByPhrase(kind)}: клик снимет только её`
+      : `День добавлен по ${this.ruleByPhrase(kind)}: клик поставит ещё и ручную отметку`;
+  }
+
+  /** Что за правило держит дату — для подсказки и сообщения об отказе. */
+  private ruleSectionLabel(kind: RuleKind): string {
+    return kind === 'both' ? '«Каждую неделю» и «Каждый месяц»'
+        : kind === 'week' ? '«Каждую неделю»' : '«Каждый месяц»';
+  }
+
+  private ruleByPhrase(kind: RuleKind): string {
+    return kind === 'both' ? 'правилам «Каждую неделю» и «Каждый месяц»'
+        : `правилу ${this.ruleSectionLabel(kind)}`;
+  }
+
+  readonly ruleActive = computed(() => this.ruleWeekdays().length > 0 || this.ruleMonthDays().length > 0);
+
+  readonly ruleSummaryLabel = computed(() => {
+    const parts: string[] = [];
+    if (this.ruleWeekdays().length) parts.push(`${this.ruleWeekdays().length} дн. недели`);
+    if (this.ruleMonthDays().length) parts.push(`${this.ruleMonthDays().length} чисел месяца`);
+    return parts.length ? parts.join(' + ') : 'выключено';
+  });
+
+  /** Первые несколько будущих дат правила — чтобы выбор был виден до похода в календарь. */
+  readonly ruleUpcoming = computed(() => {
+    const today = this.calendarToday();
+    return ruleMatches(
+      shiftCalendarDate(today, 1), shiftCalendarDate(today, 60),
+      this.ruleWeekdays(), this.ruleMonthDays(), today,
+    ).slice(0, 8).map((match) => ({
+      ...match,
+      label: this.shortDayFormat.format(new Date(`${match.date}T00:00:00Z`)),
+    }));
+  });
+
+  /** Ближайшая дата правила от сегодняшнего дня: календарное окно на неё не влияет. */
+  readonly nextRuleDate = computed(() => {
+    const today = this.calendarToday();
+    for (let shift = 0; shift <= 366; shift++) {
+      const date = shiftCalendarDate(today, shift);
+      if (ruleDayKind(date, this.ruleWeekdays(), this.ruleMonthDays())) return date;
+    }
+    return null;
+  });
+
+  /** Ближайшая доставка от сегодня: ручные даты и правило вместе, без привязки к окну. */
+  readonly nextDelivery = computed(() => {
+    const today = this.calendarToday();
+    const manual = [...this.deliveryDates()].filter((date) => date >= today).sort()[0] ?? null;
+    const rule = this.nextRuleDate();
+    if (!manual) return rule;
+    if (!rule) return manual;
+    return manual < rule ? manual : rule;
+  });
+
+  readonly nextDeliveryLabel = computed(() => {
+    const next = this.nextDelivery();
+    if (!next) return '—';
+    return next === this.calendarToday()
+        ? 'сегодня'
+        : this.shortDayFormat.format(new Date(`${next}T00:00:00Z`));
+  });
 
   st = signal<AppSettings | null>(null);
   pwdOpen = signal(false);
@@ -409,19 +786,20 @@ export class SettingsComponent implements OnInit {
 
   ngOnInit(): void {
     this.loadCalendar();
+    this.loadRule();
     this.load();
     this.loadCats();
     this.loadPcs();
   }
 
   deliveriesInMonth(month: string): number {
-    return [...this.deliveryDates()].filter(date => date.startsWith(month + '-')).length;
+    return [...this.deliveryDays()].filter(date => date.startsWith(month + '-')).length;
   }
 
+  /** Сервер отдаёт всё расписание разом, поэтому перелистывание окна — только сдвиг на клиенте. */
   moveCalendar(months: number): void {
-    if (this.calendarLoading() || this.calendarSaving().size) return;
+    if (this.calendarLoading() || this.calendarSaving().size || this.ruleSaving()) return;
     this.calendarOffset.update(offset => offset + months);
-    this.loadCalendar();
   }
 
   loadCalendar(): void {
@@ -432,10 +810,9 @@ export class SettingsComponent implements OnInit {
     this.calendarErr.set('');
     this.calendarMsg.set('');
     this.deliveryDates.set(new Set());
-    const months = this.calendarMonths();
-    this.calendarRequest = this.api.deliveryCalendar$(months[0].first, months[2].last).pipe(
-      takeUntilDestroyed(this.destroyRef),
-      finalize(() => this.calendarLoading.set(false)),
+    this.calendarRequest = this.api.deliveryCalendar$().pipe(
+        takeUntilDestroyed(this.destroyRef),
+        finalize(() => this.calendarLoading.set(false)),
     ).subscribe({
       next: ({ today, dates }) => {
         this.calendarToday.set(today);
@@ -447,29 +824,93 @@ export class SettingsComponent implements OnInit {
   }
 
   toggleDelivery(day: DeliveryDay): void {
-    if (!this.calendarReady() || day.date <= this.calendarToday() || this.calendarSaving().has(day.date)) return;
+    if (!this.calendarReady() || this.ruleSaving() || day.date <= this.calendarToday() || this.calendarSaving().has(day.date)) return;
+    const covered = this.ruleKind(day.date);
     const enabled = !this.deliveryDates().has(day.date);
-    this.calendarSaving.update(dates => new Set(dates).add(day.date));
+    this.calendarSaving.update((dates) => new Set(dates).add(day.date));
     this.calendarErr.set('');
     this.calendarMsg.set('');
     this.api.setDeliveryDate$(day.date, enabled).pipe(
-      takeUntilDestroyed(this.destroyRef),
-      finalize(() => this.calendarSaving.update(dates => {
-        const next = new Set(dates);
-        next.delete(day.date);
-        return next;
-      })),
+        takeUntilDestroyed(this.destroyRef),
+        finalize(() => this.calendarSaving.update((dates) => {
+          const next = new Set(dates);
+          next.delete(day.date);
+          return next;
+        })),
     ).subscribe({
       next: (saved) => {
-        this.deliveryDates.update(dates => {
+        this.deliveryDates.update((dates) => {
           const next = new Set(dates);
           if (saved.enabled) next.add(saved.date);
           else next.delete(saved.date);
           return next;
         });
-        this.calendarMsg.set(`Сохранено: ${day.label} — ${saved.enabled ? 'доставка' : 'без доставки'}.`);
+        this.calendarMsg.set(saved.enabled
+            ? `Сохранено: ${day.label} — ручная отметка${covered ? `, день уже идёт по ${this.ruleByPhrase(covered)}` : ''}.`
+            : covered
+              ? `Сохранено: ${day.label} — ручная отметка снята, доставка осталась по ${this.ruleByPhrase(covered)}.`
+              : `Сохранено: ${day.label} — без доставки.`);
       },
       error: (e: unknown) => this.calendarErr.set(`Не удалось сохранить дату. Нажмите на неё ещё раз: ${httpErr(e)}`),
+    });
+  }
+
+  goDeliveryTab(tab: 'calendar' | 'week' | 'month'): void {
+    this.deliveryTab.set(tab);
+    this.ruleErr.set('');
+    this.ruleMsg.set('');
+  }
+
+  loadRule(): void {
+    this.api.deliveryRule$().pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: (rule) => {
+        this.ruleWeekdays.set(rule.weekdays);
+        this.ruleMonthDays.set(rule.monthDays);
+      },
+      error: (e: unknown) => this.ruleErr.set(`Не удалось загрузить правило доставок: ${httpErr(e)}`),
+    });
+  }
+
+  toggleRuleDay(kind: 'week' | 'month', value: number): void {
+    if (this.ruleSaving()) return;
+    const current = kind === 'week' ? this.ruleWeekdays() : this.ruleMonthDays();
+    const next = current.includes(value)
+        ? current.filter((day) => day !== value)
+        : [...current, value].sort((a, b) => a - b);
+    this.saveRule(kind === 'week'
+        ? { weekdays: next, monthDays: this.ruleMonthDays() }
+        : { weekdays: this.ruleWeekdays(), monthDays: next });
+  }
+
+  clearCurrentRule(): void {
+    if (this.ruleSaving()) return;
+    this.saveRule(this.deliveryTab() === 'week'
+        ? { weekdays: [], monthDays: this.ruleMonthDays() }
+        : { weekdays: this.ruleWeekdays(), monthDays: [] });
+  }
+
+  /** Чипы загораются сразу; при сбое откатываемся к правилу, которое лежит в БД. */
+  private saveRule(next: DeliveryRule): void {
+    const previous: DeliveryRule = { weekdays: this.ruleWeekdays(), monthDays: this.ruleMonthDays() };
+    this.ruleWeekdays.set(next.weekdays);
+    this.ruleMonthDays.set(next.monthDays);
+    this.ruleSaving.set(true);
+    this.ruleErr.set('');
+    this.ruleMsg.set('');
+    this.api.saveDeliveryRule$(next).pipe(
+        takeUntilDestroyed(this.destroyRef),
+        finalize(() => this.ruleSaving.set(false)),
+    ).subscribe({
+      next: () => {
+        this.ruleMsg.set(this.ruleActive()
+            ? `Сохранено: ${this.ruleSummaryLabel()} — такие дни календарь отмечает сразу.`
+            : 'Правило выключено: даты добавляются только вручную.');
+      },
+      error: (e: unknown) => {
+        this.ruleWeekdays.set(previous.weekdays);
+        this.ruleMonthDays.set(previous.monthDays);
+        this.ruleErr.set(`Не удалось сохранить правило: ${httpErr(e)}`);
+      },
     });
   }
 

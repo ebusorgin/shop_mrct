@@ -10,6 +10,12 @@ import { config } from '../config';
 import { audit, auditTx } from '../services/audit';
 import { requireOffice } from '../services/auth';
 import {
+  deliveryRule,
+  deliveryRuleInput,
+  writeDeliveryRule,
+  type DeliveryRule,
+} from '../services/delivery-rule';
+import {
   GPT_DEFAULTS,
   gptSettings,
   normalizeProxyUrl,
@@ -36,15 +42,6 @@ export function deliveryDate(value: unknown, field = 'date'): string {
   return value;
 }
 
-export function deliveryRange(rawFrom: unknown, rawTo: unknown): { from: string; to: string } {
-  const from = deliveryDate(rawFrom, 'from');
-  const to = deliveryDate(rawTo, 'to');
-  if (from > to) throw new ApiError(400, 'Начальная дата не может быть позже конечной');
-  const days = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000 + 1;
-  if (days > 93) throw new ApiError(400, 'Диапазон не должен превышать 93 дня включительно');
-  return { from, to };
-}
-
 export function deliveryEnabled(body: unknown): boolean {
   if (
     body === null || typeof body !== 'object' || Array.isArray(body) ||
@@ -56,24 +53,28 @@ export function deliveryEnabled(body: unknown): boolean {
   return (body as { enabled: boolean }).enabled;
 }
 
-/** Родительский роутер требует администратора; здесь дополнительно исключаем магазины. */
+/**
+ * Все ручные даты расписания. Окно календаря серверу не нужно: клиент рисует любые
+ * три месяца сам, а даты правила в базе не лежат — их он тоже считает сам.
+ */
 settingsRouter.get(
   '/delivery-calendar',
   requireOffice,
-  wrap(async (req, res) => {
-    const { from, to } = deliveryRange(req.query.from, req.query.to);
+  wrap(async (_req, res) => {
     const { rows } = await pool.query<{ today: string; dates: string[] }>(
       `select to_char(current_date, 'YYYY-MM-DD') as today,
-              coalesce(array_agg(to_char(delivery_date, 'YYYY-MM-DD') order by delivery_date), '{}'::text[]) as dates
-         from delivery_schedule
-        where delivery_date between $1::date and $2::date`,
-      [from, to]
+              coalesce(array_agg(to_char(delivery_date, 'YYYY-MM-DD') order by delivery_date),
+                       '{}'::text[]) as dates
+         from delivery_schedule`
     );
-    res.json(rows[0]);
+    res.json({ today: rows[0].today, dates: rows[0].dates });
   })
 );
 
-/** Меняем только одну дату; повтор того же запроса не меняет данные и журнал. */
+/**
+ * Одна дата вручную. Ручная отметка ставится и снимается независимо от правила:
+ * день может идти и по правилу, и быть отмеченным руками — это разные источники.
+ */
 settingsRouter.put(
   '/delivery-calendar/:date',
   requireOffice,
@@ -109,6 +110,41 @@ settingsRouter.put(
       return { date: rows[0]?.date ?? date, enabled };
     });
     res.json(result);
+  })
+);
+
+/** Сохранённое правило повторяющихся доставок: дни недели ИЛИ числа месяца. */
+settingsRouter.get(
+  '/delivery-rule',
+  requireOffice,
+  wrap(async (_req, res) => {
+    res.json(await deliveryRule());
+  })
+);
+
+/**
+ * Правило — активные элементы справочника периодов. Дат в расписании оно не оставляет,
+ * но ручные отметки на тех же днях не трогает: источники могут пересекаться.
+ */
+settingsRouter.patch(
+  '/delivery-rule',
+  requireOffice,
+  wrap(async (req, res) => {
+    const rule: DeliveryRule = deliveryRuleInput(req.body);
+    const before = await deliveryRule();
+    await tx(async (client) => {
+      await writeDeliveryRule(client, rule);
+      await auditTx(client, req.user, {
+        action: 'update',
+        entity: 'setting',
+        entityId: 'delivery-rule',
+        title: rule.weekdays.length || rule.monthDays.length
+          ? `Правило доставок: ${rule.weekdays.length} дн. недели, ${rule.monthDays.length} чисел месяца`
+          : 'Правило доставок выключено',
+        details: { from: before, to: rule },
+      });
+    });
+    res.json({ ok: true, rule });
   })
 );
 

@@ -52,6 +52,14 @@ export function reqArr(body: Record<string, unknown>, field: string): Record<str
   return v as Record<string, unknown>[];
 }
 
+/** Элемент массива payload: только обычный объект, дальше поля проверяет вызывающий. */
+export function reqObject(value: unknown): Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ApiError(400, 'Элемент массива должен быть объектом');
+  }
+  return value as Record<string, unknown>;
+}
+
 export function qInt(req: Request, field: string): number | null {
   const raw = req.query[field];
   if (typeof raw !== 'string' || raw === '') return null;

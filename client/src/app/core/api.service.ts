@@ -140,11 +140,18 @@ export class ApiService {
   }
   testGpt$(): Observable<M.GptTestResult> { return this.http.post<M.GptTestResult>(`${this.base}/settings/gpt/test`, {}); }
 
-  deliveryCalendar$(from: string, to: string): Observable<{ today: string; dates: string[] }> {
-    return this.http.get<{ today: string; dates: string[] }>(`${this.base}/settings/delivery-calendar`, { params: { from, to } });
+  deliveryCalendar$(): Observable<M.DeliveryCalendar> {
+    return this.http.get<M.DeliveryCalendar>(`${this.base}/settings/delivery-calendar`);
   }
   setDeliveryDate$(date: string, enabled: boolean): Observable<{ date: string; enabled: boolean }> {
     return this.http.put<{ date: string; enabled: boolean }>(`${this.base}/settings/delivery-calendar/${date}`, { enabled });
+  }
+  /** Правило повторов из справочника периодов: дат в расписании оно не оставляет. */
+  deliveryRule$(): Observable<M.DeliveryRule> {
+    return this.http.get<M.DeliveryRule>(`${this.base}/settings/delivery-rule`);
+  }
+  saveDeliveryRule$(body: M.DeliveryRule): Observable<{ ok: boolean; rule: M.DeliveryRule }> {
+    return this.http.patch<{ ok: boolean; rule: M.DeliveryRule }>(`${this.base}/settings/delivery-rule`, body);
   }
 
   // ---- категории сырья (в настройках, только админ) ----

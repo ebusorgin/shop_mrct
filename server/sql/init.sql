@@ -273,7 +273,8 @@ create table if not exists users (
   store_id      int
 );
 
--- Даты доставок производства; магазинные пользователи не управляют календарём.
+-- Даты доставок, выбранные вручную в календаре; магазинные пользователи не управляют календарём.
+-- Повторяющиеся доставки живут в справочнике delivery_schedule_period и сюда не записываются.
 create table if not exists delivery_schedule (
   delivery_date date primary key,
   created_at    timestamptz not null default now(),
@@ -410,3 +411,46 @@ insert into product_catalogs (name, position) values
   ('соленья', 4),
   ('супы', 5)
 on conflict (name) do nothing;
+
+-- ---------- Периоды повторяющихся доставок ----------
+-- Справочник: активный день недели (ISO: 1 — понедельник … 7 — воскресенье) или активное
+-- число месяца (1…31) делает каждый подходящий будущий день днём доставки. Эти даты в
+-- delivery_schedule не записываются — там остаётся только ручной выбор календаря.
+
+create table if not exists delivery_schedule_period (
+  kind    text    not null check (kind in ('weekday', 'monthday')),
+  value   int     not null,
+  enabled boolean not null default false,
+  primary key (kind, value),
+  check ((kind = 'weekday' and value between 1 and 7) or (kind = 'monthday' and value between 1 and 31))
+);
+
+insert into delivery_schedule_period (kind, value)
+select 'weekday',  generate_series(1, 7)
+union all
+select 'monthday', generate_series(1, 31)
+on conflict (kind, value) do nothing;
+
+-- Раньше правило лежало JSON-ом в app_settings: переносим выбранные дни в справочник.
+update delivery_schedule_period p
+   set enabled = true
+  where exists (
+    select 1
+      from app_settings s
+     where s.key = 'delivery_rule'
+       and (s.value -> case when p.kind = 'weekday' then 'weekdays' else 'monthDays' end)
+           @> to_jsonb(p.value)
+  );
+
+delete from app_settings where key = 'delivery_rule';
+
+-- Даты, которые правило добавляло в расписание, больше не нужны; служебный столбец source с ними уходит.
+do $period_cleanup$
+begin
+  if exists (select 1 from information_schema.columns
+              where table_name = 'delivery_schedule' and column_name = 'source') then
+    execute $no_rule_dates$delete from delivery_schedule where source = 'rule'$no_rule_dates$;
+    alter table delivery_schedule drop column source;
+  end if;
+end
+$period_cleanup$;

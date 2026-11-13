@@ -53,7 +53,7 @@ export function parsePackagings(raw: unknown): PackagingInput[] {
     });
     return {
       ...(id === undefined ? {} : { id }),
-      name: reqStr(p, 'name')
+      name: reqStr(p, 'name'),
       orderStep: positiveInt(p.orderStep, 'orderStep'),
       isDefault: p.isDefault,
       items,

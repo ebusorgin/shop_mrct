@@ -3,6 +3,7 @@ import { pool, tx } from '../db';
 import { ApiError, reqArr, reqInt, reqNum, reqStr, wrap, aiSource } from '../http';
 import { assertBaseUnit } from '../services/expansion';
 import { buildBoardFromInputs, boardIsEmpty } from '../services/semi-board';
+import { assertNameFree } from '../services/name-check';
 import { audit, auditTx, diff } from '../services/audit';
 
 export const semisRouter = Router();
@@ -166,6 +167,7 @@ semisRouter.post(
     const board = boardJson(req.body);
     const id = await tx(async (client) => {
       await assertBaseUnit(client, unitId, 'Полуфабрикат');
+      await assertNameFree(client, name, 'semi_products');
       // редактор рецептов стол не шлёт — соберём блок-схему из состава (у конструктора стол свой)
       const boardStr = await autoBoard(client, board, inputs, name, unitId);
       const { rows } = await client.query(
@@ -205,6 +207,7 @@ semisRouter.patch(
     const board = req.body.board === undefined ? null : boardJson(req.body);
     await tx(async (client) => {
       await assertBaseUnit(client, unitId, 'Полуфабрикат');
+      await assertNameFree(client, name, 'semi_products', id);
       const { rows: before } = await client.query(
         'select name, unit_id, note, out_qty::float8 as out_qty, shelf_life_days, g_per_pcs::float8 as g_per_pcs, ml_per_pcs::float8 as ml_per_pcs, g_per_ml::float8 as g_per_ml, board from semi_products where id = $1',
         [id]
@@ -265,7 +268,7 @@ semisRouter.delete(
       [req.params.id]
     );
     if (!rows.length) throw new ApiError(404, 'Полуфабрикат не найден');
-    if (Number(rows[0].cards) > 0) throw new ApiError(409, 'Полуфабрикат используется в продуктах');
+    if (Number(rows[0].cards) > 0) throw new ApiError(409, 'Полуфабрикат используется в техкартах');
     if (Number(rows[0].semis) > 0) throw new ApiError(409, 'Полуфабрикат используется в составе других полуфабрикатов');
     await pool.query('delete from semi_products where id = $1', [req.params.id]);
     await audit(req.user, {

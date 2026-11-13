@@ -1,6 +1,6 @@
 <div class="head">
   <h1 class="page-title">Заказы</h1>
-  @if (!loading() && !err()) { <span class="badge blue">Продукция: {{ products().length }}</span> }
+  @if (!loading() && !err()) { <span class="badge blue">Фасовки: {{ rows().length }}</span> }
   <div class="spacer"></div>
   <button type="button" class="btn" (click)="load()" [disabled]="loading()">Обновить</button>
 </div>
@@ -26,11 +26,11 @@
       <button type="button" class="btn sm" (click)="load()">Повторить</button>
     </div>
   } @else {
-    <p class="muted found" role="status">Найдено: {{ filtered().length }} из {{ products().length }}</p>
+    <p class="muted found" role="status">Найдено: {{ filtered().length }} из {{ rows().length }}</p>
     @if (filtered().length) {
       <table class="tbl stack" aria-label="Список продукции">
         <thead>
-          <tr><th scope="col">Продукция</th><th scope="col">Каталог</th><th scope="col" class="num">Выход</th></tr>
+          <tr><th scope="col">Продукция</th><th scope="col">Каталог</th><th scope="col">Фасовка</th><th scope="col" class="num">Мин. заказ</th></tr>
         </thead>
         <tbody>
           @for (p of filtered(); track p.id) {
@@ -43,13 +43,14 @@
                   <span class="muted">{{ p.catalogName || 'Без каталога' }}</span>
                 }
               </td>
-              <td class="num" data-l="Выход">{{ fmtQty(p.portionQty, p.portionUnitCode) }}</td>
+              <td data-l="Фасовка">{{ fmtQty(p.qtyBase, p.unitCode) }}</td>
+              <td class="num" data-l="Мин. заказ">{{ p.minOrder }} уп.</td>
             </tr>
           }
         </tbody>
       </table>
     } @else {
-      <p class="muted state">{{ products().length ? 'По запросу ничего не найдено. Измените поиск или сбросьте фильтры.' : 'Продукция производства пока не заведена.' }}</p>
+      <p class="muted state">{{ rows().length ? 'По запросу ничего не найдено. Измените поиск или сбросьте фильтры.' : 'Продукция производства пока не заведена.' }}</p>
     }
   }
 </section>

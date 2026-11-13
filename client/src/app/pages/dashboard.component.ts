@@ -117,7 +117,7 @@ import { fmtCost, fmtDateTime, fmtMoney, fmtQty, httpErr, trim } from '../core/f
             <h3 style="margin:0">🚚 Последние отгрузки</h3>
           </div>
           <table class="tbl stack">
-            <tr class="th-row"><th>Продукция</th><th>Дата</th><th class="num">Себест.</th><th>Статус</th></tr>
+            <tr class="th-row"><th>Техкарта</th><th>Дата</th><th class="num">Себест.</th><th>Статус</th></tr>
             @for (b of data.recentBatches; track b.id) {
               <tr>
                 <td>{{ b.cardName }} × {{ b.portions }}</td>

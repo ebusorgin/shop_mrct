@@ -251,13 +251,31 @@ export interface CardItem {
   position?: number;
 }
 
-/** Продукция производства в форме заказа магазина (без состава). */
-export interface OrderCatalogItem {
+/** Фасовка техкарты — продаваемая позиция (SKU): выход упаковки и минимальный заказ. */
+export interface Packaging {
   id: number;
+  /** Выход одной упаковки в единице выхода техкарты. */
+  qtyBase: number;
+  /** Минимальный заказ в упаковках. */
+  minOrder: number;
+  /** Можно ли уже заказывать эту фасовку магазинам. */
+  available: boolean;
+}
+
+export type PackagingInput = Omit<Packaging, 'id'> & { id?: number };
+
+/** Продукция производства в форме заказа магазина: строка = фасовка. */
+export interface OrderCatalogItem {
+  /** id фасовки. */
+  id: number;
+  cardId: number;
   name: string;
   note: string;
-  portionQty: number;
-  portionUnitCode: string;
+  /** Вес/объём одной упаковки. */
+  qtyBase: number;
+  /** Минимальный заказ в упаковках. */
+  minOrder: number;
+  unitCode: string;
   catalogId: number | null;
   catalogName: string | null;
   catalogIcon?: string | null;
@@ -272,6 +290,8 @@ export interface TechCard {
   portionUnitId: number;
   portionUnitCode: string;
   items: CardItem[];
+  /** Продаваемые фасовки: хотя бы одна. */
+  packagings: Packaging[];
   /** Каталог готовой продукции (product_catalogs); null — без каталога. */
   catalogId?: number | null;
   catalogName?: string | null;
@@ -496,6 +516,31 @@ export interface DeliveryCalendar {
 export interface DeliveryRule {
   weekdays: number[];
   monthDays: number[];
+}
+
+/** Лист Google-таблицы: строки как в документе, значения отформатированы Google. */
+export interface GoogleSheetTab {
+  name: string;
+  rows: string[][];
+  /** Ширина листа — по ней рисуются колонки, даже если строки нет. */
+  width: number;
+  /** Локальный id продукции для каждой строки; null — позиция не найдена. */
+  links: (number | null)[];
+  /** Название продукции из БД для каждой строки; null — позиция не найдена. */
+  names: (string | null)[];
+  /** Индексы строк-позиций, которым не нашлось продукции. */
+  misses: number[];
+}
+
+/** Таблица «Микс Маркт Гастро», скачанная сервисным аккаунтом. */
+export interface GoogleSheet {
+  title: string;
+  spreadsheetId: string;
+  url: string;
+  loadedAt: string;
+  tabs: GoogleSheetTab[];
+  /** Позиции, которых нет в «Продукции». */
+  unmatched: string[];
 }
 
 /** Категория сырья (product_categories) для управления в Настройках. */

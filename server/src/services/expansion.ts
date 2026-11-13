@@ -167,7 +167,7 @@ export async function expandCard(
   const ctx: ExpCtx = { client, units, prodConv, semiConv };
 
   const items = await loadCardItems(client, cardId);
-  if (items.length === 0) throw new ApiError(400, 'В составе продукта нет позиций');
+  if (items.length === 0) throw new ApiError(400, 'В составе техкарты нет позиций');
 
   const need = new Map<number, number>();
   const add = (productId: number, qty: number) =>
@@ -176,7 +176,7 @@ export async function expandCard(
   const cardPath = new Set<number>([cardId]);
   for (const it of items) {
     if (!it.ref_unit_id) {
-      throw new ApiError(400, `В составе продукта: позиция #${it.ref_id} не связана с единицей измерения`);
+      throw new ApiError(400, `В составе техкарты: позиция #${it.ref_id} не связана с единицей измерения`);
     }
     // Рубеж 1: позиция карты (в любой размерности) -> базовая единица выхода товара/полуфабриката/продукта.
     const qtyBase = toBaseCross(it.qty, it.unit_id, it.ref_unit_id, units, itemConv(ctx, it.source_type, it.ref_id)) * portions;
@@ -241,7 +241,7 @@ async function resolveItem(
     await resolveSemi(ctx, refId, qtyBase, refUnitId, s.batchOut, add, new Set([refId]));
     return;
   }
-  if (cardPath.has(refId)) throw new ApiError(400, 'Обнаружен цикл в составе продуктов');
+  if (cardPath.has(refId)) throw new ApiError(400, 'Обнаружен цикл в составе техкарт');
   await resolveCard(ctx, refId, qtyBase, refUnitId, add, new Set([...cardPath, refId]));
 }
 
@@ -262,16 +262,16 @@ async function resolveCard(
     'select portion_qty::float8 as qty, portion_unit_id from tech_cards where id = $1',
     [cardId]
   );
-  if (!rows.length) throw new ApiError(400, `Продукт #${cardId} не найден`);
+  if (!rows.length) throw new ApiError(400, `Техкарта #${cardId} не найдена`);
   const portionBase = toBaseCross(Number(rows[0].qty), rows[0].portion_unit_id, cardUnitId, ctx.units);
-  if (!(portionBase > 0)) throw new ApiError(400, `У продукта #${cardId} не задан выход`);
+  if (!(portionBase > 0)) throw new ApiError(400, `У техкарты #${cardId} не задан выход`);
   const k = outQtyBase / portionBase;
 
   const items = await loadCardItems(ctx.client, cardId);
-  if (!items.length) throw new ApiError(400, `У продукта #${cardId} пустой состав`);
+  if (!items.length) throw new ApiError(400, `У техкарты #${cardId} пустой состав`);
   for (const it of items) {
     if (!it.ref_unit_id) {
-      throw new ApiError(400, `У продукта #${cardId}: позиция #${it.ref_id} не связана с единицей измерения`);
+      throw new ApiError(400, `У техкарты #${cardId}: позиция #${it.ref_id} не связана с единицей измерения`);
     }
     const qtyBase = toBaseCross(it.qty, it.unit_id, it.ref_unit_id, ctx.units, itemConv(ctx, it.source_type, it.ref_id)) * k;
     await resolveItem(ctx, it.source_type, it.ref_id, qtyBase, it.ref_unit_id, add, cardPath);

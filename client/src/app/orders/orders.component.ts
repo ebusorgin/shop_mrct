@@ -5,6 +5,19 @@ import { forkJoin } from 'rxjs';
 import { ApiService } from '../core/api.service';
 import { fmtQty, httpErr } from '../core/format';
 import { ProductCatalog, TechCard } from '../core/models';
+import { packagingLabel } from '../core/packaging-label';
+
+/** Строка списка — продаваемая фасовка техкарты. */
+interface SaleRow {
+  id: number;
+  cardId: number;
+  name: string;
+  catalogId: number | null;
+  catalogName: string | null;
+  qtyBase: number;
+  unitCode: string;
+  minOrder: number;
+}
 
 @Component({
   selector: 'app-orders',
@@ -18,7 +31,7 @@ export class OrdersComponent implements OnInit {
   private api = inject(ApiService);
   private destroyRef = inject(DestroyRef);
 
-  products = signal<TechCard[]>([]);
+  cards = signal<TechCard[]>([]);
   catalogs = signal<ProductCatalog[]>([]);
   loading = signal(false);
   err = signal('');
@@ -26,12 +39,28 @@ export class OrdersComponent implements OnInit {
   catalogFilter = signal('');
   fmtQty = fmtQty;
 
+  /** Плоский список: каждая доступная к заказу фасовка — отдельная позиция. */
+  rows = computed<SaleRow[]>(() =>
+    this.cards().flatMap((card) =>
+      (card.packagings ?? []).filter((pk) => pk.available).map((pk) => ({
+        id: pk.id,
+        cardId: card.id,
+        name: packagingLabel(card.name, fmtQty(pk.qtyBase, card.portionUnitCode)),
+        catalogId: card.catalogId ?? null,
+        catalogName: card.catalogName ?? null,
+        qtyBase: pk.qtyBase,
+        unitCode: card.portionUnitCode,
+        minOrder: pk.minOrder,
+      }))
+    )
+  );
+
   catalogsById = computed(() => new Map(this.catalogs().map((c) => [c.id, c])));
   hasFilters = computed(() => !!this.query().trim() || !!this.catalogFilter());
   filtered = computed(() => {
     const query = this.query().trim().toLocaleLowerCase('ru');
     const catalog = this.catalogFilter();
-    return this.products().filter((p) => {
+    return this.rows().filter((p) => {
       if (catalog && (catalog === 'none' ? p.catalogId != null : p.catalogId !== Number(catalog))) return false;
       return !query || `${p.name} ${p.catalogName ?? ''}`.toLocaleLowerCase('ru').includes(query);
     }).sort((a, b) => a.name.localeCompare(b.name, 'ru'));
@@ -45,11 +74,11 @@ export class OrdersComponent implements OnInit {
     if (this.loading()) return;
     this.loading.set(true);
     this.err.set('');
-    forkJoin({ products: this.api.cards$(), catalogs: this.api.productCatalogs$() })
+    forkJoin({ cards: this.api.cards$(), catalogs: this.api.productCatalogs$() })
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
-        next: ({ products, catalogs }) => {
-          this.products.set(products);
+        next: ({ cards, catalogs }) => {
+          this.cards.set(cards);
           this.catalogs.set(catalogs);
           this.loading.set(false);
         },

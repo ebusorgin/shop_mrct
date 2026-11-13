@@ -5,9 +5,11 @@ import { FormsModule } from '@angular/forms';
 import { CommonModule } from '@angular/common';
 import { TranslatePipe } from '@ngx-translate/core';
 import { ApiService } from '../core/api.service';
-import { AppSettings, DeliveryRule, GptTestResult, ProductCatalog, RawCategory } from '../core/models';
-import { httpErr } from '../core/format';
+import { AppSettings, DeliveryRule, GoogleSheet, GptTestResult, ProductCatalog, RawCategory, TechCard } from '../core/models';
+import { fmtQty, httpErr } from '../core/format';
+import { packagingLabel } from '../core/packaging-label';
 import { PasswordFormComponent } from '../shared/password-form.component';
+import { PickOption, PickerComponent } from '../shared/picker.component';
 
 interface DeliveryDay {
   date: string;
@@ -26,6 +28,9 @@ function shiftCalendarDate(value: string, days: number): string {
       ? new Date(Date.parse(`${value}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10)
       : value;
 }
+
+/** Разделы верхнего меню настроек. */
+type SettingsTab = 'delivery' | 'gpt' | 'categories' | 'catalogs' | 'excel';
 
 /** Тот же признак, что считает сервер: чем именно дата покрыта правилом. */
 type RuleKind = 'week' | 'month' | 'both';
@@ -52,7 +57,7 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
 @Component({
   selector: 'app-settings',
   standalone: true,
-  imports: [CommonModule, FormsModule, TranslatePipe, PasswordFormComponent],
+  imports: [CommonModule, FormsModule, TranslatePipe, PasswordFormComponent, PickerComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styles: [`
     .cat-badge { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; border-radius:8px; margin-right:8px; font-size:15px; line-height:1; vertical-align:middle; }
@@ -192,6 +197,62 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
     .pc-color { cursor:pointer; border:1px solid var(--border); border-radius:7px; background:var(--panel); }
     .settings-section .badge { vertical-align:middle; }
     .settings-section .ok-msg, .settings-section .err { border-radius:9px; padding:10px 12px; }
+    .excel-sync { display:flex; align-items:center; gap:16px; margin-top:16px; padding:18px; border:1px dashed var(--border); border-radius:12px; background:var(--bg); }
+    .excel-sync-info { display:flex; flex-direction:column; gap:4px; min-width:0; }
+    .excel-sync-info b { font-size:14px; }
+    .excel-sync-info span { max-width:640px; color:var(--muted); font-size:12px; line-height:1.5; }
+    .excel-sync .btn { flex:0 0 auto; margin-left:auto; }
+    /* глобальный --accent сейчас почти белый — для главного действия берём фирменный тёмно-синий */
+    .excel-sync .btn.primary { background:var(--brand-blue-dark); border-color:var(--brand-blue-dark); color:#fff; }
+    .excel-sync .btn.primary:hover:not(:disabled) { background:var(--brand-blue); border-color:var(--brand-blue); }
+    .excel-sync .btn:disabled { cursor:progress; opacity:.75; }
+    /* ---------- документ копии: сетка и листы как в Excel ---------- */
+    .excel-doc { margin-top:16px; border:1px solid var(--border); border-radius:10px; overflow:hidden; background:#fff; }
+    .excel-doc-bar { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 14px; padding:9px 12px; border-bottom:1px solid var(--border); background:var(--bg); font-size:12px; }
+    .excel-doc-name { font-size:13px; font-weight:700; }
+    .excel-doc-bar a { color:var(--brand-blue-dark); font-weight:600; text-decoration:none; }
+    .excel-doc-bar a:hover { text-decoration:underline; }
+    /* Лист разворачивается на всю высоту: вертикальной прокрутки внутри нет, только окно браузера. */
+    .excel-grid-wrap { overflow-x:auto; overflow-y:visible; }
+    .excel-grid { width:100%; border-collapse:separate; border-spacing:0; font-size:12px; }
+    .excel-grid th, .excel-grid td { padding:5px 9px; border-right:1px solid #e3e8ef; border-bottom:1px solid #e3e8ef; text-align:left; white-space:nowrap; }
+    .excel-grid td.num { text-align:right; font-variant-numeric:tabular-nums; }
+    .excel-grid thead th { position:sticky; top:0; z-index:1; height:23px; padding:3px 9px; background:#f3f2f1; color:#5f6368; font-weight:600; }
+    .excel-grid thead .link-col { background:#dcebf9; color:var(--brand-blue-dark); text-align:center; }
+    .excel-grid thead .local-name { background:#eaf5ea; color:#2f6b3a; text-align:center; }
+    .excel-grid thead .local-min { background:#eaf5ea; color:#2f6b3a; text-align:center; }
+    .excel-grid td.link-id { background:#f4f9ff; color:var(--brand-blue-dark); font-weight:600; text-align:right; font-variant-numeric:tabular-nums; }
+    .excel-grid td.link-id.miss { background:#fff; color:#c7cdd5; font-weight:400; }
+    .excel-grid td.local-name { background:#f5fbf5; color:#2f6b3a; white-space:nowrap; }
+    .excel-grid td.local-name.miss { background:#fff; }
+    .excel-grid td.local-min { background:#f5fbf5; color:#2f6b3a; text-align:right; font-variant-numeric:tabular-nums; }
+    .excel-grid td.local-min.miss { background:#fff; color:#c7cdd5; }
+    .excel-grid td.link-pick { background:#fffdf3; padding:2px 4px; }
+    .excel-grid td.link-pick button { width:100%; border:1px dashed #c9a227; border-radius:6px; background:#fff; color:#7a5b00; font:inherit; font-size:11px; padding:3px 6px; cursor:pointer; white-space:nowrap; }
+    .excel-grid td.link-pick button:hover { background:#fff7dd; }
+    .excel-grid .link-edit { border:0; background:transparent; color:var(--brand-blue-dark); font-size:11px; padding:0 2px; cursor:pointer; }
+    .link-scrim { position:fixed; inset:0; z-index:80; }
+    .link-pop { position:fixed; z-index:81; width:300px; padding:8px; background:var(--panel); border:1px solid var(--border); border-radius:10px; box-shadow:0 12px 30px rgba(10,18,32,.22); }
+    .link-pop-head { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; margin-bottom:6px; font-size:12px; }
+    .link-pop-head span { overflow:hidden; text-overflow:ellipsis; }
+    .link-pop-x { border:0; background:transparent; color:var(--muted); font-size:14px; cursor:pointer; line-height:1; }
+    .link-unset { width:100%; margin-top:6px; padding:6px; border:1px solid var(--border); border-radius:8px; background:#fff; color:var(--red); font:inherit; font-size:12px; cursor:pointer; }
+    .link-unset:disabled { opacity:.6; cursor:progress; }
+    .sheet-unmatched { padding:8px 12px; border-bottom:1px solid var(--border); background:var(--amber-soft); color:#7a5b00; font-size:12px; line-height:1.5; }
+    .excel-grid .corner { position:sticky; left:0; z-index:2; min-width:38px; width:38px; background:#f3f2f1; color:#9aa0a6; text-align:center; font-weight:400; }
+    .excel-grid thead .corner { z-index:3; }
+    .excel-grid .row-num { position:sticky; left:0; z-index:1; min-width:38px; width:38px; background:#f8f9fa; color:#9aa0a6; text-align:center; font-weight:400; }
+    .excel-grid tbody tr:hover td { background:#f6faff; }
+    .excel-grid .no-rows { padding:18px; color:var(--muted); text-align:center; }
+    .excel-tabs { display:flex; overflow-x:auto; border-top:1px solid var(--border); background:#f3f2f1; scrollbar-width:thin; }
+    .excel-tabs button { flex:0 0 auto; padding:7px 14px; border:0; border-right:1px solid #dcdcdc; background:transparent; color:#4a4a4a; font:inherit; font-size:12px; cursor:pointer; }
+    .excel-tabs button:hover { background:#e8e8e8; }
+    .excel-tabs button.on { background:#fff; color:#217346; font-weight:700; box-shadow:inset 0 -2px 0 #217346; }
+    .excel-tabs .tab-badge { display:inline-flex; align-items:center; justify-content:center; min-width:18px; height:18px; margin-left:6px; padding:0 5px; border-radius:9px; background:#d93025; color:#fff; font-size:11px; font-weight:700; line-height:1; vertical-align:middle; }
+    @media (max-width:640px) {
+      .excel-sync { align-items:stretch; flex-direction:column; }
+      .excel-sync .btn { margin-left:0; min-height:44px; }
+    }
     @media (max-width:700px) {
       .settings-heading .page-title { font-size:22px; }
       .settings-topbar { align-items:flex-start; }
@@ -235,16 +296,19 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
       <div class="settings-nav" role="tablist" aria-label="Разделы настроек">
         <button type="button" role="tab" id="settings-tab-delivery" aria-controls="settings-panel-delivery"
                 [class.on]="settingsTab() === 'delivery'" [attr.aria-selected]="settingsTab() === 'delivery'"
-                (click)="settingsTab.set('delivery')">📅 <span>Доставки</span></button>
+                (click)="openSettingsTab('delivery', $event)">📅 <span>Доставки</span></button>
         <button type="button" role="tab" id="settings-tab-gpt" aria-controls="settings-panel-gpt"
                 [class.on]="settingsTab() === 'gpt'" [attr.aria-selected]="settingsTab() === 'gpt'"
-                (click)="settingsTab.set('gpt')">🤖 <span>GPT и прокси</span></button>
+                (click)="openSettingsTab('gpt', $event)">🤖 <span>GPT и прокси</span></button>
         <button type="button" role="tab" id="settings-tab-categories" aria-controls="settings-panel-categories"
                 [class.on]="settingsTab() === 'categories'" [attr.aria-selected]="settingsTab() === 'categories'"
-                (click)="settingsTab.set('categories')">📦 <span>Категории склада</span></button>
+                (click)="openSettingsTab('categories', $event)">📦 <span>Категории склада</span></button>
         <button type="button" role="tab" id="settings-tab-catalogs" aria-controls="settings-panel-catalogs"
                 [class.on]="settingsTab() === 'catalogs'" [attr.aria-selected]="settingsTab() === 'catalogs'"
-                (click)="settingsTab.set('catalogs')">🥗 <span>Каталоги продукции</span></button>
+                (click)="openSettingsTab('catalogs', $event)">🥗 <span>Каталоги продукции</span></button>
+        <button type="button" role="tab" id="settings-tab-excel" aria-controls="settings-panel-excel"
+                [class.on]="settingsTab() === 'excel'" [attr.aria-selected]="settingsTab() === 'excel'"
+                (click)="openSettingsTab('excel', $event)">📄 <span>Синхронизация Excel</span></button>
       </div>
       <div class="settings-tabbody">
 
@@ -524,12 +588,12 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
          aria-labelledby="settings-tab-catalogs" [hidden]="settingsTab() !== 'catalogs'">
       <h3>🥗 Каталог продукции</h3>
       <div class="muted" style="font-size:12px; margin-bottom:10px">
-        Список предлагается при создании продукта. При удалении каталога продукты остаются, но без каталога.
+        Список предлагается при создании техкарты. При удалении каталога техкарты остаются, но без каталога.
       </div>
       @if (pcErr()) { <div class="err">{{ pcErr() }}</div> }
       @if (pcMsg()) { <div class="ok-msg">{{ pcMsg() }}</div> }
       <table class="tbl" aria-label="Каталоги продукции">
-        <tr><th>Каталог</th><th class="num">Продуктов</th><th></th></tr>
+        <tr><th>Каталог</th><th class="num">Техкарт</th><th></th></tr>
         @for (c of productCatalogs(); track c.id) {
           <tr>
             @if (editingPc() === c.id) {
@@ -580,6 +644,133 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
         <button class="btn sm primary" [disabled]="!newPcName().trim()" (click)="createPc()">+ Добавить</button>
       </div>
     </div>
+
+    <!-- СИНХРОНИЗАЦИЯ EXCEL -->
+    <div id="settings-panel-excel" class="panel settings-section" role="tabpanel"
+         aria-labelledby="settings-tab-excel" [hidden]="settingsTab() !== 'excel'">
+      <h3>📄 Синхронизация Excel</h3>
+      <div class="muted" style="font-size:12px">
+        Таблица «Микс Маркт Гастро» из Google Sheets: скачанные листы хранятся в отдельной базе
+        данных и показываются здесь со всеми листами. Позиции сопоставляются с фасовками продукции
+        по названию — локальный ID стоит в колонке ID между A и B, а минимальный заказ связанной
+        фасовки — в колонке Min Заказ(local) между E и F.
+      </div>
+      @if (sheetErr()) { <div class="err">{{ sheetErr() }}</div> }
+      @if (sheetMsg()) { <div class="ok-msg">{{ sheetMsg() }}</div> }
+      <div class="excel-sync">
+        <div class="excel-sync-info">
+          <b>Google-таблица «Микс Маркт Гастро»</b>
+          <span>Документ читается сервисным аккаунтом Google (credentials.json) только на чтение.
+            Кнопка «Синхронизировать» заменяет сохранённые в отдельной базе листы свежими данными из
+            Google — все листы сразу.</span>
+        </div>
+        <button class="btn primary" (click)="syncSheet()" [disabled]="sheetBusy()">
+          {{ sheetBusy() ? 'Скачиваем…' : '🔄 Синхронизировать' }}
+        </button>
+      </div>
+
+      @if (sheetDoc(); as doc) {
+        <div class="excel-doc">
+          <div class="excel-doc-bar">
+            <span class="excel-doc-name">📄 {{ doc.title }}</span>
+            <span class="muted">Листов: {{ sheetTabs().length }} · скачано {{ sheetLoadedLabel() }}</span>
+            <a [href]="doc.url" target="_blank" rel="noopener">Открыть в Google Sheets ↗</a>
+          </div>
+          @if (doc.unmatched.length) {
+            <div class="sheet-unmatched">
+              <b>Не найдено в фасовках ({{ doc.unmatched.length }}):</b>
+              {{ doc.unmatched.join(', ') }}
+            </div>
+          }
+          @if (sheetActive(); as sheet) {
+            <div class="excel-grid-wrap" role="region" [attr.aria-label]="'Лист ' + sheet.name" tabindex="0">
+              <table class="excel-grid">
+                <thead>
+                  <tr>
+                    <th class="corner" aria-hidden="true"></th>
+                    @for (column of sheetColumns(); track $index) {
+                      @if ($index === 1) {
+                        <th class="link-col">ID</th>
+                        <th class="local-name">localName</th>
+                      }
+                      <th class="col-letter">{{ excelColumn($index) }}</th>
+                      @if ($index === 4) {
+                        <th class="local-min">Min Заказ(local)</th>
+                      }
+                    }
+                  </tr>
+                </thead>
+                <tbody>
+                  @for (row of sheet.rows; track $index; let rowIndex = $index) {
+                    <tr>
+                      <th class="row-num">{{ rowIndex + 1 }}</th>
+                      @for (cell of row; track $index) {
+                        @if ($index === 1) {
+                          @if (sheetLink(rowIndex); as id) {
+                            <td class="link-id">{{ id }}</td>
+                            <td class="local-name">
+                              {{ sheetLocalName(rowIndex) || '—' }}
+                              <button type="button" class="link-edit" title="Изменить или снять сопоставление"
+                                      (click)="openLinkPicker($event, rowIndex)">✎</button>
+                            </td>
+                          } @else if (sheetMiss(rowIndex)) {
+                            <td class="link-pick" colspan="2">
+                              <button type="button" (click)="openLinkPicker($event, rowIndex)">🔍 Сопоставить…</button>
+                            </td>
+                          } @else {
+                            <td class="link-id miss"></td>
+                            <td class="local-name miss"></td>
+                          }
+                        }
+                        <td [class.num]="isNumber(cell)">{{ cell }}</td>
+                        @if ($index === 4) {
+                          @if (sheetMinOrder(rowIndex); as minOrder) {
+                            <td class="local-min">{{ minOrder }}</td>
+                          } @else {
+                            <td class="local-min miss">—</td>
+                          }
+                        }
+                      }
+                    </tr>
+                  } @empty {
+                    <tr><td class="no-rows" [attr.colspan]="sheetColumns().length + 4">Пустой лист — данных нет</td></tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+            <div class="excel-tabs" role="tablist" aria-label="Листы документа">
+              @for (item of sheetTabs(); track item.name) {
+                <button type="button" role="tab" [class.on]="item.name === sheet.name"
+                        [attr.aria-selected]="item.name === sheet.name"
+                        [attr.title]="item.misses.length ? 'Нераспознанных блюд: ' + item.misses.length : null"
+                        (click)="openSheet(item.name, $event)">{{ item.name }}@if (item.misses.length) {<span class="tab-badge">{{ item.misses.length }}</span>}</button>
+              }
+            </div>
+            @if (linkTarget(); as target) {
+              <div class="link-scrim" (click)="closeLinkPicker()"></div>
+              <div class="link-pop" [style.left.px]="target.x" [style.top.px]="target.y"
+                   role="dialog" aria-label="Сопоставление с фасовкой">
+                <div class="link-pop-head">
+                  <span>Строка {{ target.row + 1 }}: «{{ target.rowName }}»</span>
+                  <button type="button" class="link-pop-x" aria-label="Закрыть" (click)="closeLinkPicker()">✕</button>
+                </div>
+                <app-picker [options]="linkOptions()" [selectedId]="target.packagingId" [autoOpen]="true"
+                            placeholder="Найти фасовку…" (picked)="pickLink($event)"></app-picker>
+                @if (target.packagingId != null) {
+                  <button type="button" class="link-unset" [disabled]="linkSaving()" (click)="clearLink()">
+                    Снять сопоставление
+                  </button>
+                }
+              </div>
+            }
+          }
+        </div>
+      } @else {
+        <div class="muted" style="font-size:12px; margin-top:12px">
+          Таблица ещё не загружена — нажмите «Синхронизировать», и данные листов сохранятся в отдельной базе.
+        </div>
+      }
+    </div>
       </div>
     </div>
 
@@ -595,7 +786,239 @@ export class SettingsComponent implements OnInit {
   private shortDayFormat = new Intl.DateTimeFormat('ru-RU', { weekday: 'short', day: 'numeric', month: 'short' });
 
   /** Верхнее меню настроек: одна вкладка — один раздел, как в браузере. */
-  settingsTab = signal<'delivery' | 'gpt' | 'categories' | 'catalogs'>('delivery');
+  settingsTab = signal<SettingsTab>('delivery');
+
+  /** Выбор вкладки и прокрутка полосы к ней: на узком экране дальние вкладки за краем. */
+  openSettingsTab(tab: SettingsTab, event: Event): void {
+    this.settingsTab.set(tab);
+    (event.currentTarget as HTMLElement).scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    if (tab === 'excel') this.loadSheet();
+  }
+
+  // ---- синхронизация Excel: сохранённые листы Google-таблицы из отдельной базы ----
+  readonly sheetDoc = signal<GoogleSheet | null>(null);
+  /** Имя открытого листа; пусто — показывается первый. */
+  sheetTab = signal('');
+  sheetBusy = signal(false);
+  sheetErr = signal('');
+  sheetMsg = signal('');
+  private sheetFormat = new Intl.DateTimeFormat('ru-RU', { dateStyle: 'short', timeStyle: 'medium' });
+
+  readonly sheetTabs = computed(() => this.sheetDoc()?.tabs ?? []);
+  readonly sheetActive = computed(() => {
+    const tabs = this.sheetTabs();
+    return tabs.find((tab) => tab.name === this.sheetTab()) ?? tabs[0] ?? null;
+  });
+  /** Колонки рисуются по ширине листа, даже если строк нет. */
+  readonly sheetColumns = computed(() => Array.from({ length: this.sheetActive()?.width ?? 0 }));
+  readonly sheetLoadedLabel = computed(() => {
+    const loadedAt = this.sheetDoc()?.loadedAt;
+    return loadedAt ? this.sheetFormat.format(new Date(loadedAt)) : '';
+  });
+
+  excelColumn(index: number): string {
+    let number = index + 1;
+    let letters = '';
+    while (number > 0) {
+      const rest = (number - 1) % 26;
+      letters = String.fromCharCode(65 + rest) + letters;
+      number = Math.floor((number - 1) / 26);
+    }
+    return letters;
+  }
+
+  /** Значения из Google приходят строками — числа выравниваем по правому краю. */
+  isNumber(value: string): boolean {
+    return /^-?\d+([.,]\d+)?$/.test(value.trim());
+  }
+
+  /** Локальный id фасовки для строки листа; null — позиция не сопоставлена. */
+  sheetLink(rowIndex: number): number | null {
+    return this.sheetActive()?.links?.[rowIndex] ?? null;
+  }
+
+  /** Название продукции (техкарта + фасовка) для строки листа; null — позиция не сопоставлена. */
+  sheetLocalName(rowIndex: number): string | null {
+    return this.sheetActive()?.names?.[rowIndex] ?? null;
+  }
+
+  /** Минимальный заказ связанной фасовки; null — позиция не сопоставлена. */
+  sheetMinOrder(rowIndex: number): number | null {
+    const id = this.sheetLink(rowIndex);
+    if (id === null) return null;
+    for (const card of this.cards()) {
+      const found = (card.packagings ?? []).find((pk) => pk.id === id);
+      if (found) return found.minOrder;
+    }
+    return null;
+  }
+
+  /** Позиция листа без продукции — в её ячейке вместо пустого поля показываем выбор. */
+  sheetMiss(rowIndex: number): boolean {
+    return this.sheetActive()?.misses?.includes(rowIndex) ?? false;
+  }
+
+  // ---- ручное сопоставление строки листа с фасовкой ----
+  readonly linkTarget = signal<{
+    tab: string;
+    row: number;
+    rowName: string;
+    packagingId: number | null;
+    x: number;
+    y: number;
+  } | null>(null);
+  readonly linkSaving = signal(false);
+  readonly cards = signal<TechCard[]>([]);
+  private cardsRequested = false;
+
+  readonly linkOptions = computed<PickOption[]>(() =>
+    this.cards()
+      .flatMap((card) => (card.packagings ?? []).map((pk) => ({
+        id: pk.id,
+        label: packagingLabel(card.name, fmtQty(pk.qtyBase, card.portionUnitCode)),
+        unit: fmtQty(pk.qtyBase, card.portionUnitCode),
+        group: card.catalogName ?? undefined,
+      })))
+      .sort((a, b) => a.label.localeCompare(b.label, 'ru'))
+  );
+
+  /** Список продукции грузим один раз — только когда он реально понадобился. */
+  private ensureCards(): void {
+    if (this.cardsRequested) return;
+    this.cardsRequested = true;
+    this.api.cards$().pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: (cards) => this.cards.set(cards),
+      error: (e) => {
+        this.cardsRequested = false;
+        this.sheetErr.set(`Не удалось загрузить продукцию: ${httpErr(e)}`);
+      },
+    });
+  }
+
+  openLinkPicker(event: Event, rowIndex: number): void {
+    const sheet = this.sheetActive();
+    if (!sheet) return;
+    const rowName = (sheet.rows[rowIndex]?.[1] ?? '').trim();
+    if (!rowName) return;
+    this.ensureCards();
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    this.linkTarget.set({
+      tab: sheet.name,
+      row: rowIndex,
+      rowName,
+      packagingId: sheet.links?.[rowIndex] ?? null,
+      x: Math.max(8, Math.min(rect.left, window.innerWidth - 308)),
+      y: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 340)),
+    });
+  }
+
+  closeLinkPicker(): void {
+    this.linkTarget.set(null);
+  }
+
+  pickLink(option: PickOption): void {
+    const target = this.linkTarget();
+    if (!target || this.linkSaving()) return;
+    this.linkSaving.set(true);
+    this.api.linkGoogleSheetRow$(target.tab, target.row, option.id).pipe(
+      finalize(() => this.linkSaving.set(false)),
+      takeUntilDestroyed(this.destroyRef),
+    ).subscribe({
+      next: () => {
+        this.updateLink(target.tab, target.row, option.id, option.label);
+        this.closeLinkPicker();
+      },
+      error: (e) => this.sheetErr.set(`Не удалось сохранить сопоставление: ${httpErr(e)}`),
+    });
+  }
+
+  clearLink(): void {
+    const target = this.linkTarget();
+    if (!target || this.linkSaving()) return;
+    this.linkSaving.set(true);
+    this.api.linkGoogleSheetRow$(target.tab, target.row, null).pipe(
+      finalize(() => this.linkSaving.set(false)),
+      takeUntilDestroyed(this.destroyRef),
+    ).subscribe({
+      next: () => {
+        this.updateLink(target.tab, target.row, null, null);
+        this.closeLinkPicker();
+      },
+      error: (e) => this.sheetErr.set(`Не удалось снять сопоставление: ${httpErr(e)}`),
+    });
+  }
+
+  /** Локально повторяем ответ сервера: ID, название и счётчик непознанного во вкладке. */
+  private updateLink(tabName: string, rowIndex: number, id: number | null, name: string | null): void {
+    this.sheetDoc.update((doc) => doc ? {
+      ...doc,
+      tabs: doc.tabs.map((tab) => {
+        if (tab.name !== tabName) return tab;
+        const links = tab.links.map((value, index) => (index === rowIndex ? id : value));
+        const names = tab.names.map((value, index) => (index === rowIndex ? name : value));
+        const misses = id === null
+          ? (tab.misses.includes(rowIndex) ? tab.misses : [...tab.misses, rowIndex].sort((a, b) => a - b))
+          : tab.misses.filter((index) => index !== rowIndex);
+        return { ...tab, links, names, misses };
+      }),
+    } : doc);
+  }
+
+  /** Сохранённая таблица из отдельной базы: открытие вкладки показывает её без запроса к Google. */
+  loadSheet(): void {
+    if (this.sheetBusy()) return;
+    this.ensureCards();
+    this.sheetBusy.set(true);
+    this.sheetErr.set('');
+    this.sheetMsg.set('');
+    this.api.googleSheet$().pipe(
+      finalize(() => this.sheetBusy.set(false)),
+      takeUntilDestroyed(this.destroyRef),
+    ).subscribe({
+      next: (doc) => {
+        this.sheetDoc.set(doc);
+        const current = this.sheetTab();
+        this.sheetTab.set(doc?.tabs.some((tab) => tab.name === current) ? current : doc?.tabs[0]?.name ?? '');
+      },
+      error: (e) => this.sheetErr.set(`Не удалось загрузить сохранённую таблицу: ${httpErr(e)}`),
+    });
+  }
+
+  /** Переключение листа: общая прокрутка сетки сбрасывается к началу. */
+  openSheet(name: string, event: Event): void {
+    this.sheetTab.set(name);
+    const wrap = (event.currentTarget as HTMLElement).closest('.excel-doc')?.querySelector('.excel-grid-wrap');
+    if (wrap) {
+      wrap.scrollTop = 0;
+      wrap.scrollLeft = 0;
+    }
+  }
+
+  /** «Синхронизировать»: скачать таблицу заново и заменить сохранённые листы в отдельной базе. */
+  syncSheet(): void {
+    if (this.sheetBusy()) return;
+    this.sheetBusy.set(true);
+    this.sheetErr.set('');
+    this.sheetMsg.set('');
+    this.api.syncGoogleSheet$().pipe(
+      finalize(() => this.sheetBusy.set(false)),
+      takeUntilDestroyed(this.destroyRef),
+    ).subscribe({
+      next: (doc) => {
+        this.sheetDoc.set(doc);
+        const current = this.sheetTab();
+        this.sheetTab.set(doc.tabs.some((tab) => tab.name === current) ? current : doc.tabs[0]?.name ?? '');
+        const matched = new Set<string>();
+        for (const tab of doc.tabs) {
+          tab.rows.forEach((row, index) => {
+            if (tab.links?.[index] != null) matched.add((row[1] ?? '').trim());
+          });
+        }
+        this.sheetMsg.set(`Таблица обновлена: листов ${doc.tabs.length} · сопоставлено ${matched.size} из ${matched.size + doc.unmatched.length}`);
+      },
+      error: (e) => this.sheetErr.set(`Не удалось синхронизировать: ${httpErr(e)}`),
+    });
+  }
 
   readonly calendarToday = signal(calendarDate(this.calendarAnchor));
   readonly calendarWeekdays = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
@@ -1065,7 +1488,7 @@ export class SettingsComponent implements OnInit {
   }
 
   deletePc(c: ProductCatalog): void {
-    if (!confirm(`Удалить каталог «${c.name}»? Продукты останутся, но без каталога.`)) return;
+    if (!confirm(`Удалить каталог «${c.name}»? Техкарты останутся, но без каталога.`)) return;
     this.pcErr.set('');
     this.pcMsg.set('');
     this.api.deleteProductCatalog$(c.id).subscribe({

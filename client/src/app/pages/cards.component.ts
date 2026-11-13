@@ -17,6 +17,16 @@ interface CardDraftItem {
 
 interface RefOption { id: number; label: string; }
 
+interface CardDraftPackaging {
+  id: number | null;
+  /** Выход одной упаковки в единице выхода техкарты. */
+  qtyBase: number | null;
+  /** Минимальный заказ в упаковках. */
+  minOrder: number | null;
+  /** Можно ли уже заказывать эту фасовку магазинам. */
+  available: boolean;
+}
+
 interface CardDraft {
   id: number | null;
   name: string;
@@ -25,6 +35,7 @@ interface CardDraft {
   portionUnitId: number | null;
   catalogId: number | null;
   items: CardDraftItem[];
+  packagings: CardDraftPackaging[];
 }
 
 interface DNode { id: string; label: string; sub: string; cls: string; x: number; y: number; w: number; h: number; }
@@ -71,11 +82,11 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
   ],
   template: `
     <div class="head">
-      <h1 class="page-title">📐 Продукция</h1>
-      <span class="badge blue">{{ list().length }} продуктов</span>
+      <h1 class="page-title">📐 Техкарты</h1>
+      <span class="badge blue">{{ list().length }} техкарт</span>
       <div class="spacer"></div>
       <button class="btn" (click)="duplicate()" [disabled]="!draft()">⧉ Дублировать</button>
-      <button class="btn primary" (click)="newCard()">＋ Новый продукт</button>
+      <button class="btn primary" (click)="newCard()">＋ Новая техкарта</button>
     </div>
     @if (err()) { <div class="err">{{ err() }}</div> }
     @if (msg()) { <div class="ok-msg">{{ msg() }}</div> }
@@ -84,7 +95,7 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
       <!-- ===== список ===== -->
       <div class="panel" #listEl style="scroll-margin-top: 64px;">
         <div class="list-head">
-          <h3>Продукция</h3>
+          <h3>Техкарты</h3>
         </div>
         <div class="card-filter">
           <input type="search" class="cf-search" placeholder="🔍 Название, примечание или ингредиент"
@@ -116,13 +127,14 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
               <b>{{ c.name }}</b>
               <div class="muted" style="font-size:12px">
                 выход {{ trim(c.portionQty) }} {{ c.portionUnitCode }} · позиций {{ c.items.length }}
+                · фасовок {{ c.packagings.length }}
                 @if (catOf(c.catalogId); as cat) {
                   · <span class="cat-chip" [style.background]="cat.color || '#eef2f7'">{{ cat.icon ? cat.icon + ' ' : '' }}{{ cat.name }}</span>
                 } @else if (c.catalogName) { · {{ c.catalogName }} }
               </div>
             </button>
           } @empty {
-            <p class="muted">{{ list().length ? 'Ничего не найдено' : 'Продукции пока нет' }}</p>
+            <p class="muted">{{ list().length ? 'Ничего не найдено' : 'Техкарт пока нет' }}</p>
           }
         </div>
       </div>
@@ -130,7 +142,7 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
       <!-- ===== редактор ===== -->
       @if (draft(); as d) {
         <div class="panel" #editorEl style="scroll-margin-top: 64px;">
-          <h3>{{ d.id ? 'Редактирование' : 'Создание' }} продукта</h3>
+          <h3>{{ d.id ? 'Редактирование' : 'Создание' }} техкарты</h3>
           <div class="row">
             <label class="f" style="flex:2">Название<input [(ngModel)]="d.name" placeholder="напр. Борщ (400 г)" /></label>
             <label class="f">Выход<input type="number" [(ngModel)]="d.portionQty" /></label>
@@ -149,7 +161,29 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
           </div>
           <hr class="hr" />
 
-          <h3>Состав продукта</h3>
+          <h3>Фасовка</h3>
+          <p class="muted" style="font-size:12px; margin:0 0 8px">
+            Выход упаковки — в единице выхода техкарты ({{ unitCode(d.portionUnitId) }}).
+            Галочка «в доставке» разрешает магазинам заказывать продукт в этой фасовке.
+          </p>
+          @for (pk of d.packagings; track $index) {
+            <div class="row" style="align-items:center;margin-bottom:6px">
+              <label class="f">Выход, {{ unitCode(d.portionUnitId) }}
+                <input type="number" [(ngModel)]="pk.qtyBase" />
+              </label>
+              <label class="f">Мин. заказ, уп.<input type="number" [(ngModel)]="pk.minOrder" min="1" step="1" /></label>
+              <label class="f" style="flex:0 0 auto; flex-direction:row; align-items:center; gap:6px">
+                <input type="checkbox" [(ngModel)]="pk.available" /> в доставке
+              </label>
+              <button class="btn sm danger" (click)="removePackaging($index)"
+                      [disabled]="d.packagings.length <= 1" title="Удалить фасовку">✕</button>
+            </div>
+          }
+          <button class="btn sm" (click)="addPackaging()">+ фасовка</button>
+
+          <hr class="hr" />
+
+          <h3>Состав техкарты</h3>
           @if (sumHint(); as sh) {
             <div class="row" style="align-items:center; margin-bottom:8px">
               <span class="muted" style="font-size:12px">{{ sh.parts }}</span>
@@ -163,7 +197,7 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
               <select style="width:140px; min-width:0" [(ngModel)]="it.sourceType" (ngModelChange)="it.refId = null; it.unitId = null; it.refQuery = ''">
                 <option value="raw">сырьё</option>
                 <option value="semi">полуфабрикат</option>
-                <option value="product">продукт</option>
+                <option value="product">техкарта</option>
               </select>
               <div class="combo">
                 <input type="text" class="combo-input" placeholder="— выбрать —"
@@ -194,7 +228,7 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
 
           <hr class="hr" />
           <div class="row">
-            <button class="btn primary" (click)="save()">💾 Сохранить продукт</button>
+            <button class="btn primary" (click)="save()">💾 Сохранить техкарту</button>
             @if (d.id) {
               <button class="btn" (click)="togglePreview()" [class.primary]="preview().length > 0">🔎 Проверка расхода</button>
               <button class="btn danger" (click)="remove()">Удалить</button>
@@ -222,7 +256,7 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
 
           <!-- ===== блок-схема ===== -->
           <hr class="hr" />
-          <h3>Блок-схема: сырьё → полуфабрикаты → продукция</h3>
+          <h3>Блок-схема: сырьё → полуфабрикаты → техкарты</h3>
           <div class="diagram-wrap">
             <svg class="diagram" [attr.width]="diagram().w" [attr.height]="diagram().h" [attr.viewBox]="'0 0 ' + diagram().w + ' ' + diagram().h">
               <defs>
@@ -249,8 +283,8 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
           </div>
         </div>
       } @else {
-        <div class="panel"><p class="muted">Выберите продукт из списка или создайте новый. Блок-схема показывает, как складское сырьё
-          через полуфабрикаты (с учётом выхода после обработки) превращается в готовую продукцию.</p></div>
+        <div class="panel"><p class="muted">Выберите техкарту из списка или создайте новую. Блок-схема показывает, как складское сырьё
+          через полуфабрикаты (с учётом выхода после обработки) превращается в готовое блюдо.</p></div>
       }
     </div>
   `,
@@ -491,11 +525,13 @@ export class CardsComponent implements OnInit {
   newCard(): void {
     this.msg.set('');
     this.showPreview.set(false);
+    const unit = this.units().find((u) => u.code === 'г');
     this.draft.set({
       id: null, name: '', note: '', portionQty: 1000,
-      portionUnitId: this.units().find((u) => u.code === 'г')?.id ?? null,
+      portionUnitId: unit?.id ?? null,
       catalogId: null,
       items: [],
+      packagings: [{ id: null, qtyBase: 1000, minOrder: 1, available: true }],
     });
     this.buildDiagram();
     this.revealEditor();
@@ -505,6 +541,9 @@ export class CardsComponent implements OnInit {
     this.msg.set('');
     this.showPreview.set(false);
     this.preview.set([]);
+    const packagings = (c.packagings ?? []).map((pk) => ({
+      id: pk.id, qtyBase: pk.qtyBase, minOrder: pk.minOrder, available: pk.available !== false,
+    }));
     this.draft.set({
       id: c.id, name: c.name, note: c.note,
       portionQty: c.portionQty, portionUnitId: c.portionUnitId,
@@ -513,6 +552,7 @@ export class CardsComponent implements OnInit {
         sourceType: i.sourceType, refId: i.refId, qty: i.qty, unitId: i.unitId,
         refQuery: this.refLabel(i),
       })),
+      packagings: packagings.length ? packagings : [{ id: null, qtyBase: c.portionQty, minOrder: 1, available: true }],
     });
     this.buildDiagram();
     this.revealEditor();
@@ -548,6 +588,22 @@ export class CardsComponent implements OnInit {
     this.buildDiagram();
   }
 
+  // ================== фасовки ==================
+
+  addPackaging(): void {
+    const d = this.draft();
+    if (!d) return;
+    d.packagings.push({ id: null, qtyBase: null, minOrder: 1, available: true });
+    this.draft.set({ ...d });
+  }
+
+  removePackaging(index: number): void {
+    const d = this.draft();
+    if (!d || d.packagings.length <= 1) return;
+    d.packagings.splice(index, 1);
+    this.draft.set({ ...d });
+  }
+
   save(): void {
     const d = this.draft();
     if (!d) return;
@@ -564,10 +620,36 @@ export class CardsComponent implements OnInit {
       this.err.set('Добавьте хотя бы одну позицию состава');
       return;
     }
-    const body = { name: d.name.trim(), note: d.note, portionQty: d.portionQty, portionUnitId: d.portionUnitId, catalogId: d.catalogId, items };
+    const packagings = d.packagings.map((pk) => ({
+      ...(pk.id == null ? {} : { id: pk.id }),
+      qtyBase: pk.qtyBase,
+      minOrder: pk.minOrder,
+      available: pk.available,
+    }));
+    if (!packagings.length) {
+      this.err.set('Добавьте хотя бы одну фасовку');
+      return;
+    }
+    if (packagings.some((pk) => !pk.qtyBase || !(pk.qtyBase > 0) || !pk.minOrder || pk.minOrder < 1)) {
+      this.err.set('У фасовки укажите выход и минимальный заказ');
+      return;
+    }
+    const weights = new Set<number>();
+    for (const pk of packagings) {
+      const weight = pk.qtyBase!;
+      if (weights.has(weight)) {
+        this.err.set('Фасовки с одинаковым выходом повторяются');
+        return;
+      }
+      weights.add(weight);
+    }
+    const body = {
+      name: d.name.trim(), note: d.note, portionQty: d.portionQty, portionUnitId: d.portionUnitId,
+      catalogId: d.catalogId, items, packagings,
+    };
     const sub = {
       next: () => {
-        this.msg.set(`Продукт «${d.name}» сохранён ✓`);
+        this.msg.set(`Техкарта «${d.name}» сохранена ✓`);
         this.reload();
       },
       error: (e: unknown) => this.err.set(httpErr(e)),
@@ -580,7 +662,7 @@ export class CardsComponent implements OnInit {
   duplicate(): void {
     const d = this.draft();
     if (!d) return;
-    const name = d.name.trim() || 'продукт';
+    const name = d.name.trim() || 'техкарта';
     this.err.set('');
     this.showPreview.set(false);
     this.preview.set([]);
@@ -589,6 +671,7 @@ export class CardsComponent implements OnInit {
       id: null,
       name: `${name} (копия)`,
       items: d.items.map((i) => ({ ...i })),
+      packagings: d.packagings.map((pk) => ({ ...pk, id: null })),
     });
     this.msg.set(`Копия «${name}» создана — измените название и сохраните`);
     this.buildDiagram();
@@ -597,9 +680,9 @@ export class CardsComponent implements OnInit {
 
   remove(): void {
     const d = this.draft();
-    if (!d?.id || !confirm(`Удалить продукт «${d.name}»?`)) return;
+    if (!d?.id || !confirm(`Удалить техкарту «${d.name}»?`)) return;
     this.api.deleteCard(d.id).subscribe({
-      next: () => { this.draft.set(null); this.msg.set('Продукт удалён'); this.reload(); },
+      next: () => { this.draft.set(null); this.msg.set('Техкарта удалена'); this.reload(); },
       error: (e) => this.err.set(httpErr(e)),
     });
   }
@@ -730,7 +813,7 @@ export class CardsComponent implements OnInit {
     for (const c of allProducts.values()) {
       const n: DNode = {
         id: `p${c.id}`, label: c.name,
-        sub: `продукт · выход ${trim(c.portionQty)} ${c.portionUnitCode}`,
+        sub: `техкарта · выход ${trim(c.portionQty)} ${c.portionUnitCode}`,
         cls: 'card', x: X3, y: y0 + productRow * (NODE_H + GAP), w: W3, h: NODE_H,
       };
       nodes.push(n); posOf.set(n.id, n); productRow++;
@@ -772,7 +855,7 @@ export class CardsComponent implements OnInit {
 
     // узел продукта
     const cardNode: DNode = {
-      id: 'card', label: d.name || 'новый продукт',
+      id: 'card', label: d.name || 'новая техкарта',
       sub: d.portionQty ? `выход ${trim(d.portionQty)} ${this.unitCode(d.portionUnitId)}` : '',
       cls: 'card', x: X4, y: y0 + contentH / 2 - NODE_H / 2, w: W4, h: NODE_H,
     };

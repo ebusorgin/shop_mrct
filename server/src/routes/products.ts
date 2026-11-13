@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { pool, tx } from '../db';
 import { ApiError, reqStr, reqNum, optNum, wrap, aiSource } from '../http';
 import { assertBaseUnit } from '../services/expansion';
+import { assertNameFree } from '../services/name-check';
 import { auditTx, diff } from '../services/audit';
 
 export const productsRouter = Router();
@@ -88,6 +89,7 @@ productsRouter.post(
     const gPerMl = convNum(req.body, 'gPerMl');
     const id = await tx(async (client) => {
       await assertBaseUnit(client, unitId, 'Продукт');
+      await assertNameFree(client, name, 'products');
       const { rows } = await client.query(
         'insert into products (name, category, unit_id, min_stock, shelf_life_days, g_per_pcs, ml_per_pcs, g_per_ml, created_by, updated_by) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9) returning id',
         [name, category || 'прочее', unitId, minStock, shelfLifeDays, gPerPcs, mlPerPcs, gPerMl, req.user?.id ?? null]
@@ -116,7 +118,8 @@ productsRouter.patch(
       fields.push(`${col} = $${params.length + 1}`);
       params.push(val);
     };
-    if (typeof req.body.name === 'string') push('name', reqStr(req.body, 'name'));
+    const newName = typeof req.body.name === 'string' ? reqStr(req.body, 'name') : null;
+    if (newName) push('name', newName);
     if (req.body.unitId !== undefined) push('unit_id', reqNum(req.body, 'unitId'));
     if (req.body.category !== undefined) push('category', String(req.body.category).trim() || 'прочее');
     if (req.body.minStock !== undefined) push('min_stock', optNum(req.body, 'minStock'));
@@ -131,6 +134,7 @@ productsRouter.patch(
     }
     const id = Number(req.params.id);
     await tx(async (client) => {
+      if (newName) await assertNameFree(client, newName, 'products', id);
       // снимок «до» — для журнала: видно, что именно поменяли.
       // коэффициенты (г в 1 шт, мл в 1 шт, плотность) — обязательно: от них зависят расход и себестоимость,
       // без них правка одного коэффициента попадала в журнал как пустое изменение.

@@ -173,6 +173,51 @@ alter table tech_card_items add constraint tech_card_items_source_type_check
   check (source_type in ('raw','semi','product'));
 comment on column tech_card_items.source_type is 'raw = products.id, semi = semi_products.id, product = другой продукт tech_cards.id';
 
+-- Фасовки техкарты: продаваемая позиция (SKU). Одна техкарта — несколько упаковок.
+-- qty_base — вес нетто одной упаковки в единице выхода техкарты, min_order — минимум упаковок в заказе.
+create table if not exists product_packagings (
+  id         serial primary key,
+  card_id    int not null,
+  name       text not null check (btrim(name) <> ''),
+  qty_base   numeric not null check (qty_base > 0 and qty_base < 'Infinity'::numeric),
+  min_order  int not null default 1 check (min_order > 0),
+  is_default boolean not null default false
+);
+
+-- в старых базах была кратность заказа order_step — заменяем минимальным заказом
+alter table product_packagings add column if not exists min_order int not null default 1;
+-- фасовку можно заказывать магазинам, только если она включена в доставку
+alter table product_packagings add column if not exists available boolean not null default true;
+alter table product_packagings drop column if exists order_step;
+drop table if exists product_packaging_items;
+-- ровно одна фасовка по умолчанию на техкарту
+update product_packagings pk set is_default = false
+ where pk.is_default
+   and pk.id <> (select min(p2.id) from product_packagings p2 where p2.card_id = pk.card_id and p2.is_default);
+update product_packagings pk set is_default = true
+ where pk.id = (select min(p2.id) from product_packagings p2 where p2.card_id = pk.card_id)
+   and not exists (select 1 from product_packagings p2 where p2.card_id = pk.card_id and p2.is_default);
+create index if not exists product_packagings_card_idx on product_packagings (card_id);
+create unique index if not exists product_packagings_default_uniq on product_packagings (card_id) where is_default;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+     where conname = 'product_packagings_min_order_check'
+       and conrelid = 'product_packagings'::regclass
+  ) then
+    alter table product_packagings add constraint product_packagings_min_order_check check (min_order > 0);
+  end if;
+end $$;
+
+-- Каждая техкарта продаётся хотя бы одной фасовкой: существующим создаём базовую по выходу.
+insert into product_packagings (card_id, name, qty_base, min_order, is_default)
+select tc.id, trim_scale(tc.portion_qty)::text || ' ' || u.code, tc.portion_qty, 1, true
+  from tech_cards tc
+  join units u on u.id = tc.portion_unit_id
+ where not exists (select 1 from product_packagings pk where pk.card_id = tc.id);
+
 create table if not exists production_batches (
   id            serial primary key,
   card_id       int not null,
@@ -330,6 +375,7 @@ begin
         ('production_batch_items', 'production_batch_items_product_id_fkey', 'foreign key (product_id) references products(id)'),
         ('production_batches',     'production_batches_card_id_fkey',        'foreign key (card_id) references tech_cards(id)'),
         ('production_batches',     'production_batches_created_by_fkey',     'foreign key (created_by) references users(id) on delete set null'),
+        ('product_packagings',     'product_packagings_card_id_fkey',        'foreign key (card_id) references tech_cards(id) on delete cascade'),
         ('products',               'products_created_by_fkey',               'foreign key (created_by) references users(id) on delete set null'),
         ('products',               'products_unit_id_fkey',                  'foreign key (unit_id) references units(id)'),
         ('products',               'products_updated_by_fkey',               'foreign key (updated_by) references users(id) on delete set null'),

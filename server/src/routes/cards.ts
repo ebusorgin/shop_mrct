@@ -3,7 +3,9 @@ import { PoolClient } from 'pg';
 import { pool, tx } from '../db';
 import { ApiError, reqArr, reqInt, reqNum, reqStr, wrap } from '../http';
 import { expandCard, assertBaseUnit } from '../services/expansion';
+import { assertNameFree } from '../services/name-check';
 import { audit, auditTx, diff } from '../services/audit';
+import { defaultPackaging, packagingsSql, parsePackagings, savePackagings } from '../services/packagings';
 
 export const cardsRouter = Router();
 
@@ -35,6 +37,7 @@ const CARD_SQL = `
   select tc.id, tc.name, tc.note, tc.portion_qty as "portionQty",
          tc.portion_unit_id as "portionUnitId", pu.code as "portionUnitCode",
          tc.catalog_id as "catalogId", cc.name as "catalogName",
+         ${packagingsSql()} as packagings,
          coalesce(
            jsonb_agg(
              jsonb_build_object(
@@ -58,6 +61,7 @@ const CARD_SQL = `
 const decode = (r: Record<string, unknown>) => ({
   ...r,
   portionQty: Number(r.portionQty),
+  packagings: typeof r.packagings === 'string' ? JSON.parse(r.packagings) : r.packagings,
   items: typeof r.items === 'string' ? JSON.parse(r.items) : r.items,
 });
 
@@ -73,7 +77,7 @@ cardsRouter.get(
   '/:id',
   wrap(async (req, res) => {
     const { rows } = await pool.query(`select * from (${CARD_SQL}) t where t.id = $1`, [Number(req.params.id)]);
-    if (!rows.length) throw new ApiError(404, 'Продукт не найден');
+    if (!rows.length) throw new ApiError(404, 'Техкарта не найдена');
     res.json(decode(rows[0]));
   })
 );
@@ -111,20 +115,25 @@ cardsRouter.post(
       ? null
       : reqInt(req.body, 'catalogId');
     const items = parseItems(reqArr(req.body, 'items'));
+    const packagings = req.body.packagings === undefined ? null : parsePackagings(req.body.packagings);
     const id = await tx(async (client) => {
-      await assertBaseUnit(client, portionUnitId, 'Продукт');
+      await assertBaseUnit(client, portionUnitId, 'Техкарта');
+      await assertNameFree(client, name, 'tech_cards');
       const { rows } = await client.query(
         `insert into tech_cards (name, portion_qty, portion_unit_id, note, catalog_id, created_by, updated_by)
          values ($1,$2,$3,$4,$5,$6,$6) returning id`,
         [name, portionQty, portionUnitId, note, catalogId, req.user?.id ?? null]
       );
       await saveItems(client, rows[0].id, items);
+      const { rows: units } = await client.query('select code from units where id = $1', [portionUnitId]);
+      const toSave = packagings ?? [defaultPackaging(portionQty)];
+      await savePackagings(client, rows[0].id, toSave, units[0].code, portionQty);
       await auditTx(client, req.user, {
         action: 'create',
         entity: 'tech_card',
         entityId: rows[0].id as number,
-        title: `Продукт «${name}»`,
-        details: { portionQty, portionUnitId, catalogId, items: items.length },
+        title: `Техкарта «${name}»`,
+        details: { portionQty, portionUnitId, catalogId, items: items.length, packagings: toSave.length },
       });
       return rows[0].id as number;
     });
@@ -144,29 +153,45 @@ cardsRouter.patch(
       ? null
       : reqInt(req.body, 'catalogId');
     const items = parseItems(reqArr(req.body, 'items'));
+    const packagings = req.body.packagings === undefined ? null : parsePackagings(req.body.packagings);
+    if (packagings && !packagings.length) throw new ApiError(400, 'Нужна хотя бы одна фасовка');
     await tx(async (client) => {
-      await assertBaseUnit(client, portionUnitId, 'Продукт');
+      await assertBaseUnit(client, portionUnitId, 'Техкарта');
+      await assertNameFree(client, name, 'tech_cards', id);
       const { rows: before } = await client.query(
-        'select name, portion_qty::float8 as portion_qty, portion_unit_id, note, catalog_id from tech_cards where id = $1',
+        'select name, portion_qty::float8 as portion_qty, portion_unit_id, note, catalog_id from tech_cards where id = $1 for update',
         [id]
       );
-      if (!before.length) throw new ApiError(404, 'Продукт не найден');
+      if (!before.length) throw new ApiError(404, 'Техкарта не найдена');
       await assertNoCardCycle(client, id, items);
       const { rows: beforeItems } = await client.query('select count(*)::int as n from tech_card_items where card_id = $1', [id]);
+      const { rows: beforePackagings } = await client.query('select count(*)::int as n from product_packagings where card_id = $1', [id]);
       await client.query(
         'update tech_cards set name=$2, portion_qty=$3, portion_unit_id=$4, note=$5, catalog_id=$6, updated_by=$7 where id=$1',
         [id, name, portionQty, portionUnitId, note, catalogId, req.user?.id ?? null]
       );
       await client.query('delete from tech_card_items where card_id = $1', [id]);
       await saveItems(client, id, items);
+      const { rows: units } = await client.query('select code from units where id = $1', [portionUnitId]);
+      if (packagings) {
+        await savePackagings(client, id, packagings, units[0].code, portionQty);
+      } else if (before[0].portion_unit_id !== portionUnitId) {
+        await client.query(
+          `update product_packagings set name = trim_scale(qty_base)::text || ' ' || $2 where card_id = $1`,
+          [id, units[0].code]
+        );
+      }
       await auditTx(client, req.user, {
         action: 'update',
         entity: 'tech_card',
         entityId: id,
-        title: `Продукт «${name}»`,
+        title: `Техкарта «${name}»`,
         details: diff(
-          { ...before[0], items: beforeItems[0].n },
-          { name, portion_qty: portionQty, portion_unit_id: portionUnitId, note, catalog_id: catalogId, items: items.length }
+          { ...before[0], items: beforeItems[0].n, packagings: beforePackagings[0].n },
+          {
+            name, portion_qty: portionQty, portion_unit_id: portionUnitId, note, catalog_id: catalogId,
+            items: items.length, packagings: packagings ? packagings.length : beforePackagings[0].n,
+          }
         ),
       });
     });
@@ -184,15 +209,18 @@ cardsRouter.delete(
        from tech_cards tc where tc.id = $1`,
       [Number(req.params.id)]
     );
-    if (!rows.length) throw new ApiError(404, 'Продукт не найден');
-    if (Number(rows[0].posted) > 0) throw new ApiError(409, 'По продукту есть отгрузки — удаление запрещено');
-    if (Number(rows[0].used) > 0) throw new ApiError(409, 'Продукт используется в составе других продуктов — удаление запрещено');
-    await pool.query('delete from tech_cards where id = $1', [Number(req.params.id)]);
+    if (!rows.length) throw new ApiError(404, 'Техкарта не найдена');
+    if (Number(rows[0].posted) > 0) throw new ApiError(409, 'По техкарте есть отгрузки — удаление запрещено');
+    if (Number(rows[0].used) > 0) throw new ApiError(409, 'Техкарта используется в составе других техкарт — удаление запрещено');
+    await tx(async (client) => {
+      await client.query('delete from tech_card_items where card_id = $1', [Number(req.params.id)]);
+      await client.query('delete from tech_cards where id = $1', [Number(req.params.id)]);
+    });
     await audit(req.user, {
       action: 'delete',
       entity: 'tech_card',
       entityId: req.params.id,
-      title: `Продукт «${rows[0].name}»`,
+      title: `Техкарта «${rows[0].name}»`,
     });
     res.json({ ok: true });
   })
@@ -200,10 +228,10 @@ cardsRouter.delete(
 
 async function saveItems(client: PoolClient, cardId: number, items: CardItemDto[]) {
   for (const i of items) {
-    await assertBaseUnit(client, i.unitId, 'Позиция продукта');
+    await assertBaseUnit(client, i.unitId, 'Позиция техкарты');
     if (i.sourceType === 'product') {
       const { rows } = await client.query('select 1 from tech_cards where id = $1', [i.refId]);
-      if (!rows.length) throw new ApiError(400, 'Продукт в составе не найден');
+      if (!rows.length) throw new ApiError(400, 'Техкарта в составе не найдена');
     }
     await client.query(
       `insert into tech_card_items (card_id, source_type, ref_id, qty, unit_id, position)
@@ -219,7 +247,7 @@ async function assertNoCardCycle(client: PoolClient, cardId: number, items: Card
   const seen = new Set<number>();
   while (stack.length) {
     const ref = stack.pop()!;
-    if (ref === cardId) throw new ApiError(400, 'Продукт не может входить в собственный состав');
+    if (ref === cardId) throw new ApiError(400, 'Техкарта не может входить в собственный состав');
     if (seen.has(ref)) continue;
     seen.add(ref);
     const { rows } = await client.query(

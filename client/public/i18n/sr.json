@@ -16,7 +16,7 @@
     "constructor": "Konstruktor jela",
     "stock": "Skladište",
     "semis": "Poluprodukti",
-    "cards": "Proizvodi",
+    "cards": "Tehničke kartice",
     "orders": "Porudžbine"
   },
   "common": {
@@ -174,8 +174,8 @@
     "addIngredient": "Dodaj sastojak"
   },
   "cards": {
-    "title": "Proizvodi",
-    "new": "Novi proizvod",
+    "title": "Tehničke kartice",
+    "new": "Nova tehnička kartica",
     "name": "Naziv",
     "yield": "Izlaz",
     "unit": "Jed.",

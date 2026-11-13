@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, EventEmitter, Input, Output, computed, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, EventEmitter, Input, OnInit, Output, computed, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { norm } from '../core/semi-calc';
@@ -102,10 +102,12 @@ export interface PickOption {
     `,
   ],
 })
-export class PickerComponent {
+export class PickerComponent implements OnInit {
   @Output() picked = new EventEmitter<PickOption>();
   @Input() placeholder = '— выбрать —';
   @Input() disabled = false;
+  /** Для поповеров: сразу открыть поиск, не требуя клика по кнопке-значению. */
+  @Input() autoOpen = false;
 
   private optionsSig = signal<PickOption[]>([]);
   private selectedSig = signal<number | null>(null);
@@ -121,6 +123,10 @@ export class PickerComponent {
 
   open = signal(false);
   query = signal('');
+
+  ngOnInit(): void {
+    if (this.autoOpen) this.show();
+  }
 
   chosen = computed(() => {
     const id = this.selectedSig();

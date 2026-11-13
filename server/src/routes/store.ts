@@ -9,6 +9,8 @@ import { pool } from '../db';
 import { ApiError, wrap } from '../http';
 import { requireStore } from '../services/auth';
 
+import { packagingLabel, packagingWeight } from '../services/packagings';
+
 export const storeRouter = Router();
 
 const CARD_SQL = `
@@ -31,22 +33,32 @@ storeRouter.get(
 );
 
 /**
- * Продукция производства для формы заказа магазина: только карточка продукта
- * (название, выход, каталог), состав и склады магазину не нужны.
+ * Продукция производства для формы заказа магазина: по строке на фасовку
+ * (название техкарты + фасовка, вес упаковки, минимальный заказ), каталог.
  */
 storeRouter.get(
   '/order-catalog',
   requireStore,
   wrap(async (_req, res) => {
     const { rows } = await pool.query(`
-      select tc.id, tc.name, tc.note, tc.portion_qty::float8 as "portionQty",
-             pu.code as "portionUnitCode",
+      select pk.id, tc.id as "cardId", tc.name as "cardName", tc.note,
+             pk.qty_base::float8 as "qtyBase", pk.min_order as "minOrder",
+             pu.code as "unitCode",
              tc.catalog_id as "catalogId", cc.name as "catalogName",
              cc.icon as "catalogIcon", cc.color as "catalogColor"
-        from tech_cards tc
+        from product_packagings pk
+        join tech_cards tc on tc.id = pk.card_id
         join units pu on pu.id = tc.portion_unit_id
         left join product_catalogs cc on cc.id = tc.catalog_id
-       order by cc.position nulls last, cc.name nulls last, tc.name`);
-    res.json(rows);
+       where pk.available
+       order by cc.position nulls last, cc.name nulls last, tc.name, pk.qty_base`);
+    res.json(
+      rows.map(({ cardName, packagingName, qtyBase, unitCode, ...rest }) => ({
+        ...rest,
+        qtyBase,
+        unitCode,
+        name: packagingLabel(cardName, packagingWeight(qtyBase, unitCode)),
+      }))
+    );
   })
 );

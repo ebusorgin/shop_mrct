@@ -11,8 +11,8 @@ import { OrderCatalogItem } from '../core/models';
  *
  * Доступен только магазинному пользователю (storeGuard) и грузит продукцию
  * через /api/store/order-catalog — офисный /api/cards магазину недоступен.
- * Раскладка «каталог + чек»: слева каталоги, в центре продукция с шагом
- * порций, справа черновик заказа. Отправки на сервер пока нет.
+ * Раскладка «каталог + чек»: слева каталоги, в центре фасовки с минимальным
+ * заказом, справа черновик заказа. Отправки на сервер пока нет.
  */
 interface CatalogMeta {
   key: string;
@@ -46,7 +46,7 @@ export class StoreOrdersComponent implements OnInit {
   query = signal('');
   /** null — все каталоги, 'none' — продукция без каталога. */
   catalogFilter = signal<number | 'none' | null>(null);
-  /** id продукции -> количество порций; отсутствие ключа = 0. */
+  /** id фасовки -> количество упаковок; отсутствие ключа = 0. */
   qty = signal<Record<number, number>>({});
 
   fmtQty = fmtQty;
@@ -128,7 +128,7 @@ export class StoreOrdersComponent implements OnInit {
   });
 
   selectedCount = computed(() => this.selected().length);
-  totalPortions = computed(() => this.selected().reduce((sum, p) => sum + (this.qty()[p.id] ?? 0), 0));
+  totalPackages = computed(() => this.selected().reduce((sum, p) => sum + (this.qty()[p.id] ?? 0), 0));
 
   ngOnInit(): void {
     this.load();
@@ -160,12 +160,17 @@ export class StoreOrdersComponent implements OnInit {
     return this.qty()[id] ?? 0;
   }
 
-  inc(id: number): void {
-    this.setQty(id, this.qtyOf(id) + 1);
+  /** Первый шаг из нуля — сразу минимальный заказ. */
+  inc(p: OrderCatalogItem): void {
+    const current = this.qtyOf(p.id);
+    this.setQty(p.id, current === 0 ? p.minOrder : current + 1);
   }
 
-  dec(id: number): void {
-    this.setQty(id, this.qtyOf(id) - 1);
+  dec(p: OrderCatalogItem): void {
+    const current = this.qtyOf(p.id);
+    if (!current) return;
+    const next = current - 1;
+    this.setQty(p.id, next < p.minOrder ? 0 : next);
   }
 
   private setQty(id: number, value: number): void {
@@ -198,7 +203,7 @@ export class StoreOrdersComponent implements OnInit {
     if (!n) return;
     this.msg.set(
       `Черновик заказа: ${n} ${this.plural(n, 'позиция', 'позиции', 'позиций')} · ` +
-        `${this.totalPortions()} ${this.plural(this.totalPortions(), 'порция', 'порции', 'порций')} — ` +
+        `${this.totalPackages()} ${this.plural(this.totalPackages(), 'упаковка', 'упаковки', 'упаковок')} — ` +
         'отправка на производство появится позже'
     );
   }
@@ -218,7 +223,7 @@ export class StoreOrdersComponent implements OnInit {
     if (cat.includes('суп') || /суп|борщ|солянк|харчо/.test(name)) return 'soup';
     if (cat.includes('замороз')) return 'frozen';
     if (cat.includes('горяч')) return 'hot';
-    if (p.portionUnitCode === 'шт') return 'frozen';
+    if (p.unitCode === 'шт') return 'frozen';
     return 'jar';
   }
 

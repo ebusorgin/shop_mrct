@@ -341,7 +341,7 @@ function buildMini(data: DiagramData): MiniView | null {
             Срок годности, дней
             <input class="pf-in" type="number" min="0" step="1" [ngModel]="propsDraft().shelfLifeDays" (ngModelChange)="patchProp('shelfLifeDays', numOrNull($event))" placeholder="напр. 3" />
           </label>
-          <div class="pf-note muted">Пересчёт размерностей выхода — задайте только нужные связи; пусто = связь не задавать. Позволяет продукту ссылаться на заготовку в г/мл, даже если её выход — в шт.</div>
+          <div class="pf-note muted">Пересчёт размерностей выхода — задайте только нужные связи; пусто = связь не задавать. Позволяет техкарте ссылаться на заготовку в г/мл, даже если её выход — в шт.</div>
           <label class="pf">
             грамм в 1 шт
             <input class="pf-in" type="number" min="0" step="any" [ngModel]="propsDraft().gPerPcs" (ngModelChange)="patchProp('gPerPcs', numOrNull($event))" placeholder="напр. 53" />

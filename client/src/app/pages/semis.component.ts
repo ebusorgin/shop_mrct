@@ -251,7 +251,7 @@ interface OutFix extends OutGap, OutFixState {
                 <div class="row" style="margin-top:8px;align-items:flex-end">
                   <div class="muted" style="flex-basis:100%;font-size:12px">
                     Пересчёт размерностей выхода — задайте только нужные связи; пусто = связь не задавать.
-                    Позволяет продукту ссылаться на заготовку в г/мл, даже если её выход — в шт.
+                    Позволяет техкарте ссылаться на заготовку в г/мл, даже если её выход — в шт.
                   </div>
                   <label class="f">грамм в 1 шт
                     <input type="number" min="0" [ngModel]="d.gPerPcs" (ngModelChange)="patchDraft('gPerPcs', num($event))" placeholder="напр. 53" /></label>
@@ -1555,7 +1555,7 @@ export class SemisComponent implements OnInit {
       if (parents.length || usedCards.length) {
         const lines = [
           parents.length ? `состав других заготовок: ${parents.map((s) => `«${s.name}»`).join(', ')}` : '',
-          usedCards.length ? `продукция: ${usedCards.map((c) => `«${c.name}»`).join(', ')}` : '',
+          usedCards.length ? `техкарты: ${usedCards.map((c) => `«${c.name}»`).join(', ')}` : '',
         ].filter(Boolean);
         this.err.set(
           `«${name}» используется — ${lines.join('; ')}. ` +

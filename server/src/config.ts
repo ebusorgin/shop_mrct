@@ -14,6 +14,11 @@ export const config = {
   openaiKey: process.env.OPENAI_API_KEY ?? '',
   openaiModel: process.env.OPENAI_MODEL ?? 'gpt-4o-mini',
   uploadsDir: path.resolve(__dirname, '..', 'uploads', 'waybills'),
+  // ключ сервисного аккаунта Google для чтения таблицы «Микс Маркт Гастро»
+  googleCredentials: path.resolve(__dirname, '..', 'credentials.json'),
+  // отдельная база для скачанных листов Google-таблицы (не смешивается с данными CRM)
+  sheetsDatabase: process.env.PG_SHEETS_DATABASE ?? 'mixmarkt_sheets',
+  sheetsSqlFile: path.resolve(__dirname, '..', 'sql', 'sheets-init.sql'),
   // прод-режим: сервер раздаёт собранный Angular-клиент (client/dist/crm/browser)
   clientDir: process.env.CLIENT_DIR ?? path.resolve(__dirname, '..', '..', 'client', 'dist', 'crm', 'browser'),
   // вход в CRM: срок сессии и первый администратор (создаётся, только пока таблица users пуста)

@@ -2,7 +2,7 @@
   <h1 class="page-title">Заказ продукции</h1>
   @if (auth.user()?.storeName; as storeName) { <span class="badge gray">{{ storeName }}</span> }
   @if (!loading() && !err()) {
-    <span class="badge blue">Продукция: {{ items().length }}</span>
+    <span class="badge blue">Фасовки: {{ items().length }}</span>
     @if (selectedCount()) { <span class="badge green">В заказе: {{ selectedCount() }}</span> }
   }
   <div class="spacer"></div>
@@ -111,14 +111,14 @@
                   </span>
                   <div class="info">
                     <b>{{ p.name }}</b>
-                    <span>выход {{ fmtQty(p.portionQty, p.portionUnitCode) }}</span>
+                    <span>фасовка {{ fmtQty(p.qtyBase, p.unitCode) }} · мин. заказ {{ p.minOrder }} уп.</span>
                   </div>
-                  <div class="stepper" role="group" [attr.aria-label]="'Количество: ' + p.name">
-                    <button type="button" class="step" (click)="dec(p.id)" [disabled]="qtyOf(p.id) === 0"
-                            [attr.aria-label]="'Убрать одну порцию: ' + p.name">−</button>
+                  <div class="stepper" role="group" [attr.aria-label]="'Количество упаковок: ' + p.name">
+                    <button type="button" class="step" (click)="dec(p)" [disabled]="qtyOf(p.id) === 0"
+                            [attr.aria-label]="'Убрать упаковку: ' + p.name">−</button>
                     <span class="qty" aria-live="polite">{{ qtyOf(p.id) }}</span>
-                    <button type="button" class="step" (click)="inc(p.id)"
-                            [attr.aria-label]="'Добавить одну порцию: ' + p.name">+</button>
+                    <button type="button" class="step" (click)="inc(p)"
+                            [attr.aria-label]="'Добавить упаковку: ' + p.name">+</button>
                   </div>
                 </div>
               }
@@ -146,7 +146,7 @@
                 <div class="r-row">
                   <span>{{ p.name }}</span>
                   <span class="dots" aria-hidden="true"></span>
-                  <b>{{ qtyOf(p.id) }}</b>
+                  <b>{{ qtyOf(p.id) }} уп.</b>
                 </div>
               }
             </div>
@@ -155,9 +155,9 @@
           }
         </div>
         <div class="r-foot">
-          <div class="total"><span>Всего</span><b>{{ totalPortions() }}</b></div>
+          <div class="total"><span>Всего</span><b>{{ totalPackages() }}</b></div>
           <div class="unit">
-            {{ totalPortions() }} {{ plural(totalPortions(), 'порция', 'порции', 'порций') }} ·
+            {{ totalPackages() }} {{ plural(totalPackages(), 'упаковка', 'упаковки', 'упаковок') }} ·
             {{ selectedCount() }} {{ plural(selectedCount(), 'позиция', 'позиции', 'позиций') }}
           </div>
           <div class="actions">

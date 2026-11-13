@@ -5,7 +5,7 @@
  */
 import { Router } from 'express';
 import { pool, tx } from '../db';
-import { wrap, reqStr, ApiError } from '../http';
+import { wrap, reqStr, reqInt, ApiError } from '../http';
 import { config } from '../config';
 import { audit, auditTx } from '../services/audit';
 import { requireOffice } from '../services/auth';
@@ -24,6 +24,7 @@ import {
   tcpProbe,
 } from '../services/settings';
 import { createGptClient } from '../services/gpt-transport';
+import { savedGoogleSheet, setSheetRowLink, syncGoogleSheet } from '../services/google-sheet';
 
 export const settingsRouter = Router();
 
@@ -145,6 +146,75 @@ settingsRouter.patch(
       });
     });
     res.json({ ok: true, rule });
+  })
+);
+
+/**
+ * «Синхронизация Excel»: сохранённая Google-таблица из отдельной базы.
+ * null — таблицу ещё ни разу не скачивали.
+ */
+settingsRouter.get(
+  '/google-sheet',
+  requireOffice,
+  wrap(async (_req, res) => {
+    res.json(await savedGoogleSheet());
+  })
+);
+
+/**
+ * «Синхронизировать»: таблица «Микс Маркт Гастро» скачивается сервисным аккаунтом
+ * (credentials.json), сохранённые листы в отдельной базе заменяются новыми.
+ */
+settingsRouter.post(
+  '/google-sheet/sync',
+  requireOffice,
+  wrap(async (req, res) => {
+    const sheet = await syncGoogleSheet();
+    const matched = new Set<string>();
+    for (const tab of sheet.tabs) {
+      tab.rows.forEach((row, index) => {
+        if (tab.links?.[index] != null) matched.add((row[1] ?? '').trim());
+      });
+    }
+    await audit(req.user, {
+      action: 'sync',
+      entity: 'setting',
+      entityId: 'google-sheet',
+      title: `Google-таблица «${sheet.title}» синхронизирована: листов ${sheet.tabs.length}, сопоставлено ${matched.size} из ${matched.size + sheet.unmatched.length}`,
+      details: {
+        spreadsheetId: sheet.spreadsheetId,
+        tabs: sheet.tabs.length,
+        matched: matched.size,
+        unmatched: sheet.unmatched.length,
+      },
+    });
+    res.json(sheet);
+  })
+);
+
+/**
+ * Ручное сопоставление позиции листа с фасовкой: запоминается по названию строки,
+ * поэтому после пересинхронизации связь восстанавливается сама.
+ */
+settingsRouter.post(
+  '/google-sheet/link',
+  requireOffice,
+  wrap(async (req, res) => {
+    const tab = reqStr(req.body, 'tab');
+    const row = reqInt(req.body, 'row');
+    if (row < 0) throw new ApiError(400, 'Поле «row» — номер строки с нуля');
+    const raw = (req.body as Record<string, unknown>).packagingId;
+    const packagingId = raw === null || raw === undefined || raw === '' ? null : reqInt(req.body, 'packagingId');
+    const link = await setSheetRowLink(tab, row, packagingId);
+    await audit(req.user, {
+      action: link ? 'update' : 'delete',
+      entity: 'setting',
+      entityId: 'google-sheet',
+      title: link
+        ? `Ручное сопоставление листа «${tab}», строка ${row + 1}: «${link.rowName}» → ${link.name} (#${link.id})`
+        : `Сопоставление снято: лист «${tab}», строка ${row + 1} — позиция осталась без продукции`,
+    });
+    res.json({ ok: true, link });
   })
 );
 
@@ -369,6 +439,11 @@ settingsRouter.post(
     if (!name) return res.status(400).json({ error: 'Некорректное имя' });
     const icon = catalogIcon(req.body.icon);
     const color = catalogColor(req.body.color);
+    const { rows: dup } = await pool.query(
+      'select name from product_catalogs where lower(btrim(name)) = $1',
+      [name]
+    );
+    if (dup.length) throw new ApiError(409, `Каталог «${dup[0].name}» уже есть`);
     if (icon) {
       const { rows: busy } = await pool.query('select name from product_catalogs where icon = $1', [icon]);
       if (busy.length) throw new ApiError(409, `Иконка ${icon} уже используется каталогом «${busy[0].name}»`);
@@ -380,7 +455,7 @@ settingsRouter.post(
        returning id, name, icon, color`,
       [name, icon, color]
     );
-    if (!rows.length) return res.status(409).json({ error: 'Уже существует' });
+    if (!rows.length) return res.status(409).json({ error: `Каталог «${name}» уже есть` });
     await audit(req.user, { action: 'create', entity: 'setting', entityId: `prodcat:${rows[0].id}`, title: `Каталог продукции «${name}»` });
     res.status(201).json(rows[0]);
   })
@@ -406,8 +481,11 @@ settingsRouter.patch(
       if (busy.length) throw new ApiError(409, `Иконка ${icon} уже используется каталогом «${busy[0].name}»`);
     }
     if (name !== cur[0].name) {
-      const { rows: clash } = await pool.query('select 1 from product_catalogs where name = $2 and id <> $1', [id, name]);
-      if (clash.length) throw new ApiError(409, 'Такой каталог уже есть');
+      const { rows: clash } = await pool.query(
+        'select 1 from product_catalogs where lower(btrim(name)) = $2 and id <> $1',
+        [id, name]
+      );
+      if (clash.length) throw new ApiError(409, `Каталог «${name}» уже есть`);
     }
     if (name === cur[0].name && icon === cur[0].icon && color === cur[0].color) return res.json({ ok: true });
     await pool.query('update product_catalogs set name = $2, icon = $3, color = $4 where id = $1', [id, name, icon, color]);

@@ -183,6 +183,19 @@ export class ApiService {
     return this.http.delete<{ ok: boolean }>(`${this.base}/settings/product-catalogs/${id}`);
   }
 
+  // ---- синхронизация Excel: сохранённая Google-таблица и её обновление из Google ----
+  googleSheet$(): Observable<M.GoogleSheet | null> {
+    return this.http.get<M.GoogleSheet | null>(`${this.base}/settings/google-sheet`);
+  }
+  syncGoogleSheet$(): Observable<M.GoogleSheet> {
+    return this.http.post<M.GoogleSheet>(`${this.base}/settings/google-sheet/sync`, {});
+  }
+  /** Ручное сопоставление строки листа с фасовкой; packagingId = null — снять. */
+  linkGoogleSheetRow$(tab: string, row: number, packagingId: number | null): Observable<{ ok: boolean; link: { id: number; name: string; rowName: string } | null }> {
+    return this.http.post<{ ok: boolean; link: { id: number; name: string; rowName: string } | null }>(
+      `${this.base}/settings/google-sheet/link`, { tab, row, packagingId });
+  }
+
   // ---- подсказки ИИ: спросить значение, подставить в поле (сохраняет человек) ----
   askCoefficient$(body: {
     sourceType?: 'raw' | 'semi';

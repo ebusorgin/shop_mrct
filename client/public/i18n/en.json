@@ -18,7 +18,8 @@
     "stock": "Stock",
     "semis": "Semi-finished",
     "cards": "Tech cards",
-    "orders": "Order archive"
+    "orders": "Order archive",
+    "suppliers": "Suppliers"
   },
   "common": {
     "loading": "Loading...",

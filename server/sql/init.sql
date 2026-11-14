@@ -539,3 +539,229 @@ create table if not exists store_order_items (
   qty          int not null check (qty > 0 and qty <= 999),
   primary key (order_id, packaging_id)
 );
+
+-- ---------- Поставщики и документы поставок
+-- Накладные оцифрованы с фотографий и хранятся как документы поставщиков.
+-- Остатки и движения (movements/stock) не трогаются: на склад ничего не зачисляется.
+
+create table if not exists suppliers (
+  id         serial primary key,
+  code       text not null unique,
+  name       text not null,
+  legal_name text not null default '',
+  address    text not null default '',
+  pib        text not null default '',
+  mb         text not null default '',
+  phone      text not null default '',
+  fax        text not null default '',
+  email      text not null default '',
+  accounts   jsonb not null default '[]',
+  gln        text not null default '',
+  contact    text not null default '',
+  note       text not null default '',
+  created_at timestamptz not null default now()
+);
+
+create table if not exists supplier_invoices (
+  id          serial primary key,
+  supplier_id int not null references suppliers(id),
+  number      text not null,
+  doc_date    date not null,
+  currency    text not null default 'RSD',
+  recipient   text not null default '',
+  buyer_code  text not null default '',
+  order_ref   text not null default '',
+  note        text not null default '',
+  total_net   numeric(14,2),
+  total_vat   numeric(14,2),
+  total_gross numeric(14,2),
+  source_file text,
+  created_at  timestamptz not null default now(),
+  unique (supplier_id, number)
+);
+
+create table if not exists supplier_invoice_items (
+  id           serial primary key,
+  invoice_id   int not null references supplier_invoices(id) on delete cascade,
+  position     int not null,
+  ident        text not null default '',
+  name         text not null,
+  qty          numeric(12,3) not null check (qty > 0),
+  unit         text not null check (unit in ('KG','KOM')),
+  price        numeric(14,2) not null default 0,
+  discount_pct numeric(6,3) not null default 0,
+  vat_rate     numeric(6,3),
+  net          numeric(14,2) not null,
+  unique (invoice_id, position)
+);
+
+create index if not exists supplier_invoices_supplier_idx on supplier_invoices (supplier_id, doc_date);
+create index if not exists supplier_invoices_date_idx     on supplier_invoices (doc_date desc);
+
+insert into suppliers (code, name, legal_name, address, pib, mb, phone, fax, email, accounts, gln, contact, note) values
+  ('wfc', 'WFC', 'WFC DOO BEOGRAD', 'Vinogradska 40, 11271 Surčin', '114314751', '22005235', '011/2260501', '', '', '["Banca Intesa 160-6000001992843-18", "UniCredit 170-0030067183002-77"]'::jsonb, '8607000460005', 'MIROLJUB TOMAŠEVIĆ', ''),
+  ('mmm-lasta', 'MMM Lasta', 'MMM LASTA preduzeće za proizvodnju, trgovinu i usluge d.o.o. Beograd', 'Borivoja Stevanovića 31, Beograd-Voždovac 11010', '103451283', '17566580', '+381 11 2832899', '', 'office@mmmlasta.co.rs', '[]'::jsonb, '', 'Biljana Terzić', 'Prodavac/otprema: Proizvodnja MIX market Gastro, Bulevar Arsenija Čarnojevića 30a, Beograd.'),
+  ('metro', 'METRO', 'METRO CASH & CARRY d.o.o. Beograd', 'Distributivni centar 20, Autoput za Novi Sad 120, 11080 Beograd', '102864104', '17482700', '+381 11 3777119', '+381 11 3777110', '', '["340-11026297-76"]'::jsonb, '', '', '')
+on conflict (code) do nothing;
+
+insert into supplier_invoices (supplier_id, number, doc_date, recipient, buyer_code, order_ref, note, total_net, total_vat, total_gross)
+select s.id, v.number, v.doc_date::date, v.recipient, v.buyer_code, v.order_ref, v.note, v.net, v.vat, v.gross
+from (values
+  ('wfc', '26-3501-046772', '2026-07-16', 'MIX MARKT GASTRO DOO SMEDEREVO-SKOBALJ, Karađorđeva 5, 11322 Smederevo, PIB 114917301, MB 22090208', '', '', '', 8681.6, 868.16, 9549.76),
+  ('wfc', '26-3501-049753', '2026-07-28', 'MIX MARKT GASTRO DOO SMEDEREVO-SKOBALJ, Karađorđeva 5, 11322 Smederevo, PIB 114917301, MB 22090208', '', '', '', 10593.3, 1059.33, 11652.63),
+  ('wfc', '26-3501-051985', '2026-08-05', 'MIX MARKT GASTRO DOO SMEDEREVO-SKOBALJ, Karađorđeva 5, 11322 Smederevo, PIB 114917301, MB 22090208', '', '', '', 33115.95, 3401.6, 36517.55),
+  ('wfc', '26-3501-054422', '2026-08-14', 'MIX MARKT GASTRO DOO SMEDEREVO-SKOBALJ, Karađorđeva 5, 11322 Smederevo, PIB 114917301, MB 22090208', '', '', '', 7513.1, 886.31, 8399.41),
+  ('wfc', '26-3501-055467', '2026-08-18', 'MIX MARKT GASTRO DOO SMEDEREVO-SKOBALJ, Karađorđeva 5, 11322 Smederevo, PIB 114917301, MB 22090208', '', '', '', 14328.34, 1545.33, 15873.67),
+  ('wfc', '26-3501-058869', '2026-08-31', 'MIX MARKT GASTRO DOO SMEDEREVO-SKOBALJ, Karađorđeva 5, 11322 Smederevo, PIB 114917301, MB 22090208', '', '', '', 9555.7, 955.57, 10511.27),
+  ('wfc', '26-3501-059406', '2026-09-02', 'MIX MARKT GASTRO DOO SMEDEREVO-SKOBALJ, Karađorđeva 5, 11322 Smederevo, PIB 114917301, MB 22090208', '', '', '', 13817.25, 1486.73, 15303.98),
+  ('wfc', '26-3501-061112', '2026-09-08', 'MIX MARKT GASTRO DOO SMEDEREVO-SKOBALJ, Karađorđeva 5, 11322 Smederevo, PIB 114917301, MB 22090208', '', '', '', 19123.8, 1912.38, 21036.18),
+  ('wfc', '26-3501-062139', '2026-09-11', 'MIX MARKT GASTRO DOO SMEDEREVO-SKOBALJ, Karađorđeva 5, 11322 Smederevo, PIB 114917301, MB 22090208', '', '', '', 12322.95, 1319.8, 13642.75),
+  ('wfc', '26-3501-063449', '2026-09-16', 'MIX MARKT GASTRO DOO SMEDEREVO-SKOBALJ, Karađorđeva 5, 11322 Smederevo, PIB 114917301, MB 22090208', '', '', '', 19460.2, 1946.02, 21406.22),
+  ('wfc', '26-3501-064886', '2026-09-21', 'MIX MARKT GASTRO DOO SMEDEREVO-SKOBALJ, Karađorđeva 5, 11322 Smederevo, PIB 114917301, MB 22090208', '', '', '', 27223.3, 2739.83, 29963.13),
+  ('mmm-lasta', 'OT26-02465', '2026-09-15', 'Proizvodnja MIX market Gastro, Bulevar Arsenija Čarnojevića 30a, Beograd', 'K00546', 'PP26-02833', '', 29946.19, 3773.03, 33719.22),
+  ('mmm-lasta', 'OT26-02511', '2026-09-15', 'Proizvodnja MIX market Gastro, Bulevar Arsenija Čarnojevića 30a, Beograd', 'K00546', 'PP26-02842', '', 30560, 3056, 33616),
+  ('mmm-lasta', 'OT26-02744', '2026-09-17', 'Proizvodnja MIX market Gastro, Bulevar Arsenija Čarnojevića 30a, Beograd', 'K00546', 'PP26-03183', '', 21700, 4340, 26040),
+  ('mmm-lasta', 'OT26-03082', '2026-09-20', 'Proizvodnja MIX market Gastro, Bulevar Arsenija Čarnojevića 30a, Beograd', 'K00546', 'PP26-03486', '', 6774, 997.8, 7771.8),
+  ('metro', '0/0(020)0008/262037/26', '2026-09-19', '', '25 763150 3 1', '', 'Ukupno komada 155, težina 3.420 kg. Bank.trans.ID 003614, DINA Card.', 42802.21, 7227.32, 50029.53)
+) as v(code, number, doc_date, recipient, buyer_code, order_ref, note, net, vat, gross)
+join suppliers s on s.code = v.code
+on conflict (supplier_id, number) do nothing;
+
+insert into supplier_invoice_items (invoice_id, position, ident, name, qty, unit, price, discount_pct, vat_rate, net)
+select i.id, v.position, v.ident, v.name, v.qty, v.unit, v.price, v.discount, v.vat, v.net
+from (values
+  ('wfc', '26-3501-046772', 1, 'VIP00055', 'BOROVNICA 125G', 2, 'KOM', 160, 0, 10, 320),
+  ('wfc', '26-3501-046772', 2, 'VIP00242', 'KROMPIR CRVENI KG', 64, 'KG', 90, 0, 10, 5760),
+  ('wfc', '26-3501-046772', 3, 'VIP00317', 'LUK CRNI KG', 30, 'KG', 38, 0, 10, 1140),
+  ('wfc', '26-3501-046772', 4, 'VIP00321', 'LUK CRNI MLADI KG', 1.1, 'KG', 585, 0, 10, 643.5),
+  ('wfc', '26-3501-046772', 5, 'VIP00587', 'ROTKVICA KG', 1.62, 'KG', 505, 0, 10, 818.1),
+  ('wfc', '26-3501-049753', 1, 'VIP00098', 'CVEKLA KG', 31.04, 'KG', 65, 0, 10, 2017.6),
+  ('wfc', '26-3501-049753', 2, 'VIP00242', 'KROMPIR CRVENI KG', 40.5, 'KG', 90, 0, 10, 3645),
+  ('wfc', '26-3501-049753', 3, 'VIP00265', 'KUPUS BELI KG', 10.6, 'KG', 40, 0, 10, 424),
+  ('wfc', '26-3501-049753', 4, 'VIP00629', 'ŠARGAREPA KG', 53.02, 'KG', 85, 0, 10, 4506.7),
+  ('wfc', '26-3501-051985', 1, 'VIP00055', 'BOROVNICA 125G', 2, 'KOM', 160, 0, 10, 320),
+  ('wfc', '26-3501-051985', 2, 'VIP00098', 'CVEKLA KG', 20.48, 'KG', 65, 0, 10, 1331.2),
+  ('wfc', '26-3501-051985', 3, 'OST00039', 'JAJA SVEŽA M 180/1', 2, 'KOM', 1755, 0, 10, 3510),
+  ('wfc', '26-3501-051985', 4, 'VIP00242', 'KROMPIR CRVENI KG', 54.15, 'KG', 85, 0, 10, 4602.75),
+  ('wfc', '26-3501-051985', 5, 'VIP00265', 'KUPUS BELI KG', 150.6, 'KG', 45, 0, 10, 6777),
+  ('wfc', '26-3501-051985', 6, 'VIP00322', 'LUK CRNI MLADI VEZA', 10, 'KOM', 60, 0, 10, 600),
+  ('wfc', '26-3501-051985', 7, 'VIP00629', 'ŠARGAREPA KG', 31, 'KG', 85, 0, 10, 2635),
+  ('wfc', '26-3501-051985', 8, 'VIP00683', 'PERŠUN PAKOVAN 250G', 2, 'KOM', 140, 0, 10, 280),
+  ('wfc', '26-3501-051985', 9, 'VIP00464', 'PEČURKA ŠAMPINJONI KG', 32, 'KG', 380, 0, 10, 12160),
+  ('wfc', '26-3501-051985', 10, 'VIP01569', 'MIROĐIJA 100G', 4, 'KOM', 225, 0, 20, 900),
+  ('wfc', '26-3501-054422', 1, 'VIP00055', 'BOROVNICA 125G', 1, 'KOM', 160, 0, 10, 160),
+  ('wfc', '26-3501-054422', 2, 'VIP01484', 'LUK BELI OGULJENI 1KG', 2, 'KOM', 795, 0, 10, 1590),
+  ('wfc', '26-3501-054422', 3, 'VIP00322', 'LUK CRNI MLADI VEZA', 10, 'KOM', 60, 0, 10, 600),
+  ('wfc', '26-3501-054422', 4, 'VIP01569', 'MIROĐIJA 100G', 6, 'KOM', 225, 0, 20, 1350),
+  ('wfc', '26-3501-054422', 5, 'VIP00683', 'PERŠUN PAKOVAN 250G', 4, 'KOM', 140, 0, 10, 560),
+  ('wfc', '26-3501-054422', 6, 'VIP00587', 'ROTKVICA KG', 1.04, 'KG', 560, 0, 10, 582.4),
+  ('wfc', '26-3501-054422', 7, 'VIP00629', 'ŠARGAREPA KG', 31.42, 'KG', 85, 0, 10, 2670.7),
+  ('wfc', '26-3501-055467', 1, 'OST00039', 'JAJA SVEŽA M 180/1', 2, 'KOM', 1980, 0, 10, 3960),
+  ('wfc', '26-3501-055467', 2, 'VIP00218', 'KRASTAVAC KG', 10.36, 'KG', 135, 0, 10, 1398.6),
+  ('wfc', '26-3501-055467', 3, 'VIP00242', 'KROMPIR CRVENI KG', 68.5, 'KG', 85, 0, 10, 5822.5),
+  ('wfc', '26-3501-055467', 4, 'VIP00317', 'LUK CRNI KG', 9.98, 'KG', 38, 0, 10, 379.24),
+  ('wfc', '26-3501-055467', 5, 'VIP00322', 'LUK CRNI MLADI VEZA', 10, 'KOM', 60, 0, 10, 600),
+  ('wfc', '26-3501-055467', 6, 'VIP01569', 'MIROĐIJA 100G', 5, 'KOM', 225, 0, 20, 1125),
+  ('wfc', '26-3501-055467', 7, 'VIP00683', 'PERŠUN PAKOVAN 250G', 2, 'KOM', 140, 0, 10, 280),
+  ('wfc', '26-3501-055467', 8, 'VIP00587', 'ROTKVICA KG', 1, 'KG', 560, 0, 10, 560),
+  ('wfc', '26-3501-055467', 9, 'VIP00285', 'LIMUN KG', 1.16, 'KG', 175, 0, 10, 203),
+  ('wfc', '26-3501-058869', 1, 'VIP00093', 'CELER STABLO', 1.58, 'KG', 240, 0, 10, 379.2),
+  ('wfc', '26-3501-058869', 2, 'VIP00242', 'KROMPIR CRVENI KG', 60, 'KG', 85, 0, 10, 5100),
+  ('wfc', '26-3501-058869', 3, 'VIP00317', 'LUK CRNI KG', 20.16, 'KG', 45, 0, 10, 907.2),
+  ('wfc', '26-3501-058869', 4, 'VIP00389', 'PAPRIKA BABURA BELA', 15.46, 'KG', 205, 0, 10, 3169.3),
+  ('wfc', '26-3501-059406', 1, 'VIP00265', 'KUPUS BELI KG', 121.2, 'KG', 55, 0, 10, 6666),
+  ('wfc', '26-3501-059406', 2, 'VIP00322', 'LUK CRNI MLADI VEZA', 10, 'KOM', 60, 0, 10, 600),
+  ('wfc', '26-3501-059406', 3, 'VIP01569', 'MIROĐIJA 100G', 6, 'KOM', 175, 0, 20, 1050),
+  ('wfc', '26-3501-059406', 4, 'VIP00683', 'PERŠUN PAKOVAN 250G', 4, 'KOM', 140, 0, 10, 560),
+  ('wfc', '26-3501-059406', 5, 'VIP00629', 'ŠARGAREPA KG', 40.25, 'KG', 85, 0, 10, 3421.25),
+  ('wfc', '26-3501-059406', 6, 'VIP00313', 'LUK BELI KG', 4.75, 'KG', 320, 0, 10, 1520),
+  ('wfc', '26-3501-061112', 1, 'VIP00218', 'KRASTAVAC KG', 5.12, 'KG', 140, 0, 10, 716.8),
+  ('wfc', '26-3501-061112', 2, 'VIP00242', 'KROMPIR CRVENI KG', 59.74, 'KG', 85, 0, 10, 5077.9),
+  ('wfc', '26-3501-061112', 3, 'VIP00317', 'LUK CRNI KG', 19.44, 'KG', 45, 0, 10, 874.8),
+  ('wfc', '26-3501-061112', 4, 'VIP00322', 'LUK CRNI MLADI VEZA', 10, 'KOM', 60, 0, 10, 600),
+  ('wfc', '26-3501-061112', 5, 'VIP00587', 'ROTKVICA KG', 1, 'KG', 505, 0, 10, 505),
+  ('wfc', '26-3501-061112', 6, 'VIP00629', 'ŠARGAREPA KG', 49.86, 'KG', 85, 0, 10, 4238.1),
+  ('wfc', '26-3501-061112', 7, 'OST00039', 'JAJA SVEŽA M 180/1', 2, 'KOM', 1980, 0, 10, 3960),
+  ('wfc', '26-3501-061112', 8, 'VIP00098', 'CVEKLA KG', 41.82, 'KG', 65, 0, 10, 2718.3),
+  ('wfc', '26-3501-061112', 9, 'VIP00458', 'PATLIDŽAN PLAVI', 2.34, 'KG', 185, 0, 10, 432.9),
+  ('wfc', '26-3501-062139', 1, 'VIP00218', 'KRASTAVAC KG', 5.12, 'KG', 140, 0, 10, 716.8),
+  ('wfc', '26-3501-062139', 2, 'VIP00242', 'KROMPIR CRVENI KG', 59.59, 'KG', 85, 0, 10, 5065.15),
+  ('wfc', '26-3501-062139', 3, 'VIP01484', 'LUK BELI OGULJENI 1KG', 2, 'KOM', 795, 0, 10, 1590),
+  ('wfc', '26-3501-062139', 4, 'VIP00322', 'LUK CRNI MLADI VEZA', 10, 'KOM', 60, 0, 10, 600),
+  ('wfc', '26-3501-062139', 5, 'VIP01569', 'MIROĐIJA 100G', 5, 'KOM', 175, 0, 20, 875),
+  ('wfc', '26-3501-062139', 6, 'VIP00683', 'PERŠUN PAKOVAN 250G', 4, 'KOM', 140, 0, 10, 560),
+  ('wfc', '26-3501-062139', 7, 'VIP00629', 'ŠARGAREPA KG', 30, 'KG', 85, 0, 10, 2550),
+  ('wfc', '26-3501-062139', 8, 'VIP00212', 'KORIJANDER KG', 0.12, 'KG', 3050, 0, 10, 366),
+  ('wfc', '26-3501-063449', 1, 'VIP00464', 'PEČURKA ŠAMPINJONI KG', 31.54, 'KG', 380, 0, 10, 11985.2),
+  ('wfc', '26-3501-063449', 2, 'VIP00265', 'KUPUS BELI KG', 149.5, 'KG', 50, 0, 10, 7475),
+  ('wfc', '26-3501-064886', 1, 'VIP00098', 'CVEKLA KG', 52, 'KG', 55, 0, 10, 2860),
+  ('wfc', '26-3501-064886', 2, 'OST00039', 'JAJA SVEŽA M 180/1', 4, 'KOM', 1980, 0, 10, 7920),
+  ('wfc', '26-3501-064886', 3, 'VIP00242', 'KROMPIR CRVENI KG', 60, 'KG', 80, 0, 10, 4800),
+  ('wfc', '26-3501-064886', 4, 'VIP00265', 'KUPUS BELI KG', 100, 'KG', 50, 0, 10, 5000),
+  ('wfc', '26-3501-064886', 5, 'VIP00317', 'LUK CRNI KG', 39.74, 'KG', 45, 0, 10, 1788.3),
+  ('wfc', '26-3501-064886', 6, 'VIP00322', 'LUK CRNI MLADI VEZA', 10, 'KOM', 60, 0, 10, 600),
+  ('wfc', '26-3501-064886', 7, 'VIP01569', 'MIRODIJA 100G', 1, 'KOM', 175, 0, 20, 175),
+  ('wfc', '26-3501-064886', 8, 'VIP00629', 'ŠARGAREPA KG', 51, 'KG', 80, 0, 10, 4080),
+  ('mmm-lasta', 'OT26-02465', 1, 'ME0009', 'Piletina - Batak i karab. bez kosti cca 3kg (PERUTNINA PTUJ)', 38.36, 'KG', 515, 15, 10, 16792.09),
+  ('mmm-lasta', 'OT26-02465', 2, 'ML0030', 'Sir Gouda blok 48% cca 3.7kg (FRIENDSHIP 4/1)', 12.56, 'KG', 775, 20, 20, 7784.1),
+  ('mmm-lasta', 'OT26-02465', 3, 'UM0004', 'Ulje suncokretovo 1 l 15/1', 30, 'KOM', 250, 28.4, 10, 5370),
+  ('mmm-lasta', 'OT26-02511', 1, 'ME0025', 'Svinjetina - Plećka BK cca 4kg (AVAKOM)', 3.2, 'KG', 800, 0, 10, 2560),
+  ('mmm-lasta', 'OT26-02511', 2, 'ME0025', 'Svinjetina - Plećka BK cca 4kg (AVAKOM)', 35, 'KG', 800, 0, 10, 28000),
+  ('mmm-lasta', 'OT26-02744', 1, 'SO0005', 'Majonez Professional 5 l (POLIMARK)', 10, 'KOM', 2170, 0, 20, 21700),
+  ('mmm-lasta', 'OT26-03082', 1, 'SO0026', 'Šećer kristal 1kg 10/1', 30, 'KOM', 130, 8.46, 10, 3570),
+  ('mmm-lasta', 'OT26-03082', 2, 'SO0042', 'Sirće alkoholno 1L', 24, 'KOM', 85, 15, 20, 1734),
+  ('mmm-lasta', 'OT26-03082', 3, 'SO0076', 'Začin Biber crni mleveni 1kg', 1, 'KOM', 1470, 0, 20, 1470),
+  ('metro', '0/0(020)0008/262037/26', 1, '8600102141087', '500G MARA KORE ZA PITU', 1, 'KOM', 91.66, 0, 20, 91.66),
+  ('metro', '0/0(020)0008/262037/26', 2, '8606100031184', '400G LAZAR BLACE MASLAC', 1, 'KOM', 599.99, 0, 20, 599.99),
+  ('metro', '0/0(020)0008/262037/26', 3, '8601500137504', '1.5KG MK JOGURT 1%', 1, 'KOM', 156.38, 0, 10, 156.38),
+  ('metro', '0/0(020)0008/262037/26', 4, '8600742000379', '100G SIRKO SIRNI NAMAZ 60', 1, 'KOM', 87.5, 0, 20, 87.5),
+  ('metro', '0/0(020)0008/262037/26', 5, '8606002110772', '250G PRESIDENT SOMBORSKA', 1, 'KOM', 209.99, 0, 20, 209.99),
+  ('metro', '0/0(020)0008/262037/26', 6, '3831006616967', '350G PIVKA PILECA KOBASIC', 84, 'KOM', 108.32, 15.38, 20, 7699.44),
+  ('metro', '0/0(020)0008/262037/26', 7, '0281753000008', 'MC KRUSKA CONFERENCE', 0.29, 'KG', 327.28, 0, 10, 94.91),
+  ('metro', '0/0(020)0008/262037/26', 8, '0283156000005', 'METRO POMORANDŽA KUTIJA', 0.22, 'KG', 200, 0, 10, 44),
+  ('metro', '0/0(020)0008/262037/26', 9, '0282811000004', 'METRO JABUKA AJDAR', 0.71, 'KG', 154.54, 0, 10, 109.72),
+  ('metro', '0/0(020)0008/262037/26', 10, '0282372000000', 'METRO LIMETA', 0.22, 'KG', 636.36, 0, 10, 140),
+  ('metro', '0/0(020)0008/262037/26', 11, '8600609001174', '500G FL PARADADZ CHERRY', 1, 'KOM', 272.72, 0, 10, 272.72),
+  ('metro', '0/0(020)0008/262037/26', 12, '0282501000004', 'METRO KRASTAVAC KORNIŠON', 0.62, 'KG', 213.63, 0, 10, 132.45),
+  ('metro', '0/0(020)0008/262037/26', 13, '0282067000005', 'METRO SILJA CRVENA', 0.26, 'KG', 81.81, 0, 10, 21.27),
+  ('metro', '0/0(020)0008/262037/26', 14, '0282014000009', 'METRO KUPUS KISELI LIST', 1.1, 'KG', 208.32, 0, 20, 229.15),
+  ('metro', '0/0(020)0008/262037/26', 15, '4337182255406', '2200G METRO CHEF TOMATO P', 6, 'KOM', 1083.33, 13.232, 20, 5639.94),
+  ('metro', '0/0(020)0008/262037/26', 16, '4337182156208', '400G ARO BORLOTTI PASULJ', 1, 'KOM', 99.17, 0, 20, 99.17),
+  ('metro', '0/0(020)0008/262037/26', 17, '8600609006797', '4250G ARO KRASTAVAC 9-12', 20, 'KOM', 719.99, 21.296, 20, 11333.2),
+  ('metro', '0/0(020)0008/262037/26', 18, '4337182053965', '10KG MC PIRINAC PARBOILE', 5, 'KOM', 2299.99, 0, 10, 11499.95),
+  ('metro', '0/0(020)0008/262037/26', 19, '8606002210212', '10KG MASA K.KUH.EVAPORIS.', 1, 'KOM', 454.99, 0, 20, 454.99),
+  ('metro', '0/0(020)0008/262037/26', 20, '8853662056067', '455ML SPIRA. PRELIV CHILL', 1, 'KOM', 659.99, 0, 20, 659.99),
+  ('metro', '0/0(020)0008/262037/26', 21, '8600498150083', '500G DIJAMANT KECAP BLAGI', 1, 'KOM', 118.99, 0, 20, 118.99),
+  ('metro', '0/0(020)0008/262037/26', 22, '8606016444016', '1KG ARO PSENICNO BRASNO T', 20, 'KOM', 47.99, 10.419, 10, 859.8),
+  ('metro', '0/0(020)0008/262037/26', 23, '4337182216506', 'ARO PVC FOLIJA 300MX44CM', 3, 'KOM', 749, 0, 20, 2247)
+) as v(code, number, position, ident, name, qty, unit, price, discount, vat, net)
+join suppliers s on s.code = v.code
+join supplier_invoices i on i.supplier_id = s.id and i.number = v.number
+where not exists (select 1 from supplier_invoice_items x where x.invoice_id = i.id);
+
+-- ---------- Исходные фото накладных ----------
+-- Сжатые копии лежат в client/public/invoices (webp). Оригиналы — в папке SHOP вне репозитория.
+update supplier_invoices i
+   set source_file = v.file
+  from (values
+    ('wfc',       '26-3501-046772',              'wfc/26-3501-046772.webp'),
+    ('wfc',       '26-3501-064886',              'wfc/26-3501-064886.webp'),
+    ('wfc',       '26-3501-063449',              'wfc/26-3501-063449.webp'),
+    ('wfc',       '26-3501-062139',              'wfc/26-3501-062139.webp'),
+    ('wfc',       '26-3501-061112',              'wfc/26-3501-061112.webp'),
+    ('wfc',       '26-3501-059406',              'wfc/26-3501-059406.webp'),
+    ('wfc',       '26-3501-058869',              'wfc/26-3501-058869.webp'),
+    ('wfc',       '26-3501-055467',              'wfc/26-3501-055467.webp'),
+    ('wfc',       '26-3501-054422',              'wfc/26-3501-054422.webp'),
+    ('wfc',       '26-3501-051985',              'wfc/26-3501-051985.webp'),
+    ('wfc',       '26-3501-049753',              'wfc/26-3501-049753.webp'),
+    ('mmm-lasta', 'OT26-03082',                  'mmm-lasta/ot26-03082.webp'),
+    ('mmm-lasta', 'OT26-02744',                  'mmm-lasta/ot26-02744.webp'),
+    ('mmm-lasta', 'OT26-02511',                  'mmm-lasta/ot26-02511.webp'),
+    ('mmm-lasta', 'OT26-02465',                  'mmm-lasta/ot26-02465.webp'),
+    ('metro',     '0/0(020)0008/262037/26',      'metro/262037.webp')
+  ) as v(code, number, file)
+  join suppliers s on s.code = v.code
+ where i.supplier_id = s.id
+   and i.number = v.number
+   and i.source_file is distinct from v.file;

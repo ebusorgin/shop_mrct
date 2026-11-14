@@ -10,6 +10,7 @@ import { fmtQty, httpErr } from '../core/format';
 import { packagingLabel } from '../core/packaging-label';
 import { PasswordFormComponent } from '../shared/password-form.component';
 import { PickOption, PickerComponent } from '../shared/picker.component';
+import { TabItem, TabStripComponent } from '../shared/tab-strip.component';
 
 interface DeliveryDay {
   date: string;
@@ -63,7 +64,7 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
 @Component({
   selector: 'app-settings',
   standalone: true,
-  imports: [CommonModule, FormsModule, TranslatePipe, PasswordFormComponent, PickerComponent],
+  imports: [CommonModule, FormsModule, TranslatePipe, PasswordFormComponent, PickerComponent, TabStripComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styles: [`
     .cat-badge { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; border-radius:8px; margin-right:8px; font-size:15px; line-height:1; vertical-align:middle; }
@@ -185,12 +186,6 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
     .settings-top-actions { display:flex; align-items:center; gap:8px; margin-left:auto; }
     /* ---------- верхнее меню: вкладки браузерного вида, у каждой свой контент ---------- */
     .settings-tabs { margin:0 0 20px; }
-    .settings-nav { display:flex; align-items:flex-end; gap:2px; overflow-x:auto; padding:0 8px 1px; box-shadow:inset 0 -1px 0 var(--border); scrollbar-width:none; }
-    .settings-nav::-webkit-scrollbar { display:none; }
-    .settings-nav button { display:inline-flex; align-items:center; gap:8px; flex:0 0 auto; min-height:40px; margin-bottom:-1px; padding:0 16px; border:1px solid transparent; border-radius:11px 11px 0 0; background:transparent; color:var(--muted); font:inherit; font-size:13px; font-weight:600; cursor:pointer; transition:background .15s ease,color .15s ease,border-color .15s ease; }
-    .settings-nav button:hover { background:var(--bg); color:var(--text); }
-    .settings-nav button:focus-visible { outline:3px solid color-mix(in srgb,var(--brand-blue-dark) 30%,transparent); outline-offset:-3px; }
-    .settings-nav button.on { background:var(--panel); border-color:var(--border); border-bottom-color:var(--panel); color:var(--text); }
     .settings-tabbody .settings-section { margin:0; border-top:0; border-radius:0 0 14px 14px; }
     .settings-section { margin:0 0 18px; padding:22px; border:1px solid var(--border); border-radius:14px; background:var(--panel); box-shadow:0 5px 18px rgba(15,23,42,.035); }
     .settings-section > h3 { display:flex; align-items:center; gap:9px; margin:0 0 7px; font-size:17px; font-weight:700; letter-spacing:-.015em; }
@@ -277,7 +272,6 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
       .settings-section, .delivery-block { padding:16px 12px; border-radius:11px; }
       .settings-tabbody .settings-section { border-radius:0 0 11px 11px; }
       .settings-tabs { margin-bottom:14px; }
-      .settings-nav button { padding:0 12px; }
       .settings-section .tbl { display:block; overflow-x:auto; white-space:nowrap; }
       .delivery-head { gap:14px; }
       .delivery-tabs { flex-wrap:wrap; }
@@ -289,7 +283,7 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
       .settings-section .row.mt input:first-child { flex-basis:100%; max-width:none !important; }
     }
     @media (prefers-reduced-motion:reduce) {
-      .settings-section .btn, .delivery-day, .rule-chip, .settings-nav button { transition:none; }
+      .settings-section .btn, .delivery-day, .rule-chip { transition:none; }
     }
   `],
   template: `
@@ -310,23 +304,8 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
     @if (msg()) { <div class="ok-msg">{{ msg() }}</div> }
 
     <div class="settings-tabs">
-      <div class="settings-nav" role="tablist" aria-label="Разделы настроек">
-        <button type="button" role="tab" id="settings-tab-delivery" aria-controls="settings-panel-delivery"
-                [class.on]="settingsTab() === 'delivery'" [attr.aria-selected]="settingsTab() === 'delivery'"
-                (click)="openSettingsTab('delivery', $event)">📅 <span>Доставки</span></button>
-        <button type="button" role="tab" id="settings-tab-gpt" aria-controls="settings-panel-gpt"
-                [class.on]="settingsTab() === 'gpt'" [attr.aria-selected]="settingsTab() === 'gpt'"
-                (click)="openSettingsTab('gpt', $event)">🤖 <span>GPT и прокси</span></button>
-        <button type="button" role="tab" id="settings-tab-categories" aria-controls="settings-panel-categories"
-                [class.on]="settingsTab() === 'categories'" [attr.aria-selected]="settingsTab() === 'categories'"
-                (click)="openSettingsTab('categories', $event)">📦 <span>Категории склада</span></button>
-        <button type="button" role="tab" id="settings-tab-catalogs" aria-controls="settings-panel-catalogs"
-                [class.on]="settingsTab() === 'catalogs'" [attr.aria-selected]="settingsTab() === 'catalogs'"
-                (click)="openSettingsTab('catalogs', $event)">🥗 <span>Каталоги продукции</span></button>
-        <button type="button" role="tab" id="settings-tab-excel" aria-controls="settings-panel-excel"
-                [class.on]="settingsTab() === 'excel'" [attr.aria-selected]="settingsTab() === 'excel'"
-                (click)="openSettingsTab('excel', $event)">📄 <span>Синхронизация Excel</span></button>
-      </div>
+      <app-tab-strip [tabs]="settingsTabs" [active]="settingsTab()" ariaLabel="Разделы настроек"
+                     (pick)="openSettingsTab($event)" />
       <div class="settings-tabbody">
 
     <section id="settings-panel-delivery" class="panel settings-section delivery-block" role="tabpanel"
@@ -843,10 +822,17 @@ export class SettingsComponent implements OnInit {
   /** Верхнее меню настроек: одна вкладка — один раздел, как в браузере. */
   settingsTab = signal<SettingsTab>('delivery');
 
-  /** Выбор вкладки и прокрутка полосы к ней: на узком экране дальние вкладки за краем. */
-  openSettingsTab(tab: SettingsTab, event: Event): void {
+  readonly settingsTabs: TabItem[] = [
+    { id: 'delivery', label: 'Доставки', icon: '📅', buttonId: 'settings-tab-delivery', panelId: 'settings-panel-delivery' },
+    { id: 'gpt', label: 'GPT и прокси', icon: '🤖', buttonId: 'settings-tab-gpt', panelId: 'settings-panel-gpt' },
+    { id: 'categories', label: 'Категории склада', icon: '📦', buttonId: 'settings-tab-categories', panelId: 'settings-panel-categories' },
+    { id: 'catalogs', label: 'Каталоги продукции', icon: '🥗', buttonId: 'settings-tab-catalogs', panelId: 'settings-panel-catalogs' },
+    { id: 'excel', label: 'Синхронизация Excel', icon: '📄', buttonId: 'settings-tab-excel', panelId: 'settings-panel-excel' },
+  ];
+
+  openSettingsTab(id: string): void {
+    const tab = id as SettingsTab;
     this.settingsTab.set(tab);
-    (event.currentTarget as HTMLElement).scrollIntoView({ block: 'nearest', inline: 'nearest' });
     if (tab === 'excel') this.loadSheet();
   }
 

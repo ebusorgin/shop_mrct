@@ -40,6 +40,7 @@ export const routes: Routes = [
             path: 'orders/report',
             loadComponent: () => import('./orders/report.component').then((m) => m.OrderReportComponent),
           },
+          { path: 'suppliers', loadComponent: () => import('./pages/suppliers.component').then((m) => m.SuppliersComponent) },
           { path: 'points', loadComponent: () => import('./pages/points.component').then((m) => m.PointsComponent) },
           {
             path: 'points/:id',

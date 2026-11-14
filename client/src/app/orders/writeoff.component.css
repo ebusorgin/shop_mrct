@@ -1,0 +1,131 @@
+:host { display: block; }
+
+.tl-panel { padding: 14px 16px 16px; }
+.tl-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px 20px; flex-wrap: wrap; }
+.tl-title { margin: 0; font-size: 15px; }
+.tl-sub { display: flex; align-items: center; gap: 7px; margin: 3px 0 0; color: var(--muted); font-size: 11.5px; }
+.demo-chip {
+  padding: 1px 7px; border-radius: 999px; background: var(--amber-soft); color: #7a5a00;
+  font-size: 10.5px; font-weight: 600; white-space: nowrap;
+}
+.real-chip {
+  padding: 1px 7px; border-radius: 999px; background: #f0ebe7; color: #7a4f38;
+  font-size: 10.5px; font-weight: 600; white-space: nowrap;
+}
+.tl-stats { display: flex; align-items: baseline; gap: 16px; color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+.tl-stats b { color: var(--text); font-size: 15px; font-variant-numeric: tabular-nums; }
+
+/* прокрутка нужна только на узком экране; при открытии страница сама уходит к «сегодня» справа */
+.tl-scroll {
+  overflow-x: auto; overflow-y: hidden; padding-bottom: 2px;
+  scrollbar-width: thin; scrollbar-color: #c6d3e1 transparent;
+}
+.tl-scroll::-webkit-scrollbar { height: 8px; }
+.tl-scroll::-webkit-scrollbar-track { background: transparent; }
+.tl-scroll::-webkit-scrollbar-thumb { border-radius: 8px; background: #c6d3e1; }
+.tl-scroll::-webkit-scrollbar-thumb:hover { background: #adc0d4; }
+.tl { position: relative; min-width: 720px; height: 168px; margin: 6px 4px 0; }
+
+.tl-months { position: absolute; left: 6px; right: 6px; top: 0; height: 22px; }
+.tl-month {
+  position: absolute; transform: translateX(-50%); color: var(--muted);
+  font-size: 10.5px; font-weight: 600; letter-spacing: .35px; text-transform: uppercase; white-space: nowrap;
+}
+
+.tl-plot { position: absolute; left: 6px; right: 6px; top: 24px; bottom: 38px; }
+.tl-axis { position: absolute; left: 0; right: 0; bottom: 0; height: 1px; background: #c9d5e2; }
+.tl-week { position: absolute; top: 0; bottom: 0; border-left: 1px dashed #e1e9f1; }
+.tl-today {
+  position: absolute; right: 0; top: -4px; bottom: -2px; border-left: 2px solid var(--accent);
+  opacity: .55;
+}
+
+.tl-dot {
+  position: absolute; z-index: 2; width: 10px; height: 10px; padding: 0;
+  transform: translateX(-50%); border: 2px solid #fff; border-radius: 50%; cursor: pointer;
+  box-shadow: 0 1px 3px rgba(10, 53, 80, .3);
+}
+/* увеличиваем зону попадания, не раздувая саму отметку */
+.tl-dot::after { content: ''; position: absolute; inset: -6px; border-radius: 50%; }
+.tl-dot:hover, .tl-dot:focus-visible {
+  z-index: 3; outline: none;
+  box-shadow: 0 0 0 3px rgba(47, 111, 176, .22), 0 1px 3px rgba(10, 53, 80, .3);
+}
+/* оцифрованная накладная: отметка с двойным кольцом */
+.tl-dot.invoice {
+  width: 12px; height: 12px;
+  box-shadow: 0 0 0 2px #fff, 0 0 0 4px #8a5a44, 0 1px 3px rgba(10, 53, 80, .3);
+}
+.tl-dot.invoice:hover, .tl-dot.invoice:focus-visible {
+  box-shadow: 0 0 0 2px #fff, 0 0 0 4px #8a5a44, 0 0 0 6px rgba(47, 111, 176, .2);
+}
+
+.tl-labels { position: absolute; left: 6px; right: 6px; bottom: 0; height: 34px; }
+.tl-week-label {
+  position: absolute; top: 4px; transform: translateX(-50%); color: var(--muted);
+  font-size: 10.5px; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.tl-week-label.first { transform: none; }
+.tl-today-label {
+  position: absolute; right: 0; top: 0; text-align: right; color: var(--muted);
+  font-size: 10.5px; line-height: 1.35; white-space: nowrap;
+}
+.tl-today-label b { color: var(--accent); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+
+.tl-legend {
+  display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 10px; padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.lg { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11.5px; }
+.lg i { flex: none; width: 8px; height: 8px; border-radius: 50%; }
+
+.tl-hint { margin: 9px 0 0; color: var(--muted); font-size: 11.5px; }
+.tl-pick {
+  margin-top: 10px; padding: 10px 12px; border: 1px solid var(--border);
+  border-radius: 8px; background: #f8fafd;
+}
+.tl-pick-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+.tl-pick-head i { flex: none; width: 9px; height: 9px; border-radius: 50%; }
+.tl-pick-head .x {
+  margin-left: auto; width: 26px; height: 26px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--muted); font: inherit; font-size: 17px; line-height: 1; cursor: pointer;
+}
+.tl-pick-head .x:hover { background: #e9eff6; color: var(--text); }
+.tl-pick ul {
+  margin: 7px 0 0; padding-left: 18px; columns: 2; column-gap: 28px;
+  font-size: 12px; line-height: 1.6;
+}
+
+/* оцифрованная накладная */
+.invoice-card { background: #fff; }
+.inv-chip {
+  padding: 1px 7px; border-radius: 999px; background: #f0ebe7; color: #7a4f38;
+  font-size: 10.5px; font-weight: 600; white-space: nowrap;
+}
+.inv-party { margin: 6px 0 0; color: var(--muted); font-size: 11.5px; line-height: 1.45; }
+.inv-party span { color: var(--text); font-weight: 600; }
+.inv-table { margin-top: 9px; border-top: 1px solid var(--border); }
+.inv-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) 92px 104px; gap: 10px;
+  align-items: baseline; padding: 6px 0; border-bottom: 1px solid #edf2f7; font-size: 12px;
+}
+.inv-row.inv-head {
+  padding: 5px 0; border-bottom: 1px solid var(--border); color: var(--muted);
+  font-size: 10px; font-weight: 600; letter-spacing: .3px; text-transform: uppercase;
+}
+.inv-row .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.inv-name { min-width: 0; overflow-wrap: anywhere; font-weight: 500; }
+.inv-name small { display: block; margin-top: 1px; color: var(--muted); font-size: 10.5px; font-weight: 400; }
+.inv-totals {
+  display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 6px 16px;
+  margin-top: 9px; color: var(--muted); font-size: 11.5px;
+}
+.inv-totals b { margin-left: 4px; color: var(--text); font-variant-numeric: tabular-nums; }
+.inv-totals .grand { color: var(--text); }
+.inv-totals .grand b { color: #7a4f38; font-size: 13.5px; }
+
+@media (max-width: 700px) {
+  .tl-panel { padding: 12px 12px 14px; }
+  .tl-pick ul { columns: 1; }
+  .inv-row { grid-template-columns: minmax(0, 1fr) 72px 86px; gap: 7px; }
+}

@@ -7,34 +7,39 @@ import { ApiService } from '../core/api.service';
 import { Movement, NearExpiryRow } from '../core/models';
 import { fmtDateTime, fmtQty, httpErr } from '../core/format';
 import { StockItemsComponent } from '../shared/stock-items.component';
+import { TabItem, TabStripComponent } from '../shared/tab-strip.component';
 
 type Tab = 'items' | 'journal' | 'shelf';
 
 @Component({
   selector: 'app-stock',
   standalone: true,
-  imports: [CommonModule, FormsModule, StockItemsComponent, RouterLink],
+  imports: [CommonModule, FormsModule, StockItemsComponent, TabStripComponent, RouterLink],
   changeDetection: ChangeDetectionStrategy.OnPush,
-  styles: [`.red { color: var(--red); }`],
+  styles: [`
+    .red { color: var(--red); }
+    /* панель вкладки стыкуется со строкой вкладок — линия под ними общая */
+    .tab-panel { margin-top: 0; border-top: 0; border-radius: 0 0 var(--radius) var(--radius); }
+    /* тело вкладки — белая поверхность, как в Настройках */
+    .tab-body { padding: 12px; background: var(--panel); border: 1px solid var(--border); border-top: 0; }
+  `],
   template: `
     <h1 class="page-title">🏬 Склад</h1>
     @if (err()) { <div class="err">{{ err() }}</div> }
     @if (msg()) { <div class="ok-msg">{{ msg() }}</div> }
 
-    <div class="tabs">
-      <button [class.on]="tab() === 'items'" (click)="go('items')">Остатки и номенклатура</button>
-      <button [class.on]="tab() === 'shelf'" (click)="go('shelf')">Сроки годности</button>
-      <button [class.on]="tab() === 'journal'" (click)="go('journal')">Журнал движений</button>
-    </div>
+    <app-tab-strip [tabs]="stockTabs" [active]="tab()" ariaLabel="Разделы склада" (pick)="go($event)" />
 
     <!-- ================= ОСТАТКИ И НОМЕНКЛАТУРА ================= -->
     @if (tab() === 'items') {
-      <app-stock-items />
+      <div class="tab-panel tab-body">
+        <app-stock-items />
+      </div>
     }
 
     <!-- ================= СРОКИ ГОДНОСТИ (по партиям прихода) ================= -->
     @if (tab() === 'shelf') {
-      <div class="panel">
+      <div class="panel tab-panel">
         <div class="row" style="align-items:center">
           <div class="muted" style="flex:1;font-size:12px">
             Остаток раскладывается по партиям FIFO: расход сначала «съедает» самую старую партию,
@@ -74,7 +79,7 @@ type Tab = 'items' | 'journal' | 'shelf';
 
     <!-- ================= ЖУРНАЛ ================= -->
     @if (tab() === 'journal') {
-      <div class="panel">
+      <div class="panel tab-panel">
         <div class="row">
           <label class="f">Дата с<input type="date" [(ngModel)]="jFrom" (ngModelChange)="loadJournal()" /></label>
           <label class="f">Дата по<input type="date" [(ngModel)]="jTo" (ngModelChange)="loadJournal()" /></label>
@@ -126,6 +131,12 @@ export class StockComponent implements OnInit {
   err = signal('');
   msg = signal('');
 
+  readonly stockTabs: TabItem[] = [
+    { id: 'items', label: 'Остатки и номенклатура', icon: '📦' },
+    { id: 'shelf', label: 'Сроки годности', icon: '⏳' },
+    { id: 'journal', label: 'Журнал движений', icon: '📜' },
+  ];
+
   journal = signal<Movement[]>([]);
   /** партии с истекающим сроком (тот же /dashboard с большим лимитом — без нового эндпоинта) */
   shelf = signal<NearExpiryRow[]>([]);
@@ -161,7 +172,8 @@ export class StockComponent implements OnInit {
     });
   }
 
-  go(t: Tab): void {
+  go(id: string): void {
+    const t = id as Tab;
     this.tab.set(t);
     this.msg.set('');
     this.err.set('');

@@ -18,7 +18,8 @@
     "stock": "Skladište",
     "semis": "Poluprodukti",
     "cards": "Tehničke kartice",
-    "orders": "Arhiva porudžbina"
+    "orders": "Arhiva porudžbina",
+    "suppliers": "Dobavljači"
   },
   "common": {
     "loading": "Učitavanje...",

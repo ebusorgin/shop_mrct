@@ -1,0 +1,113 @@
+<section class="panel tl-panel" aria-labelledby="tl-title">
+  <div class="tl-head">
+    <div>
+      <h2 class="tl-title" id="tl-title">Приход товара на склад</h2>
+      <p class="tl-sub">
+        С первой накладной {{ startLabel }} — сегодня справа
+        <span class="demo-chip">демо-данные</span>
+        <span class="real-chip" title="Оцифрованная накладная WFC DOO BEOGRAD № 26-3501-064886 от 21.09.2026">
+          накладная WFC
+        </span>
+      </p>
+    </div>
+    <div class="tl-stats">
+      <span><b>{{ receipts.length }}</b> приходов</span>
+      <span><b>{{ supplierCount }}</b> поставщиков</span>
+    </div>
+  </div>
+
+  <div class="tl-scroll" #tlScroll>
+    <div class="tl" [style.width.px]="trackWidth">
+      <div class="tl-months" aria-hidden="true">
+        @for (m of months; track m.key) {
+          <span class="tl-month" [style.left.%]="m.leftPct">{{ m.label }}</span>
+        }
+      </div>
+
+      <div class="tl-plot">
+        @for (w of weeks; track w.key) {
+          <span class="tl-week" [style.left.%]="w.leftPct"></span>
+        }
+        <span class="tl-axis"></span>
+        <span class="tl-today"></span>
+        @for (r of receipts; track r.id) {
+          <button type="button" class="tl-dot" [class.invoice]="!!r.invoice"
+                  [style.left.%]="r.leftPct" [style.bottom.px]="r.bottomPx"
+                  [style.background]="r.color"
+                  [attr.aria-label]="receiptLabel(r)" [attr.title]="receiptLabel(r)"
+                  (click)="pick(r)"></button>
+        }
+      </div>
+
+      <div class="tl-labels" aria-hidden="true">
+        @for (t of ticks; track t.key) {
+          <span class="tl-week-label" [class.first]="t.first" [style.left.%]="t.leftPct">{{ t.label }}</span>
+        }
+        <span class="tl-today-label">Сегодня<br /><b>{{ todayLabel }}</b></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="tl-legend">
+    @for (s of suppliers; track s.name) {
+      <span class="lg"><i [style.background]="s.color"></i>{{ s.name }}</span>
+    }
+  </div>
+
+  @if (picked(); as p) {
+    @if (p.invoice; as inv) {
+      <div class="tl-pick invoice-card" role="status">
+        <div class="tl-pick-head">
+          <i [style.background]="p.color"></i>
+          <b>{{ p.supplier }}</b>
+          <span class="muted">{{ p.dateLabel }}</span>
+          <span class="inv-chip">Накладная № {{ inv.number }}</span>
+          <button type="button" class="x" (click)="picked.set(null)" aria-label="Закрыть">×</button>
+        </div>
+
+        <p class="inv-party"><span>Поставщик:</span> {{ inv.supplierFull }}, {{ inv.supplierAddress }}</p>
+        <p class="inv-party"><span>Получатель:</span> {{ inv.customer }}</p>
+
+        <div class="inv-table" role="table" [attr.aria-label]="'Позиции накладной ' + inv.number">
+          <div class="inv-row inv-head" role="row">
+            <span role="columnheader">Товар</span>
+            <span class="num" role="columnheader">Кол-во</span>
+            <span class="num" role="columnheader">Сумма, RSD</span>
+          </div>
+          @for (line of inv.lines; track line.ident) {
+            <div class="inv-row" role="row">
+              <span class="inv-name" role="cell">
+                {{ line.name }}
+                <small>{{ line.ident }} · {{ money(line.price) }} RSD / {{ line.unit.toLowerCase() }} · PDV {{ line.vatRate }}%</small>
+              </span>
+              <span class="num" role="cell">{{ qty(line.qty) }} {{ line.unit.toLowerCase() }}</span>
+              <span class="num" role="cell">{{ money(line.net) }}</span>
+            </div>
+          }
+        </div>
+
+        <div class="inv-totals">
+          <span>Без PDV <b>{{ money(inv.net) }}</b></span>
+          <span>PDV <b>{{ money(inv.vat) }}</b></span>
+          <span class="grand">К оплате <b>{{ money(inv.gross) }} RSD</b></span>
+        </div>
+      </div>
+    } @else {
+      <div class="tl-pick" role="status">
+        <div class="tl-pick-head">
+          <i [style.background]="p.color"></i>
+          <b>{{ p.supplier }}</b>
+          <span class="muted">{{ p.dateLabel }}</span>
+          <button type="button" class="x" (click)="picked.set(null)" aria-label="Закрыть">×</button>
+        </div>
+        <ul>
+          @for (g of p.goods; track g.name) {
+            <li>{{ g.name }} — {{ g.qty }} {{ g.unit }}</li>
+          }
+        </ul>
+      </div>
+    }
+  } @else {
+    <p class="tl-hint">Нажмите на отметку, чтобы посмотреть поставщика и товары.</p>
+  }
+</section>

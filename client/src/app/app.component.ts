@@ -113,6 +113,7 @@ export class AppComponent {
     {
       titleKey: 'nav.groupOther',
       items: [
+        { path: 'suppliers', icon: '🚚', labelKey: 'nav.suppliers' },
         { path: 'points', icon: '🏪', labelKey: 'nav.points' },
         { path: 'audit', icon: '📜', labelKey: 'nav.audit' },
         { path: 'users', icon: '👤', labelKey: 'nav.users', admin: true },

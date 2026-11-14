@@ -35,6 +35,14 @@ export class ApiService {
   deleteProduct(id: number): Observable<unknown> {
     return this.http.delete(`${this.base}/products/${id}`);
   }
+  /** Где используется позиция: полуфабрикаты и техкарты. */
+  productUsage$(id: number): Observable<M.ProductUsage> {
+    return this.http.get<M.ProductUsage>(`${this.base}/products/${id}/usage`);
+  }
+  /** Поставщики позиции по накладным. */
+  productSuppliers$(id: number): Observable<M.ProductSupplier[]> {
+    return this.http.get<M.ProductSupplier[]>(`${this.base}/products/${id}/suppliers`);
+  }
 
   // ---- stock ----
   stock$(): Observable<M.StockRow[]> { return this.http.get<M.StockRow[]>(`${this.base}/stock`); }
@@ -121,6 +129,12 @@ export class ApiService {
   }
   deletePoint(id: number): Observable<{ ok: boolean }> {
     return this.http.delete<{ ok: boolean }>(`${this.base}/points/${id}`);
+  }
+
+  // ---- поставщики и накладные (только чтение) ----
+  suppliers$(): Observable<M.SupplierCard[]> { return this.http.get<M.SupplierCard[]>(`${this.base}/suppliers`); }
+  supplierInvoice$(id: number): Observable<M.SupplierInvoiceDetail> {
+    return this.http.get<M.SupplierInvoiceDetail>(`${this.base}/suppliers/invoices/${id}`);
   }
 
   // ---- страница своего магазина (магазинный сотрудник) ----

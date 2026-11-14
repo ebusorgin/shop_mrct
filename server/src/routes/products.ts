@@ -69,6 +69,70 @@ productsRouter.get(
   })
 );
 
+/** Где используется складское сырьё: полуфабрикаты и техкарты, в базовых единицах позиции. */
+productsRouter.get(
+  '/:id/usage',
+  wrap(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) throw new ApiError(400, 'Некорректный id');
+    const { rows: semis } = await pool.query(
+      `select sp.id, sp.name,
+              si.qty_per_output::float8 as qty,
+              si.yield_pct::float8 as "yieldPct",
+              pu.code as "unitCode",
+              sp.out_qty::float8 as "outQty",
+              su.code as "outUnitCode"
+         from semi_inputs si
+         join semi_products sp on sp.id = si.semi_id
+         join units su on su.id = sp.unit_id
+         join products p on p.id = si.ref_id
+         join units pu on pu.id = p.unit_id
+        where si.source_type = 'raw' and si.ref_id = $1
+        order by sp.name`,
+      [id]
+    );
+    const { rows: cards } = await pool.query(
+      `select c.id, c.name,
+              tci.qty::float8 as qty,
+              u.code as "unitCode",
+              c.portion_qty::float8 as "portionQty",
+              cu.code as "portionUnitCode"
+         from tech_card_items tci
+         join tech_cards c on c.id = tci.card_id
+         join units u on u.id = tci.unit_id
+         join units cu on cu.id = c.portion_unit_id
+        where tci.source_type = 'raw' and tci.ref_id = $1
+        order by c.name`,
+      [id]
+    );
+    res.json({ semis, cards });
+  })
+);
+
+/** Поставщики позиции — по действующим накладным: сколько поставок, последняя дата и цена. */
+productsRouter.get(
+  '/:id/suppliers',
+  wrap(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) throw new ApiError(400, 'Некорректный id');
+    const { rows } = await pool.query(
+      `select w.supplier,
+              count(*)::int as "deliveries",
+              to_char(max(w.doc_date), 'YYYY-MM-DD') as "lastDate",
+              (array_agg(i.price order by w.doc_date desc, i.id desc))[1]::float8 as "lastPrice",
+              (array_agg(u.code order by w.doc_date desc, i.id desc))[1] as "unitCode"
+         from waybill_items i
+         join waybills w on w.id = i.waybill_id
+         left join units u on u.id = i.unit_id
+        where i.product_id = $1 and btrim(w.supplier) <> '' and w.status = 'posted'
+        group by w.supplier
+        order by max(w.doc_date) desc`,
+      [id]
+    );
+    res.json(rows);
+  })
+);
+
 /** Занести категорию в словарь product_categories (кроме корзины «прочее»). */
 async function ensureCategory(client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }> }, category: string): Promise<void> {
   const name = category.toLowerCase().trim();

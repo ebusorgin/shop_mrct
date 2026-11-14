@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, DestroyRef, OnInit, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, ElementRef, OnInit, computed, effect, inject, signal, viewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
@@ -7,6 +7,7 @@ import { ApiService } from '../core/api.service';
 import { RawCategory, RawProductRef, StockRow } from '../core/models';
 import { fmtCost, fmtMoney, fmtQty, httpErr, trim } from '../core/format';
 import { ProductEditComponent } from './product-edit.component';
+import { ProductCardComponent, ProductCardTab } from './product-card.component';
 import { ModalComponent } from './modal.component';
 
 /** Что выбрано в левой колонке: все позиции, нераспределённые или конкретная категория. */
@@ -27,15 +28,17 @@ interface ItemRow extends RawProductRef {
 @Component({
   selector: 'app-stock-items',
   standalone: true,
-  imports: [CommonModule, FormsModule, ProductEditComponent, RouterLink, ModalComponent],
+  imports: [CommonModule, FormsModule, ProductEditComponent, ProductCardComponent, RouterLink, ModalComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styles: [`
     .nm { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 14px; align-items: start; }
     .side { border: 1px solid var(--border); border-radius: 10px; background: #fff; padding: 8px; position: sticky; top: 10px; }
     .side-t { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 4px 8px 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); }
     .cat-row { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: 0; background: none; font: inherit; font-size: 13px; padding: 7px 8px; border-radius: 7px; cursor: pointer; }
-    .cat-row:hover { background: #f4f7fb; }
+    .cat-row:hover { background: color-mix(in srgb, var(--cat, #eef1f5) 45%, #fff); }
     .cat-row.on { background: #eaf1fb; color: var(--accent); font-weight: 600; }
+    .cat-ic { flex: none; display: grid; place-items: center; width: 22px; height: 22px;
+      border-radius: 7px; font-size: 12px; line-height: 1; }
     .cat-nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .cnt { flex: none; font-size: 11px; color: var(--muted); background: #eef1f5; border-radius: 10px; padding: 1px 7px; font-variant-numeric: tabular-nums; }
     .cnt.warn { background: var(--amber-soft); color: var(--amber); }
@@ -53,12 +56,28 @@ interface ItemRow extends RawProductRef {
     .acts .btn { padding: 2px 7px; }
     .empty { text-align: center; color: var(--muted); padding: 22px 12px; }
     .unit { display: inline-block; font-size: 11px; color: var(--muted); background: #eef1f5; border-radius: 8px; padding: 0 6px; }
+    .nm-cell { display: flex; align-items: center; gap: 8px; }
+    .nm-name { flex: 1 1 auto; min-width: 0; }
+    .cat-chip { flex: none; padding: 0 7px; border-radius: 999px;
+      font-size: 11px; line-height: 16px; font-weight: 400; color: #26303f; white-space: nowrap; }
     .red { color: var(--red); }
+    /* чередование строк: чётные — с лёгкой подложкой, чтобы глаз держал строку */
+    .tbl tr:nth-child(even) td { background: #f6f9fc; }
+    .tbl tr:hover td { background: #e9f1fa; }
+    .tbl tr.clickable { cursor: pointer; }
+    .more { padding: 12px 12px 16px; text-align: center; color: var(--muted); font-size: 12px; }
     .adj-head { display: flex; align-items: baseline; gap: 8px; }
     .adj-head b { font-size: 15px; }
     @media (max-width: 900px) {
       .nm { grid-template-columns: 1fr; }
       .side { position: static; }
+    }
+    /* на телефоне .tbl.stack — карточки: подложка чередования вешается на строку, а не на ячейки */
+    @media (max-width: 700px) {
+      .tbl tr:nth-child(even) td, .tbl tr:hover td { background: none; }
+      .tbl tr:nth-child(even) { background: #f6f9fc; }
+      .tbl tr:hover { background: #e9f1fa; }
+      .tbl tr:nth-child(even):hover { background: #e9f1fa; }
     }
   `],
   template: `
@@ -79,7 +98,9 @@ interface ItemRow extends RawProductRef {
         <div class="side-sep"></div>
 
         @for (c of cats(); track c.id) {
-          <button type="button" class="cat-row" [class.on]="selected() === c.id" (click)="pick(c.id)">
+          <button type="button" class="cat-row" [class.on]="selected() === c.id"
+                  [style.--cat]="c.color || null" (click)="pick(c.id)">
+            <span class="cat-ic" [style.background]="c.color || '#eef1f5'">{{ c.icon || '•' }}</span>
             <span class="cat-nm" [title]="c.name">{{ c.name }}</span>
             <span class="cnt">{{ countOf(c.id) }}</span>
           </button>
@@ -92,7 +113,7 @@ interface ItemRow extends RawProductRef {
         <div class="tools">
           <input type="search" placeholder="🔍 поиск по названию…" [ngModel]="q()" (ngModelChange)="onSearch($event)" />
           <label class="low-t">
-            <input type="checkbox" [ngModel]="onlyLow()" (ngModelChange)="onlyLow.set($event)" /> только заканчивающиеся
+            <input type="checkbox" [ngModel]="onlyLow()" (ngModelChange)="onLow($event)" /> только заканчивающиеся
           </label>
           <span class="spacer"></span>
           <button type="button" class="btn primary" (click)="newProduct()">+ Новая позиция</button>
@@ -104,8 +125,8 @@ interface ItemRow extends RawProductRef {
           <span class="muted">{{ rows().length }} поз.</span>
         </div>
 
-        <table class="tbl">
-          <tr>
+        <table class="tbl stack">
+          <tr class="th-row">
             <th>Позиция</th>
             <th class="cn">Ед.</th>
             <th class="num">Остаток</th>
@@ -113,31 +134,34 @@ interface ItemRow extends RawProductRef {
             <th class="num">Себест.</th>
             <th class="num">Сумма</th>
             <th class="num">Срок</th>
-            <th>Категория</th>
             <th></th>
           </tr>
-          @for (p of rows(); track p.id) {
-            <tr>
-              <td>
-                <b>{{ p.name }}</b>
-                @if (p.low) { <span class="badge red" title="Ниже минимального остатка">↓</span> }
+          @for (p of displayRows(); track p.id) {
+            <tr class="clickable" (click)="openCard(p)">
+              <td class="nm-cell">
+                <span class="nm-name">
+                  <b>{{ p.name }}</b>
+                  @if (p.low) { <span class="badge red" title="Ниже минимального остатка">↓</span> }
+                </span>
+                @if (catOf(p.categoryId); as cat) {
+                  <span class="cat-chip" [style.background]="cat.color || '#eef2f7'">{{ cat.icon ? cat.icon + ' ' : '' }}{{ cat.name }}</span>
+                }
               </td>
-              <td><span class="unit">{{ p.unitCode || '—' }}</span></td>
-              <td class="num" [class.red]="p.low">{{ fmtQty(p.qty, p.unitCode || '') }}</td>
-              <td class="num muted">{{ p.minStock && p.minStock > 0 ? fmtQty(p.minStock, p.unitCode || '') : '—' }}</td>
-              <td class="num muted">{{ fmtCost(p.avgCost, p.unitCode || '') }}</td>
-              <td class="num">{{ fmtMoney(p.qty * p.avgCost) }}</td>
-              <td class="num muted">{{ p.shelfLifeDays ? p.shelfLifeDays + ' дн.' : '—' }}</td>
-              <td class="muted">{{ catName(p.categoryId) }}</td>
-              <td class="acts">
-                <button type="button" class="btn sm" (click)="startAdjust(p)" title="Корректировать остаток">корр.</button>
-                <button type="button" class="btn sm" (click)="showMovements(p.name)" title="История движений">история</button>
-                <button type="button" class="btn sm" (click)="editProduct(p.id)" title="Редактировать позицию">✎</button>
+              <td data-l="ед."><span class="unit">{{ p.unitCode || '—' }}</span></td>
+              <td class="num" data-l="остаток" [class.red]="p.low">{{ fmtQty(p.qty, p.unitCode || '') }}</td>
+              <td class="num muted" data-l="мин.">{{ p.minStock && p.minStock > 0 ? fmtQty(p.minStock, p.unitCode || '') : '—' }}</td>
+              <td class="num muted" data-l="себест.">{{ fmtCost(p.avgCost, p.unitCode || '') }}</td>
+              <td class="num" data-l="сумма">{{ fmtMoney(p.qty * p.avgCost) }}</td>
+              <td class="num muted" data-l="срок">{{ p.shelfLifeDays ? p.shelfLifeDays + ' дн.' : '—' }}</td>
+              <td class="acts no-l">
+                <button type="button" class="btn sm" (click)="$event.stopPropagation(); startAdjust(p)" title="Корректировать остаток">корр.</button>
+                <button type="button" class="btn sm" (click)="$event.stopPropagation(); showMovements(p.name)" title="История движений">история</button>
+                <button type="button" class="btn sm" (click)="$event.stopPropagation(); openCard(p, 'edit')" title="Редактировать позицию">✎</button>
               </td>
             </tr>
           } @empty {
             <tr>
-              <td class="empty" colspan="9">
+              <td class="empty" colspan="8">
                 @if (q().trim()) {
                   По запросу «{{ q().trim() }}» ничего не найдено
                 } @else if (onlyLow()) {
@@ -151,6 +175,9 @@ interface ItemRow extends RawProductRef {
             </tr>
           }
         </table>
+        @if (hasMore()) {
+          <div #more class="more">⏳ подгружаем ещё · {{ displayRows().length }} из {{ rows().length }}</div>
+        }
       </section>
     </div>
 
@@ -179,7 +206,12 @@ interface ItemRow extends RawProductRef {
     }
 
     @if (editOpen()) {
-      <app-product-edit [productId]="editId()" (saved)="onProductSaved()" (closed)="editOpen.set(false)" />
+      <app-product-edit [productId]="null" (saved)="onProductSaved()" (closed)="editOpen.set(false)" />
+    }
+
+    @if (carding(); as p) {
+      <app-product-card [product]="p" [initialTab]="cardTab()"
+                        (saved)="onCardSaved()" (closed)="carding.set(null)" />
     }
   `,
 })
@@ -199,7 +231,8 @@ export class StockItemsComponent implements OnInit {
   onlyLow = signal(false);
 
   editOpen = signal(false);
-  editId = signal<number | null>(null);
+  carding = signal<ItemRow | null>(null);
+  cardTab = signal<ProductCardTab>('usage');
 
   adjusting = signal<ItemRow | null>(null);
   adjustQty: number | null = null;
@@ -211,6 +244,43 @@ export class StockItemsComponent implements OnInit {
 
   wbLink = ['/waybills'];
   wbQp = { panel: 'new' };
+
+  /** Подгружаемый список: показываем первые PAGE_SIZE строк, остальные — по мере прокрутки. */
+  private static readonly PAGE_SIZE = 30;
+  visible = signal(StockItemsComponent.PAGE_SIZE);
+  displayRows = computed(() => this.rows().slice(0, this.visible()));
+  hasMore = computed(() => this.rows().length > this.visible());
+
+  private more = viewChild<ElementRef<HTMLElement>>('more');
+  private observer = new IntersectionObserver(
+    (entries) => { if (entries.some((e) => e.isIntersecting)) this.grow(); },
+    { rootMargin: '240px' }
+  );
+
+  constructor() {
+    inject(DestroyRef).onDestroy(() => this.observer.disconnect());
+    // маячок появляется только когда есть что подгружать — следим за его появлением
+    effect((onCleanup) => {
+      const el = this.more()?.nativeElement;
+      if (!el) return;
+      this.observer.observe(el);
+      onCleanup(() => this.observer.unobserve(el));
+    });
+  }
+
+  private grow(): void {
+    if (!this.hasMore()) return;
+    this.visible.update((v) => v + StockItemsComponent.PAGE_SIZE);
+    // если после порции маячок всё ещё в кадре (высокий экран, короткий фильтр) — добираем
+    requestAnimationFrame(() => {
+      const el = this.more()?.nativeElement;
+      if (el && this.hasMore() && el.getBoundingClientRect().top < window.innerHeight) this.grow();
+    });
+  }
+
+  private resetPaging(): void {
+    this.visible.set(StockItemsComponent.PAGE_SIZE);
+  }
 
   ngOnInit(): void {
     this.load();
@@ -243,9 +313,9 @@ export class StockItemsComponent implements OnInit {
     return this.all().filter((p) => p.categoryId === catId).length;
   }
 
-  catName(catId: number | null | undefined): string {
-    if (catId == null) return '— без категории —';
-    return this.cats().find((c) => c.id === catId)?.name ?? '—';
+  catOf(catId: number | null | undefined): RawCategory | undefined {
+    if (catId == null) return undefined;
+    return this.cats().find((c) => c.id === catId);
   }
 
   unassigned = computed(() => this.all().filter((p) => p.categoryId == null));
@@ -277,10 +347,17 @@ export class StockItemsComponent implements OnInit {
   pick(s: CatSel): void {
     this.selected.set(s);
     this.q.set('');
+    this.resetPaging();
   }
 
   onSearch(v: string): void {
     this.q.set(v);
+    this.resetPaging();
+  }
+
+  onLow(v: boolean): void {
+    this.onlyLow.set(v);
+    this.resetPaging();
   }
 
   showMovements(name: string): void {
@@ -323,13 +400,18 @@ export class StockItemsComponent implements OnInit {
 
   // ---------- позиции ----------
   newProduct(): void {
-    this.editId.set(null);
     this.editOpen.set(true);
   }
 
-  editProduct(id: number): void {
-    this.editId.set(id);
-    this.editOpen.set(true);
+  openCard(p: ItemRow, tab: ProductCardTab = 'usage'): void {
+    this.cardTab.set(tab);
+    this.carding.set(p);
+  }
+
+  onCardSaved(): void {
+    this.carding.set(null);
+    this.msg.set('Позиция сохранена ✓');
+    this.load();
   }
 
   onProductSaved(): void {

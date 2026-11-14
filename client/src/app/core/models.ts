@@ -26,6 +26,37 @@ export interface Product {
   avgCost: number;
 }
 
+/** Где используется складская позиция: строка состава полуфабриката или техкарты. */
+export interface ProductUsageSemi {
+  id: number;
+  name: string;
+  qty: number;
+  yieldPct: number | null;
+  unitCode: string;
+  outQty: number;
+  outUnitCode: string;
+}
+export interface ProductUsageCard {
+  id: number;
+  name: string;
+  qty: number;
+  unitCode: string;
+  portionQty: number;
+  portionUnitCode: string;
+}
+export interface ProductUsage {
+  semis: ProductUsageSemi[];
+  cards: ProductUsageCard[];
+}
+/** Поставщик позиции по накладным: число поставок, последняя дата и цена за базовую единицу. */
+export interface ProductSupplier {
+  supplier: string;
+  deliveries: number;
+  lastDate: string;
+  lastPrice: number;
+  unitCode: string;
+}
+
 export interface StockRow {
   productId: number;
   name: string;
@@ -535,7 +566,33 @@ export interface StoreStats {
   nextDelivery: { date: string; open: boolean; hasOrder: boolean } | null;
   /** Последние 12 месяцев: заказы и сумма без PDV. */
   monthly: { month: string; orders: number; net: number }[];
-  topProducts: { name: string; nameSr: string; packages: number; net: number }[];
+  /**
+   * Рейтинг продукции за 12 месяцев: экономика (доля, ABC), сложный рост (CAGR),
+   * маркетинг (RFM: свежесть, частота, деньги).
+   */
+  topProducts: {
+    name: string;
+    nameSr: string;
+    /** Составной индекс 0–100. */
+    score: number;
+    abc: 'A' | 'B' | 'C';
+    net: number;
+    sharePct: number;
+    orders: number;
+    packages: number;
+    cagrPct: number;
+    momentumPct: number | null;
+    lastDate: string | null;
+    rfm: { r: number; f: number; m: number };
+  }[];
+  productTrends: {
+    name: string;
+    nameSr: string;
+    orders: number;
+    totalNet: number;
+    lastValue: number;
+    points: { date: string; value: number; net: number }[];
+  }[];
   recentOrders: {
     id: number;
     deliveryDate: string;
@@ -750,4 +807,67 @@ export interface AiCoefficient {
   confidence: string;
   reason: string;
   model: string;
+}
+
+/** Накладная поставщика в списке раздела «Поставщики» (без позиций). */
+export interface SupplierInvoiceShort {
+  id: number;
+  number: string;
+  /** Дата документа YYYY-MM-DD. */
+  date: string;
+  net: number | null;
+  vat: number | null;
+  gross: number | null;
+  itemsCount: number;
+}
+
+/** Поставщик с накладными для раздела «Поставщики». */
+export interface SupplierCard {
+  id: number;
+  code: string;
+  name: string;
+  legalName: string;
+  address: string;
+  pib: string;
+  mb: string;
+  phone: string;
+  fax: string;
+  email: string;
+  accounts: string[];
+  gln: string;
+  contact: string;
+  note: string;
+  invoices: SupplierInvoiceShort[];
+}
+
+/** Позиция оцифрованной накладной. */
+export interface SupplierInvoiceItem {
+  position: number;
+  ident: string;
+  name: string;
+  qty: number;
+  unit: 'KG' | 'KOM';
+  price: number;
+  discountPct: number;
+  vatRate: number | null;
+  net: number;
+}
+
+/** Накладная поставщика с позициями и реквизитами. */
+export interface SupplierInvoiceDetail {
+  id: number;
+  number: string;
+  date: string;
+  currency: string;
+  recipient: string;
+  buyerCode: string;
+  orderRef: string;
+  note: string;
+  /** Путь к фото накладной (относительно /invoices); null — фото нет. */
+  sourceFile: string | null;
+  net: number | null;
+  vat: number | null;
+  gross: number | null;
+  supplier: Omit<SupplierCard, 'invoices'>;
+  items: SupplierInvoiceItem[];
 }

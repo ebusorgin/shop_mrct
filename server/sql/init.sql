@@ -314,6 +314,9 @@ create table if not exists stores (
   account_no     text not null default ''
 );
 
+-- мягкое удаление: точка скрывается из справочника, история и заказы остаются
+alter table stores add column if not exists deleted_at timestamptz;
+
 create table if not exists users (
   id            serial primary key,
   login         text not null,

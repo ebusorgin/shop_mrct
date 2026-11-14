@@ -1,17 +1,20 @@
 /**
  * API раздела «Точки продаж» — справочник торговых точек (stores).
  *
- *   GET    /api/points            — список точек с профилем
+ *   GET    /api/points            — список точек с профилем (без удалённых)
  *   GET    /api/points/:id        — одна точка
+ *   GET    /api/points/:id/stats  — показатели точки для внутренней страницы
  *   POST   /api/points            — создать точку
  *   PATCH  /api/points/:id        — редактировать точку
  *   POST   /api/points/:id/deactivate — мягко деактивировать (история цела)
- *   DELETE /api/points/:id        — удалить навсегда
+ *   POST   /api/points/:id/activate   — вернуть точку в работу
+ *   DELETE /api/points/:id        — скрыть точку (мягкое удаление, данные остаются)
  */
 import { Router } from 'express';
 import { pool } from '../db';
 import { ApiError, reqInt, reqNum, wrap } from '../http';
 import { audit, diff } from '../services/audit';
+import { storeStats } from '../services/store-stats';
 
 export const pointsRouter = Router();
 
@@ -60,6 +63,7 @@ async function loadCards(): Promise<PointCard[]> {
       from stores s
       left join users cu on cu.id = s.created_by
       left join users uu on uu.id = s.updated_by
+     where s.deleted_at is null
      order by s.position, s.id`);
 
   return rows.map((r) => ({
@@ -101,6 +105,16 @@ pointsRouter.get(
     const card = cards.find((c) => c.id === id);
     if (!card) throw new ApiError(404, 'Точка не найдена');
     res.json(card);
+  })
+);
+
+pointsRouter.get(
+  '/:id/stats',
+  wrap(async (req, res) => {
+    const id = Number(req.params.id);
+    const { rows } = await pool.query('select 1 from stores where id = $1 and deleted_at is null', [id]);
+    if (!rows.length) throw new ApiError(404, 'Точка не найдена');
+    res.json(await storeStats(id));
   })
 );
 
@@ -158,7 +172,7 @@ pointsRouter.patch(
     const name = String(req.body.name ?? '').trim();
     if (!name) throw new ApiError(400, 'Поле «name» обязательно');
     const { rows: cur } = await pool.query(
-      'select id, code, name, active, position, address, phone, email, contact_person, opening_hours, pib, mbr, account_no as "accountNo", note from stores where id = $1',
+      'select id, code, name, active, position, address, phone, email, contact_person, opening_hours, pib, mbr, account_no as "accountNo", note from stores where id = $1 and deleted_at is null',
       [id]
     );
     if (!cur.length) throw new ApiError(404, 'Точка не найдена');
@@ -205,7 +219,7 @@ pointsRouter.post(
   wrap(async (req, res) => {
     const id = Number(req.params.id);
     const { rows } = await pool.query(
-      'update stores set active = false, updated_at = now(), updated_by = $2 where id = $1 returning id, name',
+      'update stores set active = false, updated_at = now(), updated_by = $2 where id = $1 and deleted_at is null returning id, name',
       [id, req.user?.id ?? null]
     );
     if (!rows.length) throw new ApiError(404, 'Точка не найдена');
@@ -214,14 +228,42 @@ pointsRouter.post(
   })
 );
 
+pointsRouter.post(
+  '/:id/activate',
+  wrap(async (req, res) => {
+    const id = Number(req.params.id);
+    const { rows } = await pool.query(
+      `update stores set active = true, updated_at = now(), updated_by = $2
+        where id = $1 and deleted_at is null returning id, name`,
+      [id, req.user?.id ?? null]
+    );
+    if (!rows.length) throw new ApiError(404, 'Точка не найдена');
+    await audit(req.user, { action: 'update', entity: 'store', entityId: id, title: `Точка «${rows[0].name}»`, details: { active: true } });
+    res.json({ ok: true });
+  })
+);
+
 pointsRouter.delete(
   '/:id',
   wrap(async (req, res) => {
     const id = Number(req.params.id);
-    const { rows } = await pool.query('select name from stores where id = $1', [id]);
+    const { rows } = await pool.query(
+      'select name from stores where id = $1 and deleted_at is null',
+      [id]
+    );
     if (!rows.length) throw new ApiError(404, 'Точка не найдена');
-    await pool.query('delete from stores where id = $1', [id]);
-    await audit(req.user, { action: 'delete', entity: 'store', entityId: id, title: `Точка «${rows[0].name}»` });
+    // Мягкое удаление: карточка исчезает из справочника, заказы и журнал остаются.
+    await pool.query(
+      'update stores set deleted_at = now(), active = false, updated_at = now(), updated_by = $2 where id = $1',
+      [id, req.user?.id ?? null]
+    );
+    await audit(req.user, {
+      action: 'delete',
+      entity: 'store',
+      entityId: id,
+      title: `Точка «${rows[0].name}»`,
+      details: { soft: true },
+    });
     res.json({ ok: true });
   })
 );

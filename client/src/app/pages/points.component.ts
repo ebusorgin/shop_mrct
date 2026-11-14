@@ -1,5 +1,6 @@
 import { ChangeDetectionStrategy, Component, OnInit, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { RouterLink } from '@angular/router';
 import { ApiService } from '../core/api.service';
 import { PointCard } from '../core/models';
 import { httpErr } from '../core/format';
@@ -8,7 +9,7 @@ import { PointFormComponent } from '../shared/point-form.component';
 @Component({
   selector: 'app-points',
   standalone: true,
-  imports: [CommonModule, PointFormComponent],
+  imports: [CommonModule, RouterLink, PointFormComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="bar">
@@ -23,13 +24,14 @@ import { PointFormComponent } from '../shared/point-form.component';
 
     <div class="grid">
       @for (p of points(); track p.id) {
-        <div class="card panel" [class.off]="!p.active">
+        <a class="card panel" [class.off]="!p.active" [routerLink]="['/points', p.id]">
           <div class="head">
             <div class="ttl">
               <span class="dot" [class.on]="p.active" [title]="p.active ? 'активна' : 'не активна'"></span>
               <strong>{{ p.name }}</strong>
               <span class="badge blue">{{ p.code }}</span>
             </div>
+            <span class="open">Открыть →</span>
           </div>
 
           <div class="profile">
@@ -37,27 +39,15 @@ import { PointFormComponent } from '../shared/point-form.component';
             @if (p.phone) { <div class="pf"><span class="k">Телефон</span><span class="v">{{ p.phone }}</span></div> }
             @if (p.contactPerson) { <div class="pf"><span class="k">Контакт</span><span class="v">{{ p.contactPerson }}</span></div> }
             @if (p.openingHours) { <div class="pf"><span class="k">Режим</span><span class="v">{{ p.openingHours }}</span></div> }
-            @if (p.pib) { <div class="pf"><span class="k">PIB</span><span class="v">{{ p.pib }}</span></div> }
-            @if (!p.address && !p.phone && !p.contactPerson && !p.openingHours && !p.pib) {
+            @if (!p.address && !p.phone && !p.contactPerson && !p.openingHours) {
               <div class="muted small">Профиль не заполнен</div>
             }
           </div>
 
-          @if (p.createdByLogin || p.updatedByLogin) {
-            <div class="muted small" style="font-size:11px">
-              @if (p.createdByLogin) { завёл {{ p.createdByName || p.createdByLogin }} }
-              @if (p.updatedByLogin) { · правил {{ p.updatedByName || p.updatedByLogin }} }
-            </div>
+          @if (!p.active) {
+            <div class="muted small" style="font-size:11px">Точка не активна — откройте карточку, чтобы включить.</div>
           }
-
-          <div class="acts">
-            <button class="btn sm" (click)="edit(p)">✏️ Изменить</button>
-            @if (p.active) {
-              <button class="btn sm" (click)="deactivate(p)">Деактивировать</button>
-            }
-            <button class="btn sm danger" (click)="remove(p)">Удалить</button>
-          </div>
-        </div>
+        </a>
       } @empty {
         <div class="panel empty-msg">Магазинов пока нет — создайте первую точку.</div>
       }
@@ -66,21 +56,22 @@ import { PointFormComponent } from '../shared/point-form.component';
     @if (createOpen()) {
       <app-point-form (saved)="onSaved()" (closed)="createOpen.set(false)" />
     }
-    @if (editing(); as p) {
-      <app-point-form [point]="p" (saved)="onSaved()" (closed)="editing.set(null)" />
-    }
   `,
   styles: [
     `
     .bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
     .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
-    .card { display: flex; flex-direction: column; gap: 12px; min-width: 0; transition: border-color .15s, box-shadow .15s, transform .15s; }
+    .card {
+      display: flex; flex-direction: column; gap: 12px; min-width: 0; margin: 0;
+      color: var(--text); text-decoration: none;
+      transition: border-color .15s, box-shadow .15s, transform .15s;
+    }
     .card:hover { border-color: var(--accent); box-shadow: 0 8px 24px rgba(10,18,32,.10); transform: translateY(-1px); }
     .card.off { opacity: 0.62; }
     .head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
-    .acts { display: flex; gap: 8px; flex-wrap: wrap; }
     .ttl { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; min-width: 0; }
     .ttl strong { font-size: 15px; overflow-wrap: anywhere; }
+    .open { font-size: 11.5px; color: var(--accent); font-weight: 600; white-space: nowrap; }
     .dot { width: 10px; height: 10px; border-radius: 50%; background: #c3ccd8; flex: 0 0 auto; }
     .dot.on { background: #2fb36b; }
     .profile { display: flex; flex-direction: column; gap: 4px; }
@@ -99,7 +90,6 @@ export class PointsComponent implements OnInit {
   err = signal('');
   msg = signal('');
   createOpen = signal(false);
-  editing = signal<PointCard | null>(null);
 
   ngOnInit(): void {
     this.load();
@@ -116,32 +106,6 @@ export class PointsComponent implements OnInit {
   onSaved(): void {
     this.message('Сохранено');
     this.load();
-  }
-
-  edit(p: PointCard): void {
-    this.editing.set(p);
-  }
-
-  deactivate(p: PointCard): void {
-    if (!confirm(`Деактивировать магазин «${p.name}»?`)) return;
-    this.api.deactivatePoint(p.id).subscribe({
-      next: () => {
-        this.message('Магазин деактивирован');
-        this.load();
-      },
-      error: (e) => this.err.set(httpErr(e)),
-    });
-  }
-
-  remove(p: PointCard): void {
-    if (!confirm(`Удалить магазин «${p.name}» навсегда?`)) return;
-    this.api.deletePoint(p.id).subscribe({
-      next: () => {
-        this.message('Магазин удалён');
-        this.load();
-      },
-      error: (e) => this.err.set(httpErr(e)),
-    });
   }
 
   private message(text: string): void {

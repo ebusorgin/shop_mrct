@@ -106,12 +106,18 @@ export class ApiService {
   // ---- точки продаж (справочник магазинов) ----
   points$(): Observable<M.PointCard[]> { return this.http.get<M.PointCard[]>(`${this.base}/points`); }
   point$(id: number): Observable<M.PointCard> { return this.http.get<M.PointCard>(`${this.base}/points/${id}`); }
+  pointStats$(id: number): Observable<M.StoreStats> {
+    return this.http.get<M.StoreStats>(`${this.base}/points/${id}/stats`);
+  }
   createPoint(body: unknown): Observable<{ id: number }> { return this.http.post<{ id: number }>(`${this.base}/points`, body); }
   patchPoint(id: number, body: unknown): Observable<{ ok: boolean }> {
     return this.http.patch<{ ok: boolean }>(`${this.base}/points/${id}`, body);
   }
   deactivatePoint(id: number): Observable<{ ok: boolean }> {
     return this.http.post<{ ok: boolean }>(`${this.base}/points/${id}/deactivate`, {});
+  }
+  activatePoint(id: number): Observable<{ ok: boolean }> {
+    return this.http.post<{ ok: boolean }>(`${this.base}/points/${id}/activate`, {});
   }
   deletePoint(id: number): Observable<{ ok: boolean }> {
     return this.http.delete<{ ok: boolean }>(`${this.base}/points/${id}`);

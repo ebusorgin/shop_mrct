@@ -63,7 +63,7 @@ function storeIdOf(v: unknown): number | null {
 /** Проверяет, что точка существует, и отдаёт её название (для журнала). */
 async function storeNameOf(storeId: number | null): Promise<string | null> {
   if (storeId === null) return null;
-  const { rows } = await pool.query('select name from stores where id = $1', [storeId]);
+  const { rows } = await pool.query('select name from stores where id = $1 and deleted_at is null', [storeId]);
   if (!rows.length) throw new ApiError(400, `Магазин №${storeId} не найден`);
   return String(rows[0].name);
 }

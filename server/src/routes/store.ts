@@ -24,7 +24,7 @@ const CARD_SQL = `
          s.contact_person as "contactPerson",
          s.opening_hours as "openingHours",
          s.pib, s.mbr, s.account_no as "accountNo", s.note
-    from stores s where s.id = $1`;
+    from stores s where s.id = $1 and s.deleted_at is null`;
 
 storeRouter.get(
   '/',

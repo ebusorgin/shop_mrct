@@ -515,6 +515,39 @@ export interface PointCard extends Store {
   updatedAt: string;
 }
 
+/** Показатели точки на её внутренней странице. */
+export interface StoreStats {
+  orders: {
+    total: number;
+    last30: number;
+    last90: number;
+    firstDate: string | null;
+    lastDate: string | null;
+  };
+  revenue: {
+    net: number;
+    vat: number;
+    gross: number;
+    last30Net: number;
+    avgNet: number;
+  };
+  /** Ближайшая дата доставки по календарю и правилу. */
+  nextDelivery: { date: string; open: boolean; hasOrder: boolean } | null;
+  /** Последние 12 месяцев: заказы и сумма без PDV. */
+  monthly: { month: string; orders: number; net: number }[];
+  topProducts: { name: string; nameSr: string; packages: number; net: number }[];
+  recentOrders: {
+    id: number;
+    deliveryDate: string;
+    positions: number;
+    packages: number;
+    weightG: number;
+    net: number;
+  }[];
+  /** Сотрудники, привязанные к точке. */
+  users: { login: string; name: string; active: boolean; lastLogin: string | null }[];
+}
+
 /** Вошедший пользователь CRM. */
 export interface AuthUser {
   id: number;

@@ -24,8 +24,9 @@ import { ToastComponent } from './shared/toast.component';
           <button type="button" class="side-close" aria-label="Закрыть меню" (click)="menu.set(false)">✕</button>
           @if (auth.isStoreUser()) {
             <!-- магазинный сотрудник видит только свою точку и заказ продукции -->
-            <a href="#" class="nav-link" [class.active]="isActive('store') && !isActive('store/orders')" (click)="go($event, 'store')">🏪 <span>{{ 'nav.myStore' | translate }}</span></a>
+            <a href="#" class="nav-link" [class.active]="isActive('store') && !isActive('store/orders') && !isActive('store/history')" (click)="go($event, 'store')">🏪 <span>{{ 'nav.myStore' | translate }}</span></a>
             <a href="#" class="nav-link" [class.active]="isActive('store/orders')" (click)="go($event, 'store/orders')">🧾 <span>{{ 'nav.storeOrders' | translate }}</span></a>
+            <a href="#" class="nav-link" [class.active]="isActive('store/history')" (click)="go($event, 'store/history')">📜 <span>{{ 'nav.storeHistory' | translate }}</span></a>
           } @else {
             @for (g of navGroups; track g.titleKey) {
               @if (g.titleKey) { <div class="side-group">{{ g.titleKey | translate }}</div> }

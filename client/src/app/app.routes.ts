@@ -18,6 +18,12 @@ export const routes: Routes = [
         canActivate: [storeGuard],
         loadComponent: () => import('./orders/store-orders.component').then((m) => m.StoreOrdersComponent),
       },
+      {
+        path: 'store/history',
+        canActivate: [storeGuard],
+        data: { storeMode: true },
+        loadComponent: () => import('./orders/orders.component').then((m) => m.OrdersComponent),
+      },
       // офисная CRM: магазинному сотруднику закрыта (уводим на /store)
       {
         path: '',
@@ -30,6 +36,10 @@ export const routes: Routes = [
           { path: 'cards', loadComponent: () => import('./pages/cards.component').then((m) => m.CardsComponent) },
           { path: 'constructor', loadComponent: () => import('./pages/constructor.component').then((m) => m.ConstructorComponent) },
           { path: 'orders', loadComponent: () => import('./orders/orders.component').then((m) => m.OrdersComponent) },
+          {
+            path: 'orders/report',
+            loadComponent: () => import('./orders/report.component').then((m) => m.OrderReportComponent),
+          },
           { path: 'points', loadComponent: () => import('./pages/points.component').then((m) => m.PointsComponent) },
           { path: 'audit', loadComponent: () => import('./pages/audit.component').then((m) => m.AuditComponent) },
           {

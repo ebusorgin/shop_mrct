@@ -1,0 +1,102 @@
+.head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.head .page-title { margin: 0; }
+.link-back {
+  display: inline-flex; align-items: center; gap: 4px; padding: 6px 10px; border: 1px solid var(--border);
+  border-radius: 8px; background: #fff; color: var(--muted); font-size: 12.5px; font-weight: 600;
+  text-decoration: none;
+}
+.link-back:hover { border-color: var(--accent); color: var(--accent); }
+
+.warn {
+  margin: 0 auto 14px; max-width: 210mm; padding: 10px 14px; border-radius: 8px;
+  background: var(--amber-soft); color: #7a5a00; font-size: 12.5px; line-height: 1.45;
+}
+
+/* ---------- лист документа (A4) ---------- */
+.sheet {
+  width: 210mm; max-width: 100%; min-height: 297mm; margin: 0 auto 18px; padding: 14mm 15mm;
+  display: flex; flex-direction: column; box-sizing: border-box;
+  background: #fff; border: 1px solid var(--border); border-radius: 3px;
+  box-shadow: 0 10px 30px rgba(10, 53, 80, .12);
+  color: #111; font-family: Arial, Helvetica, sans-serif; font-size: 11.5px;
+}
+
+.doc-top { margin-bottom: 14mm; }
+.doc-line { display: flex; align-items: flex-end; gap: 8px; margin-bottom: 5mm; }
+.doc-line .dl { width: 34mm; flex: 0 0 auto; }
+.doc-line .dv { flex: 0 1 70mm; min-height: 17px; padding: 0 2px 2px; border-bottom: 1px solid #444; }
+
+.parties { display: grid; grid-template-columns: 1fr 1fr; gap: 10mm; }
+.pr { display: grid; grid-template-columns: 31mm minmax(0, 1fr); align-items: end; gap: 5px; margin-bottom: 3.2mm; }
+.pr .pl { color: #222; }
+.pr .pv { min-height: 17px; padding: 0 2px 2px; border-bottom: 1px solid #555; line-height: 1.25; overflow-wrap: anywhere; }
+.pr .pv.strong { font-weight: 700; }
+
+.doc-title {
+  margin: 14mm 0 9mm; text-align: center; font-size: 30px; font-weight: 700;
+  letter-spacing: .4px; color: #111;
+}
+
+.doc-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 11px; }
+.doc-table col.c-no { width: 6%; }
+.doc-table col.c-name { width: 27%; }
+.doc-table col.c-jm { width: 6%; }
+.doc-table col.c-qty { width: 12%; }
+.doc-table col.c-price { width: 12%; }
+.doc-table col.c-rate { width: 10%; }
+.doc-table col.c-vat { width: 13%; }
+.doc-table col.c-total { width: 14%; }
+.doc-table th, .doc-table td { border: 1px solid #555; padding: 2mm 2mm; vertical-align: middle; }
+.doc-table th { font-weight: 400; text-align: center; line-height: 1.2; padding: 4mm 2mm; }
+.doc-table td { line-height: 1.3; }
+.doc-table .name { text-align: left; overflow-wrap: anywhere; }
+.doc-table .center, .doc-table .num { text-align: center; }
+.doc-table .money { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.totals { width: 104mm; margin: 12mm 0 0 auto; border-collapse: collapse; font-size: 11px; }
+.totals th, .totals td { border: 1px solid #555; padding: 2.2mm 3mm; }
+.totals th { width: 72mm; text-align: left; font-weight: 400; }
+.totals td { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.totals tr.grand th, .totals tr.grand td { font-weight: 700; }
+
+.signs { margin-top: auto; padding-top: 24mm; display: flex; justify-content: space-between; gap: 16mm; }
+.sign { display: flex; align-items: flex-end; gap: 6px; }
+.sign i { display: block; width: 52mm; height: 15px; border-bottom: 1px solid #333; }
+
+/* Только экран: в печати страница уже A4, реквизиты должны стоять в две колонки. */
+@media screen and (max-width: 780px) {
+  .sheet { width: 100%; min-height: 0; padding: 18px 14px; }
+  .parties { grid-template-columns: 1fr; gap: 6mm; }
+  .doc-line .dv { flex: 1 1 auto; }
+  .totals { width: 100%; }
+  .signs { padding-top: 16mm; }
+}
+
+@media print {
+  .no-print { display: none !important; }
+  .sheet {
+    width: auto; max-width: none; min-height: 0; margin: 0; padding: 0;
+    border: 0; border-radius: 0; box-shadow: none; font-size: 10px;
+  }
+  .sheet + .sheet { break-before: page; }
+  .doc-table thead { display: table-header-group; }
+  .doc-table tr { break-inside: avoid; }
+  .signs { break-inside: avoid; }
+
+  /* уплотнение под одну страницу A4 даже на 25+ позиций */
+  .doc-top { margin-bottom: 5mm; }
+  .doc-line { margin-bottom: 2.5mm; }
+  .doc-line .dv { min-height: 13px; padding-bottom: 1px; }
+  .parties { grid-template-columns: 1fr 1fr; gap: 8mm; }
+  .pr { margin-bottom: 1.6mm; }
+  .pr .pv { min-height: 13px; padding-bottom: 1px; line-height: 1.2; }
+  .doc-title { margin: 5mm 0 4mm; font-size: 22px; }
+  .doc-table { font-size: 10px; }
+  .doc-table th, .doc-table td { padding: 1mm 1.5mm; }
+  .doc-table th { padding: 1.8mm 1.5mm; line-height: 1.15; }
+  .doc-table td { line-height: 1.15; }
+  .totals { margin-top: 3mm; font-size: 10px; }
+  .totals th, .totals td { padding: 1.2mm 2mm; }
+  .signs { padding-top: 7mm; }
+  .sign i { height: 12px; }
+}

@@ -123,6 +123,31 @@ export class ApiService {
   storeOrderCatalog$(): Observable<M.OrderCatalogItem[]> {
     return this.http.get<M.OrderCatalogItem[]>(`${this.base}/store/order-catalog`);
   }
+  /** Заказ магазина и окно приёма на выбранную дату (без даты — ближайшая открытая). */
+  storeCurrentOrder$(date?: string): Observable<M.StoreOrderWindow> {
+    return this.http.get<M.StoreOrderWindow>(`${this.base}/store/orders/current`, {
+      params: date ? { date } : {},
+    });
+  }
+  /** Сохранить или изменить заказ до срока приёма (только магазин). */
+  saveStoreOrder$(body: { deliveryDate: string; comment: string; items: M.StoreOrderItem[] }): Observable<M.StoreOrderWindow> {
+    return this.http.put<M.StoreOrderWindow>(`${this.base}/store/orders/current`, body);
+  }
+
+  // ---- архив заказов магазинов (офис) ----
+  orderArchive$(): Observable<M.OrderArchive> {
+    return this.http.get<M.OrderArchive>(`${this.base}/orders/archive`);
+  }
+  /** Отчёт-отгрузка за дату доставки; storeId не указан — все магазины. */
+  orderReport$(date: string, storeId?: number): Observable<M.OrderReport> {
+    const params: Record<string, string> = { date };
+    if (storeId !== undefined) params['storeId'] = String(storeId);
+    return this.http.get<M.OrderReport>(`${this.base}/orders/report`, { params });
+  }
+  /** История заказов своего магазина (только магазин). */
+  myOrderArchive$(): Observable<M.OrderArchive> {
+    return this.http.get<M.OrderArchive>(`${this.base}/store/orders/archive`);
+  }
 
   // ---- журнал действий (кто, что, когда) ----
   audit$(params: Record<string, string> = {}): Observable<M.AuditPage> {
@@ -152,6 +177,13 @@ export class ApiService {
   }
   saveDeliveryRule$(body: M.DeliveryRule): Observable<{ ok: boolean; rule: M.DeliveryRule }> {
     return this.http.patch<{ ok: boolean; rule: M.DeliveryRule }>(`${this.base}/settings/delivery-rule`, body);
+  }
+  /** Срок приёма заказа магазина: часы до конца дня доставки. */
+  deliveryCutoff$(): Observable<M.DeliveryCutoff> {
+    return this.http.get<M.DeliveryCutoff>(`${this.base}/settings/delivery-cutoff`);
+  }
+  saveDeliveryCutoff$(body: M.DeliveryCutoff): Observable<M.DeliveryCutoff> {
+    return this.http.put<M.DeliveryCutoff>(`${this.base}/settings/delivery-cutoff`, body);
   }
 
   // ---- категории сырья (в настройках, только админ) ----
@@ -189,6 +221,10 @@ export class ApiService {
   }
   syncGoogleSheet$(): Observable<M.GoogleSheet> {
     return this.http.post<M.GoogleSheet>(`${this.base}/settings/google-sheet/sync`, {});
+  }
+  /** Импорт истории заказов магазинов из сохранённых листов в архив заказов. */
+  syncOrderHistory$(): Observable<M.OrderHistoryResult> {
+    return this.http.post<M.OrderHistoryResult>(`${this.base}/settings/google-sheet/order-history`, {});
   }
   /** Ручное сопоставление строки листа с фасовкой; packagingId = null — снять. */
   linkGoogleSheetRow$(tab: string, row: number, packagingId: number | null): Observable<{ ok: boolean; link: { id: number; name: string; rowName: string } | null }> {

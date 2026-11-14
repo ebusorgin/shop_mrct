@@ -207,6 +207,7 @@ function itemName(row: string[]): string {
   const ordinal = (row[0] ?? '').trim();
   const name = (row[1] ?? '').trim();
   if (!name) return '';
+  if (/^общее количество$/i.test(name)) return '';
   if (/^\d+$/.test(ordinal)) {
     const plu = (row[2] ?? '').trim();
     const unit = (row[3] ?? '').trim();
@@ -216,8 +217,20 @@ function itemName(row: string[]): string {
   if (ordinal) return '';
   const measure = (row[5] ?? '').trim().toLowerCase();
   const price = (row[3] ?? '').trim();
-  if (!UNITS.has(measure) || !/^\d+([.,]\d+)?$/.test(price)) return '';
-  return name;
+  const hasUnit = UNITS.has(measure);
+  if (hasUnit && /^\d+([.,]\d+)?$/.test(price)) return name;
+  const qty = (row[2] ?? '').trim();
+  // Сводный блок внизу листа: количество в C, единицы измерения нет — цена может стоять в D или F.
+  if (!hasUnit && /^\d+([.,]\d+)?$/.test(qty)) return name;
+  // Позиция без количества: PLU в C — блок «Заморозка» и замороженные полуфабрикаты.
+  if (!hasUnit && /^[mм]\d+$/i.test(qty)) return name;
+  return '';
+}
+
+/** Строка «общее количество» открывает сводный блок: всё ниже — итоги по магазинам, не позиции заказа. */
+export function summaryStart(rows: string[][]): number {
+  const index = rows.findIndex((row) => /^общее количество$/i.test((row[1] ?? '').trim()));
+  return index < 0 ? rows.length : index;
 }
 
 interface PackagingRef {
@@ -303,7 +316,9 @@ async function loadMatchers(): Promise<Matchers> {
  * при нескольких фасовках выбираем ту же граммовку, иначе фасовку по умолчанию.
  */
 function autoLinks(rows: string[][], matchers: Matchers): (number | null)[] {
-  return rows.map((row) => {
+  const start = summaryStart(rows);
+  return rows.map((row, index) => {
+    if (index >= start) return null;
     const name = itemName(row);
     if (!name) return null;
     const exact = matchers.exactSale.get(normName(name));
@@ -375,7 +390,9 @@ function applyOverrides(
   nameById: Map<number, string>
 ): void {
   if (!overrides) return;
+  const start = summaryStart(tab.rows);
   tab.rows.forEach((row, index) => {
+    if (index >= start) return;
     const name = itemName(row);
     if (!name) return;
     const packagingId = overrides.get(normName(name));
@@ -387,8 +404,9 @@ function applyOverrides(
 /** Производные поля: название продукции по ссылке и индексы позиций без фасовки. */
 function fillTabDerived(tab: GoogleSheetTab, nameById: Map<number, string>): void {
   tab.names = tab.links.map((id) => (id === null ? null : nameById.get(id) ?? null));
+  const start = summaryStart(tab.rows);
   tab.misses = tab.links.reduce<number[]>((misses, id, index) => {
-    if (id === null && itemName(tab.rows[index] ?? [])) misses.push(index);
+    if (index < start && id === null && itemName(tab.rows[index] ?? [])) misses.push(index);
     return misses;
   }, []);
 }
@@ -448,6 +466,9 @@ export async function setSheetRowLink(
     [GOOGLE_SHEET_ID, tabName]
   );
   if (!tabs.length) throw new ApiError(404, 'Лист не найден — синхронизируйте таблицу заново');
+  if (rowIndex >= summaryStart(tabs[0].rows)) {
+    throw new ApiError(400, 'Сводный блок «общее количество» — сопоставление не требуется');
+  }
   const row = tabs[0].rows[rowIndex];
   const rowName = row ? itemName(row) : '';
   if (!rowName) throw new ApiError(400, 'В этой строке нет названия позиции');

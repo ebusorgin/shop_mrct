@@ -10,6 +10,7 @@
     "logout": "Выйти",
     "myStore": "Мой магазин",
     "storeOrders": "Заказ продукции",
+    "storeHistory": "Мои заказы",
     "groupOperations": "Операции",
     "groupStock": "Склад",
     "groupOther": "Ещё",
@@ -17,7 +18,7 @@
     "stock": "Склад",
     "semis": "Полуфабрикаты",
     "cards": "Техкарты",
-    "orders": "Заказы"
+    "orders": "Архив заказов"
   },
   "common": {
     "loading": "Загрузка...",

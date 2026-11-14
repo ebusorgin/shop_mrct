@@ -9,6 +9,8 @@ export interface PackagingInput {
   minOrder: number;
   /** Можно ли уже заказывать эту фасовку магазинам. */
   available: boolean;
+  /** Цена за единицу измерения (кг / л / шт), RSD; 0 — не задана. */
+  price: number;
 }
 
 export interface Packaging extends PackagingInput {
@@ -18,6 +20,13 @@ export interface Packaging extends PackagingInput {
 export function positiveNumber(value: unknown, field: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
     throw new ApiError(400, `${field}: требуется конечное число > 0`);
+  }
+  return value;
+}
+
+export function nonNegativeNumber(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw new ApiError(400, `${field}: требуется конечное число ≥ 0`);
   }
   return value;
 }
@@ -51,13 +60,14 @@ export function parsePackagings(raw: unknown): PackagingInput[] {
       qtyBase,
       minOrder: positiveInt(p.minOrder, 'packaging.minOrder'),
       available: p.available,
+      price: p.price === undefined || p.price === null ? 0 : nonNegativeNumber(p.price, 'packaging.price'),
     };
   });
 }
 
 /** Фасовка, которую получает техкарта без явного выбора: весь выход одной упаковкой. */
 export function defaultPackaging(portionQty: number): PackagingInput {
-  return { qtyBase: portionQty, minOrder: 1, available: true };
+  return { qtyBase: portionQty, minOrder: 1, available: true, price: 0 };
 }
 
 /** Внутреннее название фасовки для сопоставления: «1000 г», «3000 г». */
@@ -105,7 +115,8 @@ export function packagingsSql(): string {
   return `coalesce((
     select jsonb_agg(jsonb_build_object(
       'id', pk.id, 'qtyBase', pk.qty_base::float8,
-      'minOrder', pk.min_order, 'available', pk.available
+      'minOrder', pk.min_order, 'available', pk.available,
+      'price', pk.price::float8
     ) order by pk.qty_base, pk.id)
     from product_packagings pk where pk.card_id = tc.id
   ), '[]'::jsonb)`;
@@ -154,14 +165,16 @@ export async function savePackagings(
     const name = packagingName(p.qtyBase, unitCode);
     if (p.id === undefined) {
       const { rows: inserted } = await client.query(
-        `insert into product_packagings (card_id, name, qty_base, min_order, available, is_default)
-         values ($1,$2,$3,$4,$5,false) returning id`, [cardId, name, p.qtyBase, p.minOrder, p.available]
+        `insert into product_packagings (card_id, name, qty_base, min_order, available, is_default, price)
+         values ($1,$2,$3,$4,$5,false,$6) returning id`,
+        [cardId, name, p.qtyBase, p.minOrder, p.available, p.price]
       );
       saved.push({ id: Number(inserted[0].id), qtyBase: p.qtyBase });
     } else {
       await client.query(
-        `update product_packagings set name=$2, qty_base=$3, min_order=$4, available=$5
-         where card_id=$1 and id=$6`, [cardId, name, p.qtyBase, p.minOrder, p.available, p.id]
+        `update product_packagings set name=$2, qty_base=$3, min_order=$4, available=$5, price=$6
+         where card_id=$1 and id=$7`,
+        [cardId, name, p.qtyBase, p.minOrder, p.available, p.price, p.id]
       );
       saved.push({ id: p.id, qtyBase: p.qtyBase });
     }

@@ -1,10 +1,14 @@
 import { ChangeDetectionStrategy, Component, DestroyRef, OnInit, computed, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
+import { ActivatedRoute } from '@angular/router';
+import { forkJoin } from 'rxjs';
 import { ApiService } from '../core/api.service';
 import { AuthService } from '../core/auth.service';
 import { fmtQty, httpErr } from '../core/format';
-import { OrderCatalogItem } from '../core/models';
+import { OrderCatalogItem, StoreOrder, StoreOrderWindow } from '../core/models';
+import { LangService } from '../core/lang.service';
+import { localizedName } from '../core/localized-name';
 
 /**
  * Заказ продукции производства из аккаунта магазина.
@@ -12,7 +16,7 @@ import { OrderCatalogItem } from '../core/models';
  * Доступен только магазинному пользователю (storeGuard) и грузит продукцию
  * через /api/store/order-catalog — офисный /api/cards магазину недоступен.
  * Раскладка «каталог + чек»: слева каталоги, в центре фасовки с минимальным
- * заказом, справа черновик заказа. Отправки на сервер пока нет.
+ * заказом, справа заказ. Сохранённый заказ можно менять до срока приёма.
  */
 interface CatalogMeta {
   key: string;
@@ -37,6 +41,8 @@ interface CatalogGroup extends CatalogMeta {
 export class StoreOrdersComponent implements OnInit {
   private api = inject(ApiService);
   private destroyRef = inject(DestroyRef);
+  private route = inject(ActivatedRoute);
+  private lang = inject(LangService);
   auth = inject(AuthService);
 
   items = signal<OrderCatalogItem[]>([]);
@@ -48,6 +54,16 @@ export class StoreOrdersComponent implements OnInit {
   catalogFilter = signal<number | 'none' | null>(null);
   /** id фасовки -> количество упаковок; отсутствие ключа = 0. */
   qty = signal<Record<number, number>>({});
+  /** Комментарий к заказу. */
+  comment = signal('');
+
+  /** Окно приёма и сохранённый заказ на ближайшую доставку. */
+  orderInfo = signal<StoreOrderWindow | null>(null);
+  savedOrder = signal<StoreOrder | null>(null);
+  saving = signal(false);
+  saveErr = signal('');
+  /** Тикающие «сейчас» — для живого таймера; минута точности достаточно. */
+  now = signal(Date.now());
 
   fmtQty = fmtQty;
   readonly today = new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date());
@@ -130,19 +146,108 @@ export class StoreOrdersComponent implements OnInit {
   selectedCount = computed(() => this.selected().length);
   totalPackages = computed(() => this.selected().reduce((sum, p) => sum + (this.qty()[p.id] ?? 0), 0));
 
+  /** Общий вес заказа в граммах: сумма веса упаковок (объём и штучный товар в вес не входят). */
+  totalWeight = computed(() => {
+    const qty = this.qty();
+    return this.selected().reduce(
+      (sum, p) => (p.unitCode === 'г' ? sum + (qty[p.id] ?? 0) * p.qtyBase : sum),
+      0
+    );
+  });
+
+  private readonly deliveryFormat = new Intl.DateTimeFormat('ru-RU', {
+    weekday: 'short', day: 'numeric', month: 'long',
+  });
+  private readonly deadlineFormat = new Intl.DateTimeFormat('ru-RU', {
+    weekday: 'short', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit',
+  });
+  private readonly savedFormat = new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
+  });
+
+  /** Ближайшая доставка с открытым приёмом и момент его закрытия (с сервера). */
+  orderDeadline = computed<{ date: string; deadline: Date } | null>(() => {
+    const info = this.orderInfo();
+    if (!info?.deliveryDate || !info.deadline) return null;
+    const deadline = new Date(info.deadline);
+    return Number.isNaN(deadline.getTime()) ? null : { date: info.deliveryDate, deadline };
+  });
+
+  /** Приём ещё открыт: до срока заказ можно менять и сохранять. */
+  windowOpen = computed(() => {
+    const info = this.orderDeadline();
+    return !!info && info.deadline.getTime() > this.now();
+  });
+
+  /** Состав или комментарий отличаются от сохранённого заказа. */
+  orderDirty = computed(() => {
+    const saved = this.savedOrder();
+    const qty = this.qty();
+    const savedQty = new Map((saved?.items ?? []).map((item) => [item.packagingId, item.qty]));
+    const ids = new Set([...Object.keys(qty).map(Number), ...savedQty.keys()]);
+    for (const id of ids) if ((qty[id] ?? 0) !== (savedQty.get(id) ?? 0)) return true;
+    return this.comment().trim() !== (saved?.comment ?? '').trim();
+  });
+
+  savedLabel = computed(() => {
+    const order = this.savedOrder();
+    return order ? this.savedFormat.format(new Date(order.updatedAt)) : '';
+  });
+
+  deliveryLabel = computed(() => {
+    const info = this.orderDeadline();
+    return info ? this.deliveryFormat.format(new Date(`${info.date}T00:00:00`)) : '';
+  });
+
+  deadlineLabel = computed(() => {
+    const info = this.orderDeadline();
+    return info ? this.deadlineFormat.format(info.deadline) : '';
+  });
+
+  deadlineCountdown = computed(() => {
+    const info = this.orderDeadline();
+    if (!info) return '';
+    const totalMinutes = Math.max(0, Math.ceil((info.deadline.getTime() - this.now()) / 60_000));
+    const days = Math.floor(totalMinutes / 1440);
+    const hours = Math.floor((totalMinutes % 1440) / 60);
+    const minutes = totalMinutes % 60;
+    const parts: string[] = [];
+    if (days) parts.push(`${days} д`);
+    if (hours) parts.push(`${hours} ч`);
+    if (minutes || !parts.length) parts.push(`${minutes} мин`);
+    return parts.join(' ');
+  });
+
+  deadlineSoon = computed(() => {
+    const info = this.orderDeadline();
+    return !!info && info.deadline.getTime() - this.now() < 6 * 3_600_000;
+  });
+
+  /** Дата доставки из календаря истории (?date=); без неё — ближайшая открытая. */
+  private readonly requestedDate = this.route.snapshot.queryParamMap.get('date') || undefined;
+
   ngOnInit(): void {
     this.load();
+    const timer = setInterval(() => this.now.set(Date.now()), 15_000);
+    this.destroyRef.onDestroy(() => clearInterval(timer));
   }
 
   load(): void {
     if (this.loading()) return;
     this.loading.set(true);
     this.err.set('');
-    this.api.storeOrderCatalog$()
+    this.saveErr.set('');
+    forkJoin({ catalog: this.api.storeOrderCatalog$(), window: this.api.storeCurrentOrder$(this.requestedDate) })
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
-        next: (items) => {
-          this.items.set(items);
+        next: ({ catalog, window }) => {
+          this.items.set(catalog);
+          this.orderInfo.set(window);
+          this.savedOrder.set(window.order);
+          const qty: Record<number, number> = {};
+          for (const item of window.order?.items ?? []) qty[item.packagingId] = item.qty;
+          this.qty.set(qty);
+          this.comment.set(window.order?.comment ?? '');
           this.loading.set(false);
         },
         error: (e) => {
@@ -152,12 +257,24 @@ export class StoreOrdersComponent implements OnInit {
       });
   }
 
+  /** Название позиции на текущем языке интерфейса; пустой перевод — основное. */
+  displayName(p: OrderCatalogItem): string {
+    return localizedName(p, this.lang.currentLang());
+  }
+
   private matches(p: OrderCatalogItem, q: string): boolean {
-    return `${p.name} ${p.note || ''} ${p.catalogName || ''}`.toLocaleLowerCase('ru').includes(q);
+    return `${p.name} ${p.nameEn ?? ''} ${p.nameSr ?? ''} ${p.note || ''} ${p.catalogName || ''}`
+      .toLocaleLowerCase('ru')
+      .includes(q);
   }
 
   qtyOf(id: number): number {
     return this.qty()[id] ?? 0;
+  }
+
+  /** Вес позиции заказа в базовых единицах фасовки (г/мл/шт). */
+  weightOf(p: OrderCatalogItem): number {
+    return this.qtyOf(p.id) * p.qtyBase;
   }
 
   /** Первый шаг из нуля — сразу минимальный заказ. */
@@ -174,6 +291,7 @@ export class StoreOrdersComponent implements OnInit {
   }
 
   private setQty(id: number, value: number): void {
+    if (!this.windowOpen()) return;
     const n = Math.max(0, Math.min(999, Math.floor(value) || 0));
     this.qty.update((m) => {
       const next = { ...m };
@@ -194,18 +312,40 @@ export class StoreOrdersComponent implements OnInit {
   }
 
   clearOrder(): void {
+    if (!this.windowOpen()) return;
     this.qty.set({});
-    this.msg.set('Черновик заказа очищен.');
+    this.comment.set('');
+    this.msg.set('Черновик очищен — сохранённый заказ не изменился.');
   }
 
-  submitOrder(): void {
-    const n = this.selectedCount();
-    if (!n) return;
-    this.msg.set(
-      `Черновик заказа: ${n} ${this.plural(n, 'позиция', 'позиции', 'позиций')} · ` +
-        `${this.totalPackages()} ${this.plural(this.totalPackages(), 'упаковка', 'упаковки', 'упаковок')} — ` +
-        'отправка на производство появится позже'
-    );
+  /** Сохранить заказ на ближайшую доставку; до срока приёма можно сохранять многократно. */
+  saveOrder(): void {
+    const deadline = this.orderDeadline();
+    if (!deadline || !this.windowOpen() || !this.selectedCount() || this.saving()) return;
+    const wasSaved = !!this.savedOrder();
+    this.saving.set(true);
+    this.saveErr.set('');
+    this.msg.set('');
+    const items = this.selected().map((p) => ({ packagingId: p.id, qty: this.qtyOf(p.id) }));
+    this.api
+      .saveStoreOrder$({ deliveryDate: deadline.date, comment: this.comment().trim(), items })
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (info) => {
+          this.saving.set(false);
+          this.orderInfo.set(info);
+          this.savedOrder.set(info.order);
+          this.msg.set(
+            wasSaved
+              ? `Изменения сохранены · доставка ${this.deliveryLabel()}`
+              : `Заказ оформлен на доставку ${this.deliveryLabel()}`
+          );
+        },
+        error: (e) => {
+          this.saving.set(false);
+          this.saveErr.set(`Не удалось сохранить заказ: ${httpErr(e)}`);
+        },
+      });
   }
 
   plural(n: number, one: string, few: string, many: string): string {

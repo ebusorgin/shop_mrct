@@ -1,56 +1,214 @@
 <div class="head">
-  <h1 class="page-title">Заказы</h1>
-  @if (!loading() && !err()) { <span class="badge blue">Фасовки: {{ rows().length }}</span> }
+  <h1 class="page-title">{{ storeMode ? 'Мои заказы' : 'Архив заказов' }}</h1>
+  @if (!loading() && !err()) {
+    <span class="badge blue">Заказов: {{ totalOrders() }}</span>
+    <span class="badge gray">Дат: {{ groups().length }}</span>
+    @if (totalPackages()) { <span class="badge green">Упаковок: {{ totalPackages() }}</span> }
+  }
   <div class="spacer"></div>
   <button type="button" class="btn" (click)="load()" [disabled]="loading()">Обновить</button>
 </div>
 
-<section class="panel" aria-labelledby="products-title" [attr.aria-busy]="loading()">
-  <h2 id="products-title">Продукция производства</h2>
-  <div class="filters">
-    <input type="search" placeholder="Поиск по названию или каталогу…" aria-label="Поиск продукции"
-           [ngModel]="query()" (ngModelChange)="query.set($event)" />
-    <select aria-label="Каталог продукции" [ngModel]="catalogFilter()" (ngModelChange)="catalogFilter.set($event)">
-      <option value="">Все каталоги</option>
-      <option value="none">Без каталога</option>
-      @for (c of catalogs(); track c.id) { <option [value]="c.id.toString()">{{ c.name }}</option> }
-    </select>
-    @if (hasFilters()) { <button type="button" class="btn sm" (click)="resetFilters()">Сбросить фильтры</button> }
-  </div>
-
-  @if (loading()) {
-    <p class="muted state" role="status">Загружаем продукцию…</p>
-  } @else if (err()) {
+@if (loading()) {
+  <section class="panel"><p class="muted state" role="status">Загружаем заказы…</p></section>
+} @else if (err()) {
+  <section class="panel">
     <div class="err" role="alert">
-      Не удалось загрузить продукцию. {{ err() }}
+      Не удалось загрузить архив заказов. {{ err() }}
       <button type="button" class="btn sm" (click)="load()">Повторить</button>
     </div>
-  } @else {
-    <p class="muted found" role="status">Найдено: {{ filtered().length }} из {{ rows().length }}</p>
-    @if (filtered().length) {
-      <table class="tbl stack" aria-label="Список продукции">
-        <thead>
-          <tr><th scope="col">Продукция</th><th scope="col">Каталог</th><th scope="col">Фасовка</th><th scope="col" class="num">Мин. заказ</th></tr>
-        </thead>
-        <tbody>
-          @for (p of filtered(); track p.id) {
-            <tr>
-              <td class="product-name"><b>{{ p.name }}</b></td>
-              <td data-l="Каталог">
-                @if (catalogsById().get(p.catalogId ?? -1); as catalog) {
-                  <span class="cat-chip" [style.background]="catalog.color || '#eef2f7'">{{ catalog.icon ? catalog.icon + ' ' : '' }}{{ catalog.name }}</span>
-                } @else {
-                  <span class="muted">{{ p.catalogName || 'Без каталога' }}</span>
-                }
-              </td>
-              <td data-l="Фасовка">{{ fmtQty(p.qtyBase, p.unitCode) }}</td>
-              <td class="num" data-l="Мин. заказ">{{ p.minOrder }} уп.</td>
-            </tr>
+  </section>
+} @else if (!deliveryDates().size) {
+  <section class="panel">
+    <p class="empty">
+      <b>Заказов пока нет</b>
+      @if (storeMode) {
+        Вы ещё не оформляли заказы — сохранённые заказы появятся здесь по датам доставки.
+      } @else {
+        Магазины ещё не оформляли заказы — сохранённые заказы появятся здесь по датам доставки.
+      }
+    </p>
+  </section>
+} @else {
+  <section class="panel archive" aria-label="Архив заказов магазинов">
+    <div class="layout">
+      <aside class="rail" aria-label="Календарь доставок">
+        <div class="cal-head">
+          <button type="button" class="cal-nav" (click)="shiftMonth(-1)" [disabled]="!canOlderMonth()"
+                  aria-label="Предыдущий месяц">‹</button>
+          <span class="cal-title" aria-live="polite">{{ viewMonthLabel() }}</span>
+          <button type="button" class="cal-nav" (click)="shiftMonth(1)" [disabled]="!canNewerMonth()"
+                  aria-label="Следующий месяц">›</button>
+        </div>
+        <div class="cal-grid" role="grid" [attr.aria-label]="'Доставки: ' + viewMonthLabel()">
+          @for (wd of weekdays; track wd) {
+            <span class="cal-wd" aria-hidden="true">{{ wd }}</span>
           }
-        </tbody>
-      </table>
-    } @else {
-      <p class="muted state">{{ rows().length ? 'По запросу ничего не найдено. Измените поиск или сбросьте фильтры.' : 'Продукция производства пока не заведена.' }}</p>
-    }
-  }
-</section>
+          @for (day of calendarDays(); track $index) {
+            @if (day) {
+              <button type="button" class="cal-day"
+                      [class.has]="day.hasDelivery && !day.isUpcoming" [class.up]="day.isUpcoming"
+                      [class.on]="day.isSelected" [class.today]="day.isToday"
+                      [disabled]="!day.hasDelivery" (click)="selectDate(day.date)"
+                      [attr.aria-pressed]="day.isSelected"
+                      [attr.aria-label]="day.day + ' — ' + (day.isUpcoming ? 'будущая доставка' : day.hasDelivery ? 'доставка' : 'нет доставки')">
+                {{ day.day }}
+              </button>
+            } @else {
+              <span aria-hidden="true"></span>
+            }
+          }
+        </div>
+        <div class="cal-legend">
+          <span><i class="lg has" aria-hidden="true"></i>заказ</span>
+          <span><i class="lg up" aria-hidden="true"></i>впереди</span>
+          <span><i class="lg today" aria-hidden="true"></i>сегодня</span>
+        </div>
+      </aside>
+
+      <div class="list">
+        @if (group(); as g) {
+          <div class="date-head">
+            <div class="dh-title">
+              <h2>{{ fullDateLabel(g.date) }}</h2>
+              <span class="dh-sub">
+                <span class="state-chip" [class.today]="g.date === todayIso()" [class.future]="g.date > todayIso()">
+                  {{ dateState(g.date) }}
+                </span>
+                <span>{{ g.orders.length }} {{ plural(g.orders.length, 'заказ', 'заказа', 'заказов') }}</span>
+              </span>
+            </div>
+            <div class="dh-stats">
+              <div><b>{{ g.packages }}</b><span>упаковок</span></div>
+              <div><b>{{ g.positions }}</b><span>{{ plural(g.positions, 'позиция', 'позиции', 'позиций') }}</span></div>
+              <div><b>{{ fmtQty(g.weightG, 'г') }}</b><span>общий вес</span></div>
+            </div>
+            @if (canOrderSelected()) {
+              <div class="dh-actions">
+                <a class="btn primary sm" [routerLink]="['/store/orders']" [queryParams]="{ date: g.date }">Изменить заказ</a>
+              </div>
+            }
+            @if (canDownloadReport()) {
+              <div class="dh-actions">
+                <a class="btn sm" [routerLink]="['/orders/report']" [queryParams]="{ date: g.date }"
+                   title="Предпросмотр отчёта-отгрузки по всем магазинам за эту дату">
+                  <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M8 2v8m0 0 3-3m-3 3L5 7" fill="none" stroke="currentColor" stroke-width="1.6"
+                          stroke-linecap="round" stroke-linejoin="round" />
+                    <path d="M2.5 12.5v1h11v-1" fill="none" stroke="currentColor" stroke-width="1.6"
+                          stroke-linecap="round" />
+                  </svg>
+                  Отчёт по всем магазинам
+                </a>
+              </div>
+            }
+          </div>
+
+          <div class="listbar">
+            <label class="search">
+              <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+                <circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.5" />
+                <path d="M10.5 10.5L14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+              </svg>
+              <input type="search" [placeholder]="storeMode ? 'Поиск по продукции…' : 'Магазин или продукция…'"
+                     aria-label="Поиск по заказам"
+                     [ngModel]="query()" (ngModelChange)="query.set($event)" />
+              @if (query()) {
+                <button type="button" class="x" (click)="resetFilters()" aria-label="Очистить поиск">×</button>
+              }
+            </label>
+            <span class="found" role="status">Найдено: {{ visibleOrders().length }} из {{ g.orders.length }}</span>
+          </div>
+
+          @if (visibleOrders().length) {
+            @for (o of visibleOrders(); track o.id) {
+              <article class="ord-card">
+                <header class="oc-head">
+                  @if (!storeMode) {
+                    <div class="oc-store">
+                      <b>{{ o.storeName }}</b>
+                      <span class="oc-code">{{ o.storeCode }}</span>
+                      <span class="oc-id" title="ID магазина">#{{ o.storeId }}</span>
+                    </div>
+                    <div class="spacer"></div>
+                  }
+                  <div class="oc-meta">
+                    {{ o.positions }} {{ plural(o.positions, 'позиция', 'позиции', 'позиций') }} ·
+                    {{ o.packages }} уп.
+                    @if (o.weightG > 0) { · {{ fmtQty(o.weightG, 'г') }} }
+                    <span class="oc-time">сохранён {{ fmtDateTime(o.updatedAt) }}</span>
+                  </div>
+                  @if (canDownloadReport()) {
+                    <a class="btn sm" [routerLink]="['/orders/report']" [queryParams]="{ date: g.date, storeId: o.storeId }"
+                       title="Предпросмотр отчёта-отгрузки для этого магазина">
+                      <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+                        <path d="M8 2v8m0 0 3-3m-3 3L5 7" fill="none" stroke="currentColor" stroke-width="1.6"
+                              stroke-linecap="round" stroke-linejoin="round" />
+                        <path d="M2.5 12.5v1h11v-1" fill="none" stroke="currentColor" stroke-width="1.6"
+                              stroke-linecap="round" />
+                      </svg>
+                      Скачать отчёт
+                    </a>
+                  }
+                </header>
+
+                @if (o.comment) { <p class="oc-comment">{{ o.comment }}</p> }
+
+                <ul class="oc-items" aria-label="Состав заказа">
+                  @for (item of o.items; track item.packagingId) {
+                    <li>
+                      <span class="oi-name">{{ itemLabel(item) }}</span>
+                      <span class="dots" aria-hidden="true"></span>
+                      <span class="oi-qty">
+                        <b>{{ item.qty }} уп.</b>
+                        <small>{{ fmtQty(item.qty * item.qtyBase, item.unitCode) }}</small>
+                      </span>
+                    </li>
+                  }
+                </ul>
+              </article>
+            }
+          } @else {
+            <p class="empty">
+              <b>Ничего не найдено</b>
+              Измените запрос — ищем по названию магазина, коду и продукции.
+            </p>
+          }
+        } @else {
+          @if (selectedDate(); as date) {
+            <div class="date-head">
+            <div class="dh-title">
+              <h2>{{ fullDateLabel(date) }}</h2>
+              <span class="dh-sub">
+                <span class="state-chip" [class.today]="date === todayIso()" [class.future]="date > todayIso()">
+                  {{ dateState(date) }}
+                </span>
+                <span>заказов нет</span>
+              </span>
+            </div>
+            @if (storeMode) {
+              <div class="dh-actions">
+                @if (canOrderSelected()) {
+                  <a class="btn primary sm" [routerLink]="['/store/orders']" [queryParams]="{ date }">Создать заказ</a>
+                } @else if (selectedWindow()?.open === false) {
+                  <span class="closed-note">Приём заказа закрыт</span>
+                }
+              </div>
+            }
+          </div>
+          <p class="empty">
+            <b>{{ storeMode ? 'Заказ на эту дату ещё не оформлен' : 'Заказов на эту дату нет' }}</b>
+            @if (canOrderSelected()) {
+              Выберите продукцию и оформите заказ до срока приёма.
+            } @else if (storeMode) {
+              Срок приёма заказа на эту доставку уже прошёл.
+            } @else {
+              Магазины ещё не оформляли заказы на эту доставку.
+            }
+          </p>
+          }
+        }
+      </div>
+    </div>
+  </section>
+}

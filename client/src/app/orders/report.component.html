@@ -1,0 +1,136 @@
+<div class="head no-print">
+  <a class="link-back" routerLink="/orders" [queryParams]="date ? { date } : {}">← Архив заказов</a>
+  <h1 class="page-title">Отчёт-отгрузка</h1>
+  @if (date) { <span class="badge blue">Доставка {{ dateLabel() }}</span> }
+  @if (!loading() && !err() && documents().length) {
+    <span class="badge gray">{{ scopeLabel() }}</span>
+    <span class="badge gray">{{ documents().length }} {{ plural(documents().length, 'документ', 'документа', 'документов') }}</span>
+  }
+  <div class="spacer"></div>
+  <button type="button" class="btn primary" (click)="print()" [disabled]="loading() || !documents().length">
+    <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M4.5 6V2.5h7V6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
+      <rect x="2.5" y="6" width="11" height="5.5" rx="1" fill="none" stroke="currentColor" stroke-width="1.4" />
+      <path d="M4.5 9.5h7v4h-7z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
+    </svg>
+    Печать / PDF
+  </button>
+</div>
+
+@if (loading()) {
+  <section class="panel no-print"><p class="muted state" role="status">Готовим отчёт…</p></section>
+} @else if (err()) {
+  <section class="panel no-print">
+    <div class="err" role="alert">
+      Не удалось построить отчёт. {{ err() }}
+      <button type="button" class="btn sm" (click)="load()">Повторить</button>
+    </div>
+  </section>
+} @else if (!documents().length) {
+  <section class="panel no-print">
+    <p class="empty">
+      <b>Заказов за эту дату нет</b>
+      Отчёт-отгрузка строится по сохранённым заказам магазинов на выбранную доставку.
+    </p>
+  </section>
+} @else {
+  @if (missingPrices()) {
+    <div class="warn no-print" role="alert">
+      <b>Цена не задана у {{ missingPrices() }} {{ plural(missingPrices(), 'позиции', 'позиций', 'позиций') }}.</b>
+      Заполните цену фасовки (RSD за кг / л / шт) в техкарте — суммы и PDV пересчитаются автоматически.
+    </div>
+  }
+
+  @for (doc of documents(); track doc.number) {
+    <article class="sheet" [attr.aria-label]="'Otpremnica ' + doc.number">
+      <header class="doc-top">
+        <div class="doc-line">
+          <span class="dl">Broj dokumenta:</span>
+          <span class="dv">{{ doc.number }}</span>
+        </div>
+        <div class="doc-line">
+          <span class="dl">Datum:</span>
+          <span class="dv">{{ dateTime(doc.savedAt) }}</span>
+        </div>
+      </header>
+
+      <section class="parties">
+        <div class="party">
+          <div class="pr"><span class="pl">Dobavljač</span><span class="pv strong">{{ doc.supplier.name }}</span></div>
+          <div class="pr"><span class="pl">Adresa:</span><span class="pv">{{ doc.supplier.address }}</span></div>
+          <div class="pr"><span class="pl">PIB:</span><span class="pv">{{ doc.supplier.pib }}</span></div>
+          <div class="pr"><span class="pl">MBR:</span><span class="pv">{{ doc.supplier.mbr }}</span></div>
+          <div class="pr"><span class="pl">Tekući račun:</span><span class="pv">{{ doc.supplier.account }}</span></div>
+        </div>
+        <div class="party">
+          <div class="pr"><span class="pl">Primalac</span><span class="pv strong">{{ doc.buyer.name }}</span></div>
+          <div class="pr"><span class="pl">Adresa:</span><span class="pv">{{ doc.buyer.address }}</span></div>
+          <div class="pr"><span class="pl">PIB:</span><span class="pv">{{ doc.buyer.pib }}</span></div>
+          <div class="pr"><span class="pl">MBR:</span><span class="pv">{{ doc.buyer.mbr }}</span></div>
+          <div class="pr"><span class="pl">Tekući račun:</span><span class="pv">{{ doc.buyer.account }}</span></div>
+        </div>
+      </section>
+
+      <h2 class="doc-title">Otpremnica</h2>
+
+      <table class="doc-table">
+        <colgroup>
+          <col class="c-no" />
+          <col class="c-name" />
+          <col class="c-jm" />
+          <col class="c-qty" />
+          <col class="c-price" />
+          <col class="c-rate" />
+          <col class="c-vat" />
+          <col class="c-total" />
+        </colgroup>
+        <thead>
+          <tr>
+            <th>№</th>
+            <th>Naziv</th>
+            <th>JM</th>
+            <th>Količina</th>
+            <th>Cena</th>
+            <th>Stopa PDV-a, %</th>
+            <th>Iznos PDV-a</th>
+            <th>Ukupna cena sa PDV-om</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (line of doc.lines; track $index) {
+            <tr>
+              <td class="num">{{ $index + 1 }}</td>
+              <td class="name">{{ line.name }}</td>
+              <td class="center">{{ line.unit }}</td>
+              <td class="center">{{ qty(line) }}</td>
+              <td class="money">{{ money(line.price) }}</td>
+              <td class="center">{{ line.vatRate }}</td>
+              <td class="money">{{ money(line.vat) }}</td>
+              <td class="money">{{ money(line.gross) }}</td>
+            </tr>
+          }
+        </tbody>
+      </table>
+
+      <table class="totals">
+        <tr>
+          <th>Iznos bez PDV-a:</th>
+          <td>{{ money(doc.net) }}</td>
+        </tr>
+        <tr>
+          <th>Iznos PDV-a:</th>
+          <td>{{ money(doc.vat) }}</td>
+        </tr>
+        <tr class="grand">
+          <th>Ukupno sa PDV:</th>
+          <td>{{ money(doc.gross) }}</td>
+        </tr>
+      </table>
+
+      <footer class="signs">
+        <div class="sign"><span>Dobavljač:</span><i></i></div>
+        <div class="sign"><span>Primalac:</span><i></i></div>
+      </footer>
+    </article>
+  }
+}

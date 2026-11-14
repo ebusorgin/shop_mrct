@@ -15,6 +15,44 @@ import type { Actor } from './audit';
 
 export const GPT_KEY = 'gpt';
 
+// ---------- приём заказов магазина ----------
+
+export const DELIVERY_KEY = 'delivery';
+
+export interface DeliverySettings {
+  /**
+   * За сколько часов до конца дня доставки закрывается приём заказа.
+   * День доставки длится до 24:00, поэтому 36 ч — это 12:00 предыдущего дня.
+   */
+  cutoffHours: number;
+}
+
+export const DELIVERY_DEFAULTS: DeliverySettings = { cutoffHours: 36 };
+export const CUTOFF_MAX_HOURS = 240;
+
+export async function deliverySettings(): Promise<DeliverySettings> {
+  const { rows } = await pool.query('select value from app_settings where key = $1', [DELIVERY_KEY]);
+  const raw = (rows[0]?.value ?? {}) as Partial<DeliverySettings>;
+  const hours = Number(raw.cutoffHours);
+  return {
+    cutoffHours:
+      Number.isFinite(hours) && hours >= 0 && hours <= CUTOFF_MAX_HOURS
+        ? Math.round(hours)
+        : DELIVERY_DEFAULTS.cutoffHours,
+  };
+}
+
+export async function saveDeliverySettings(next: DeliverySettings, actor: Actor): Promise<DeliverySettings> {
+  await pool.query(
+    `insert into app_settings (key, value, updated_at, updated_by)
+     values ($1, $2::jsonb, now(), $3)
+     on conflict (key) do update
+        set value = excluded.value, updated_at = now(), updated_by = excluded.updated_by`,
+    [DELIVERY_KEY, JSON.stringify(next), actor?.login ?? 'system']
+  );
+  return next;
+}
+
 export interface GptSettings {
   /** Все запросы к OpenAI идут через прокси (по умолчанию — Tor). */
   viaProxy: boolean;

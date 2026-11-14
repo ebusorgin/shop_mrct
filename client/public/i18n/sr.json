@@ -10,6 +10,7 @@
     "logout": "Odjavi se",
     "myStore": "Moja prodavnica",
     "storeOrders": "Porudžbina proizvoda",
+    "storeHistory": "Moje porudžbine",
     "groupOperations": "Operacije",
     "groupStock": "Skladište",
     "groupOther": "Još",
@@ -17,7 +18,7 @@
     "stock": "Skladište",
     "semis": "Poluprodukti",
     "cards": "Tehničke kartice",
-    "orders": "Porudžbine"
+    "orders": "Arhiva porudžbina"
   },
   "common": {
     "loading": "Učitavanje...",

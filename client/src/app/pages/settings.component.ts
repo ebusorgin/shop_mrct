@@ -5,7 +5,7 @@ import { FormsModule } from '@angular/forms';
 import { CommonModule } from '@angular/common';
 import { TranslatePipe } from '@ngx-translate/core';
 import { ApiService } from '../core/api.service';
-import { AppSettings, DeliveryRule, GoogleSheet, GptTestResult, ProductCatalog, RawCategory, TechCard } from '../core/models';
+import { AppSettings, DeliveryRule, GoogleSheet, GptTestResult, OrderHistoryResult, PointCard, ProductCatalog, RawCategory, TechCard } from '../core/models';
 import { fmtQty, httpErr } from '../core/format';
 import { packagingLabel } from '../core/packaging-label';
 import { PasswordFormComponent } from '../shared/password-form.component';
@@ -27,6 +27,12 @@ function shiftCalendarDate(value: string, days: number): string {
   return /^\d{4}-\d{2}-\d{2}$/.test(value)
       ? new Date(Date.parse(`${value}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10)
       : value;
+}
+
+/** ISO-дата в подписи: 2026-11-14 → 14.11.2026. */
+function isoDateLabel(value: string): string {
+  const [year, month, day] = value.split('-');
+  return `${day}.${month}.${year}`;
 }
 
 /** Разделы верхнего меню настроек. */
@@ -69,6 +75,15 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
     .delivery-head h2 { font-size:19px; margin:0 0 6px; letter-spacing:-.02em; }
     .delivery-head p { margin:0; font-size:13px; color:var(--muted); }
     .delivery-summary { gap:8px; }
+    .delivery-cutoff { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin:0 0 16px; padding:10px 12px; border:1px solid var(--border); border-radius:10px; background:var(--bg); }
+    .delivery-cutoff-text { flex:1 1 320px; min-width:0; }
+    .delivery-cutoff-text b { font-size:13px; }
+    .delivery-cutoff-text span { display:block; color:var(--muted); font-size:12px; line-height:1.45; }
+    .delivery-cutoff-field { display:flex; align-items:center; gap:6px; }
+    .delivery-cutoff-field input { width:74px; text-align:right; font-variant-numeric:tabular-nums; }
+    .delivery-cutoff-field span { color:var(--muted); font-size:12px; }
+    .delivery-cutoff-err { color:var(--red); font-size:12px; }
+    .delivery-cutoff-ok { color:var(--green); font-size:12px; }
     .delivery-tabs { margin:0 0 18px; padding:4px; gap:4px; border:1px solid var(--border); border-radius:12px; background:var(--bg); }
     .delivery-tabs button { flex:1 1 auto; min-height:38px; padding:0 14px; border:0; border-radius:8px; background:transparent; color:var(--muted); font-size:13px; }
     .delivery-tabs button.on { background:var(--brand-blue-dark); color:#fff; box-shadow:0 2px 6px rgba(0,102,153,.22); }
@@ -206,6 +221,7 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
     .excel-sync .btn.primary { background:var(--brand-blue-dark); border-color:var(--brand-blue-dark); color:#fff; }
     .excel-sync .btn.primary:hover:not(:disabled) { background:var(--brand-blue); border-color:var(--brand-blue); }
     .excel-sync .btn:disabled { cursor:progress; opacity:.75; }
+    .excel-history { margin-top:12px; }
     /* ---------- документ копии: сетка и листы как в Excel ---------- */
     .excel-doc { margin-top:16px; border:1px solid var(--border); border-radius:10px; overflow:hidden; background:#fff; }
     .excel-doc-bar { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 14px; padding:9px 12px; border-bottom:1px solid var(--border); background:var(--bg); font-size:12px; }
@@ -227,6 +243,7 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
     .excel-grid td.local-name.miss { background:#fff; }
     .excel-grid td.local-min { background:#f5fbf5; color:#2f6b3a; text-align:right; font-variant-numeric:tabular-nums; }
     .excel-grid td.local-min.miss { background:#fff; color:#c7cdd5; }
+    .excel-grid .store-id { display:inline-block; margin-left:5px; padding:0 5px; border-radius:8px; background:#dcebf9; color:var(--brand-blue-dark); font-size:10px; font-weight:700; line-height:16px; vertical-align:middle; }
     .excel-grid td.link-pick { background:#fffdf3; padding:2px 4px; }
     .excel-grid td.link-pick button { width:100%; border:1px dashed #c9a227; border-radius:6px; background:#fff; color:#7a5b00; font:inherit; font-size:11px; padding:3px 6px; cursor:pointer; white-space:nowrap; }
     .excel-grid td.link-pick button:hover { background:#fff7dd; }
@@ -325,6 +342,27 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
           <span class="pill gray">В периоде: {{ deliveriesInWindow() }}</span>
           <span class="pill" [class.green]="ruleActive()" [class.gray]="!ruleActive()">Авто: {{ ruleSummaryLabel() }}</span>
         </div>
+      </div>
+
+      <div class="delivery-cutoff">
+        <div class="delivery-cutoff-text">
+          <b>Приём заказа магазина</b>
+          <span>
+            За сколько часов до конца дня доставки заказ перестаёт приниматься. При 36 ч заказ
+            на вторник закрывается в понедельник в 12:00.
+          </span>
+        </div>
+        <label class="delivery-cutoff-field">
+          <input type="number" min="0" max="240" step="1" inputmode="numeric"
+                 aria-label="Срок приёма заказа, часов"
+                 [ngModel]="cutoffHours()" (ngModelChange)="cutoffHours.set($event)"
+                 [disabled]="cutoffSaving()" />
+          <span>ч</span>
+        </label>
+        <button type="button" class="btn sm primary" (click)="saveCutoff()"
+                [disabled]="cutoffSaving() || cutoffHours() === null">Сохранить</button>
+        @if (cutoffErr()) { <span class="delivery-cutoff-err" role="alert">{{ cutoffErr() }}</span> }
+        @else if (cutoffMsg()) { <span class="delivery-cutoff-ok" role="status">{{ cutoffMsg() }}</span> }
       </div>
 
       <div class="tabs delivery-tabs" role="tablist" aria-label="Разделы доставок">
@@ -653,7 +691,8 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
         Таблица «Микс Маркт Гастро» из Google Sheets: скачанные листы хранятся в отдельной базе
         данных и показываются здесь со всеми листами. Позиции сопоставляются с фасовками продукции
         по названию — локальный ID стоит в колонке ID между A и B, а минимальный заказ связанной
-        фасовки — в колонке Min Заказ(local) между E и F.
+        фасовки — в колонке Min Заказ(local) прямо перед колонкой Min Заказ (её место зависит от листа).
+        В заголовках колонок магазинов после Min Заказ подписан локальный ID магазина.
       </div>
       @if (sheetErr()) { <div class="err">{{ sheetErr() }}</div> }
       @if (sheetMsg()) { <div class="ok-msg">{{ sheetMsg() }}</div> }
@@ -666,6 +705,17 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
         </div>
         <button class="btn primary" (click)="syncSheet()" [disabled]="sheetBusy()">
           {{ sheetBusy() ? 'Скачиваем…' : '🔄 Синхронизировать' }}
+        </button>
+      </div>
+      <div class="excel-sync excel-history">
+        <div class="excel-sync-info">
+          <b>История заказов из листов</b>
+          <span>Кнопка «Синхронизировать историю» раскладывает сохранённые листы по магазинам и датам
+            и записывает заказы в архив. Повторный запуск обновляет те же заказы; дробное количество
+            округляется вверх до целой упаковки. Листы без даты и копии пропускаются.</span>
+        </div>
+        <button class="btn" (click)="syncHistory()" [disabled]="sheetBusy() || historyBusy() || !sheetDoc()">
+          {{ historyBusy() ? 'Импортируем…' : '📥 Синхронизировать историю' }}
         </button>
       </div>
 
@@ -693,10 +743,10 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
                         <th class="link-col">ID</th>
                         <th class="local-name">localName</th>
                       }
-                      <th class="col-letter">{{ excelColumn($index) }}</th>
-                      @if ($index === 4) {
+                      @if ($index === sheetMinColumn()) {
                         <th class="local-min">Min Заказ(local)</th>
                       }
+                      <th class="col-letter">{{ excelColumn($index) }}</th>
                     }
                   </tr>
                 </thead>
@@ -722,14 +772,19 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
                             <td class="local-name miss"></td>
                           }
                         }
-                        <td [class.num]="isNumber(cell)">{{ cell }}</td>
-                        @if ($index === 4) {
+                        @if ($index === sheetMinColumn()) {
                           @if (sheetMinOrder(rowIndex); as minOrder) {
                             <td class="local-min">{{ minOrder }}</td>
                           } @else {
                             <td class="local-min miss">—</td>
                           }
                         }
+                        <td [class.num]="isNumber(cell)">
+                          {{ cell }}
+                          @if (sheetStoreId(rowIndex, $index); as storeId) {
+                            <span class="store-id" title="ID магазина в системе">{{ storeId }}</span>
+                          }
+                        </td>
                       }
                     </tr>
                   } @empty {
@@ -800,6 +855,8 @@ export class SettingsComponent implements OnInit {
   /** Имя открытого листа; пусто — показывается первый. */
   sheetTab = signal('');
   sheetBusy = signal(false);
+  /** Импорт истории заказов из листов — отдельный счётчик, чтобы кнопки не блокировали друг друга. */
+  historyBusy = signal(false);
   sheetErr = signal('');
   sheetMsg = signal('');
   private sheetFormat = new Intl.DateTimeFormat('ru-RU', { dateStyle: 'short', timeStyle: 'medium' });
@@ -811,6 +868,17 @@ export class SettingsComponent implements OnInit {
   });
   /** Колонки рисуются по ширине листа, даже если строк нет. */
   readonly sheetColumns = computed(() => Array.from({ length: this.sheetActive()?.width ?? 0 }));
+  /** Строка заголовков листа: ищем «Min Заказ» среди первых строк. */
+  private readonly sheetMinHeader = computed(() => {
+    const rows = this.sheetActive()?.rows ?? [];
+    for (let row = 0; row < Math.min(rows.length, 10); row++) {
+      const column = rows[row].findIndex((cell) => /min\.?\s*заказ/i.test(cell) && cell.trim().length <= 24);
+      if (column >= 0) return { row, column };
+    }
+    return null;
+  });
+  /** Колонка листа с заголовком «Min Заказ»: локальный минимум вставляется прямо перед ней. */
+  readonly sheetMinColumn = computed(() => this.sheetMinHeader()?.column ?? -1);
   readonly sheetLoadedLabel = computed(() => {
     const loadedAt = this.sheetDoc()?.loadedAt;
     return loadedAt ? this.sheetFormat.format(new Date(loadedAt)) : '';
@@ -856,6 +924,42 @@ export class SettingsComponent implements OnInit {
   /** Позиция листа без продукции — в её ячейке вместо пустого поля показываем выбор. */
   sheetMiss(rowIndex: number): boolean {
     return this.sheetActive()?.misses?.includes(rowIndex) ?? false;
+  }
+
+  // ---- магазины: локальный ID в заголовках колонок заказов ----
+  readonly stores = signal<PointCard[]>([]);
+  private storesRequested = false;
+
+  /** Местные магазины нужны для подписи ID в шапке колонок листа. */
+  private ensureStores(): void {
+    if (this.storesRequested) return;
+    this.storesRequested = true;
+    this.api.points$().pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: (v) => this.stores.set(v),
+      error: () => undefined,
+    });
+  }
+
+  /** ID магазина для ячейки-заголовка колонки: «103» или «Mix 38103». */
+  sheetStoreId(rowIndex: number, column: number): number | null {
+    const header = this.sheetMinHeader();
+    if (!header || rowIndex !== header.row || column <= header.column) return null;
+    return this.storeIdForHeader(this.sheetActive()?.rows[rowIndex]?.[column] ?? '');
+  }
+
+  private storeIdForHeader(value: string): number | null {
+    const text = value.trim().toLowerCase().replace(/\s+/g, '');
+    if (!text) return null;
+    for (const store of this.stores()) {
+      if (store.code.trim().toLowerCase().replace(/\s+/g, '') === text) return store.id;
+    }
+    // Короткий заголовок «103» — хвост кода «Mix 38103».
+    if (!/^\d+$/.test(text)) return null;
+    for (const store of this.stores()) {
+      const digits = store.code.match(/\d+$/)?.[0] ?? '';
+      if (digits.endsWith(text)) return store.id;
+    }
+    return null;
   }
 
   // ---- ручное сопоставление строки листа с фасовкой ----
@@ -968,6 +1072,7 @@ export class SettingsComponent implements OnInit {
   loadSheet(): void {
     if (this.sheetBusy()) return;
     this.ensureCards();
+    this.ensureStores();
     this.sheetBusy.set(true);
     this.sheetErr.set('');
     this.sheetMsg.set('');
@@ -1020,6 +1125,25 @@ export class SettingsComponent implements OnInit {
     });
   }
 
+  /** «Синхронизировать историю»: разложить сохранённые листы по магазинам и датам в архив заказов. */
+  syncHistory(): void {
+    if (this.sheetBusy() || this.historyBusy()) return;
+    this.historyBusy.set(true);
+    this.sheetErr.set('');
+    this.sheetMsg.set('');
+    this.api.syncOrderHistory$().pipe(
+      finalize(() => this.historyBusy.set(false)),
+      takeUntilDestroyed(this.destroyRef),
+    ).subscribe({
+      next: (result: OrderHistoryResult) => {
+        const range = result.from && result.to ? ` (${isoDateLabel(result.from)} — ${isoDateLabel(result.to)})` : '';
+        const rounded = result.rounded ? ` · округлено дробных: ${result.rounded}` : '';
+        this.sheetMsg.set(`История заказов загружена: дат ${result.dates}${range} · заказов ${result.orders} · позиций ${result.positions}${rounded}`);
+      },
+      error: (e) => this.sheetErr.set(`Не удалось синхронизировать историю: ${httpErr(e)}`),
+    });
+  }
+
   readonly calendarToday = signal(calendarDate(this.calendarAnchor));
   readonly calendarWeekdays = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
   calendarOffset = signal(0);
@@ -1053,6 +1177,12 @@ export class SettingsComponent implements OnInit {
   ruleSaving = signal(false);
   ruleErr = signal('');
   ruleMsg = signal('');
+
+  // ---- срок приёма заказа магазина: часы до конца дня доставки ----
+  cutoffHours = signal<number | null>(null);
+  cutoffSaving = signal(false);
+  cutoffErr = signal('');
+  cutoffMsg = signal('');
   /** Даты окна из правила и чем они добавлены: цвет и запрет на отмену в календаре. */
   readonly ruleDays = computed(() => {
     const kinds = new Map<string, RuleKind>();
@@ -1210,6 +1340,7 @@ export class SettingsComponent implements OnInit {
   ngOnInit(): void {
     this.loadCalendar();
     this.loadRule();
+    this.loadCutoff();
     this.load();
     this.loadCats();
     this.loadPcs();
@@ -1291,6 +1422,36 @@ export class SettingsComponent implements OnInit {
         this.ruleMonthDays.set(rule.monthDays);
       },
       error: (e: unknown) => this.ruleErr.set(`Не удалось загрузить правило доставок: ${httpErr(e)}`),
+    });
+  }
+
+  loadCutoff(): void {
+    this.api.deliveryCutoff$().pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: ({ cutoffHours }) => this.cutoffHours.set(cutoffHours),
+      error: (e: unknown) => this.cutoffErr.set(`Не удалось загрузить срок приёма заказа: ${httpErr(e)}`),
+    });
+  }
+
+  saveCutoff(): void {
+    const hours = Number(this.cutoffHours());
+    if (!Number.isInteger(hours) || hours < 0 || hours > 240) {
+      this.cutoffErr.set('Укажите целое число часов от 0 до 240');
+      this.cutoffMsg.set('');
+      return;
+    }
+    if (this.cutoffSaving()) return;
+    this.cutoffSaving.set(true);
+    this.cutoffErr.set('');
+    this.cutoffMsg.set('');
+    this.api.saveDeliveryCutoff$({ cutoffHours: hours }).pipe(
+        takeUntilDestroyed(this.destroyRef),
+        finalize(() => this.cutoffSaving.set(false)),
+    ).subscribe({
+      next: ({ cutoffHours }) => {
+        this.cutoffHours.set(cutoffHours);
+        this.cutoffMsg.set(`Сохранено: заказ закрывается за ${cutoffHours} ч до конца дня доставки.`);
+      },
+      error: (e: unknown) => this.cutoffErr.set(`Не удалось сохранить срок: ${httpErr(e)}`),
     });
   }
 

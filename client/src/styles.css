@@ -15,8 +15,8 @@
   --brand-yellow: #fce005;
   --brand-red: #e11b22;
 
-  --accent: #f8f2f2;
-  --accent-soft: #a4d1ef;
+  --accent: #1f91d9;
+  --accent-soft: #e2f1fc;
   --green: #1a8a4a;
   --green-soft: #e4f6ec;
   --red: #e11b22;
@@ -84,8 +84,8 @@ body {
   border: 1px solid var(--border); background: #fff; color: var(--text); text-decoration: none; font-weight: 600;
 }
 .quick-btn:hover { background: #f2f5fa; }
-.quick-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.quick-btn.primary:hover { background: #157ab5; }
+.quick-btn.primary { background: var(--brand-blue); border-color: var(--brand-blue); color: #fff; }
+.quick-btn.primary:hover { background: var(--brand-blue-dark); border-color: var(--brand-blue-dark); }
 .quick-btn.hot { border-color: var(--amber); background: var(--amber-soft); color: var(--amber); }
 .quick-btn .qi { font-size: 18px; flex: 0 0 auto; line-height: 1; }
 .quick-btn .qt { display: flex; flex-direction: column; min-width: 0; font-size: 13px; }
@@ -144,17 +144,24 @@ input[type='number']::-webkit-inner-spin-button { opacity: 1; }
 
 /* ---------- кнопки ---------- */
 .btn {
-  display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  cursor: pointer; user-select: none; white-space: nowrap;
   border: 1px solid var(--border); background: #fff; color: var(--text);
   border-radius: 8px; padding: 8px 14px; font: inherit; font-weight: 600;
+  transition: background-color .15s ease, border-color .15s ease, color .15s ease;
 }
-.btn:hover { background: #f2f5fa; }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.btn.primary:hover { background: #157ab5; }
+.btn:hover { background: #f2f5fa; border-color: #c3d5e6; }
+.btn:active { background: #e8eff7; }
+.btn:focus-visible { outline: 2px solid var(--brand-blue); outline-offset: 1px; }
+.btn.primary { background: var(--brand-blue); border-color: var(--brand-blue); color: #fff; }
+.btn.primary:hover { background: var(--brand-blue-dark); border-color: var(--brand-blue-dark); }
+.btn.primary:active { background: #004f78; border-color: #004f78; }
 .btn.danger { color: var(--red); border-color: var(--red); background: #fff; }
 .btn.danger:hover { background: var(--red-soft); }
 .btn.sm { padding: 4px 9px; font-size: 12px; border-radius: 6px; }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn:disabled:hover { background: #fff; border-color: var(--border); }
+.btn.primary:disabled:hover { background: var(--brand-blue); border-color: var(--brand-blue); }
 
 /* ---------- бейджи ---------- */
 .badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; }
@@ -173,7 +180,7 @@ input[type='number']::-webkit-inner-spin-button { opacity: 1; }
   border: 1px solid var(--border); background: #fff; border-radius: 999px; padding: 7px 16px;
   font: inherit; font-weight: 600; cursor: pointer; color: var(--muted);
 }
-.tabs button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tabs button.on { background: var(--brand-blue); border-color: var(--brand-blue); color: #fff; }
 
 /* ---------- блок-схема техкарты ---------- */
 .diagram-wrap {
@@ -310,4 +317,13 @@ html.menu-lock, html.menu-lock body { overflow: hidden; }
   .tiles { grid-template-columns: 1fr; }
   .tile { padding: 12px; }
   .diagram-wrap { max-height: 60vh; }
+}
+
+/* ---------- печать документа (отчёт-отгрузка) ---------- */
+@page { size: A4; margin: 10mm; }
+@media print {
+  html, body { background: #fff !important; }
+  .topbar, .sidebar, .side-foot { display: none !important; }
+  .main { padding: 0 !important; }
+  .panel { box-shadow: none; }
 }

@@ -35,6 +35,7 @@ export type AuditEntity =
   | 'tech_card'
   | 'batch'
   | 'store'
+  | 'store_order'
   | 'user'
   | 'stock'
   | 'setting';

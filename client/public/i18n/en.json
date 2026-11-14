@@ -10,6 +10,7 @@
     "logout": "Logout",
     "myStore": "My Store",
     "storeOrders": "Product order",
+    "storeHistory": "My orders",
     "groupOperations": "Operations",
     "groupStock": "Stock",
     "groupOther": "More",
@@ -17,7 +18,7 @@
     "stock": "Stock",
     "semis": "Semi-finished",
     "cards": "Tech cards",
-    "orders": "Orders"
+    "orders": "Order archive"
   },
   "common": {
     "loading": "Loading...",

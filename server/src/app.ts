@@ -14,6 +14,7 @@ import { cardsRouter } from './routes/cards';
 import { batchesRouter } from './routes/batches';
 import { dashboardRouter } from './routes/dashboard';
 import { pointsRouter } from './routes/points';
+import { ordersRouter } from './routes/orders';
 import { auditRouter } from './routes/audit';
 import { authRouter } from './routes/auth';
 import { storeRouter } from './routes/store';
@@ -47,6 +48,8 @@ export function createApp(): express.Express {
   app.use('/api/dashboard', requireOffice, dashboardRouter);
   // торговые точки: справочник магазинов
   app.use('/api/points', requireOffice, pointsRouter);
+  // архив заказов магазинов по датам доставки
+  app.use('/api/orders', requireOffice, ordersRouter);
   // журнал действий: кто, что и когда сделал
   app.use('/api/audit', requireOffice, auditRouter);
   // настройки CRM (транспорт GPT и т.п.) — только администратор

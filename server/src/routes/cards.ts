@@ -33,8 +33,17 @@ function parseItems(raw: unknown): CardItemDto[] {
   });
 }
 
+/** Необязательное название на другом языке; пустая строка — перевод не задан. */
+function optionalName(body: Record<string, unknown>, field: string): string {
+  const value = body[field];
+  if (value === undefined || value === null) return '';
+  if (typeof value !== 'string') throw new ApiError(400, `Поле «${field}»: нужна строка`);
+  return value.trim().slice(0, 200);
+}
+
 const CARD_SQL = `
-  select tc.id, tc.name, tc.note, tc.portion_qty as "portionQty",
+  select tc.id, tc.name, tc.name_en as "nameEn", tc.name_sr as "nameSr",
+         tc.note, tc.portion_qty as "portionQty",
          tc.portion_unit_id as "portionUnitId", pu.code as "portionUnitCode",
          tc.catalog_id as "catalogId", cc.name as "catalogName",
          ${packagingsSql()} as packagings,
@@ -43,7 +52,9 @@ const CARD_SQL = `
              jsonb_build_object(
                'id', i.id, 'sourceType', i.source_type, 'refId', i.ref_id,
                'qty', i.qty, 'unitId', i.unit_id, 'unitCode', u.code, 'position', i.position,
-               'refName', coalesce(p.name, sp.name, tcp.name)
+               'refName', coalesce(p.name, sp.name, tcp.name),
+               'refNameEn', coalesce(tcp.name_en, ''),
+               'refNameSr', coalesce(tcp.name_sr, '')
              ) order by i.position, i.id
            ) filter (where i.id is not null),
            '[]'
@@ -108,6 +119,8 @@ cardsRouter.post(
   '/',
   wrap(async (req, res) => {
     const name = reqStr(req.body, 'name');
+    const nameEn = optionalName(req.body, 'nameEn');
+    const nameSr = optionalName(req.body, 'nameSr');
     const portionQty = reqNum(req.body, 'portionQty');
     const portionUnitId = reqInt(req.body, 'portionUnitId');
     const note = typeof req.body.note === 'string' ? req.body.note : '';
@@ -119,10 +132,12 @@ cardsRouter.post(
     const id = await tx(async (client) => {
       await assertBaseUnit(client, portionUnitId, 'Техкарта');
       await assertNameFree(client, name, 'tech_cards');
+      if (nameEn) await assertNameFree(client, nameEn, 'tech_cards', undefined, 'name_en');
+      if (nameSr) await assertNameFree(client, nameSr, 'tech_cards', undefined, 'name_sr');
       const { rows } = await client.query(
-        `insert into tech_cards (name, portion_qty, portion_unit_id, note, catalog_id, created_by, updated_by)
-         values ($1,$2,$3,$4,$5,$6,$6) returning id`,
-        [name, portionQty, portionUnitId, note, catalogId, req.user?.id ?? null]
+        `insert into tech_cards (name, name_en, name_sr, portion_qty, portion_unit_id, note, catalog_id, created_by, updated_by)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$8) returning id`,
+        [name, nameEn, nameSr, portionQty, portionUnitId, note, catalogId, req.user?.id ?? null]
       );
       await saveItems(client, rows[0].id, items);
       const { rows: units } = await client.query('select code from units where id = $1', [portionUnitId]);
@@ -133,7 +148,7 @@ cardsRouter.post(
         entity: 'tech_card',
         entityId: rows[0].id as number,
         title: `Техкарта «${name}»`,
-        details: { portionQty, portionUnitId, catalogId, items: items.length, packagings: toSave.length },
+        details: { nameEn, nameSr, portionQty, portionUnitId, catalogId, items: items.length, packagings: toSave.length },
       });
       return rows[0].id as number;
     });
@@ -146,6 +161,8 @@ cardsRouter.patch(
   wrap(async (req, res) => {
     const id = Number(req.params.id);
     const name = reqStr(req.body, 'name');
+    const nameEn = optionalName(req.body, 'nameEn');
+    const nameSr = optionalName(req.body, 'nameSr');
     const portionQty = reqNum(req.body, 'portionQty');
     const portionUnitId = reqInt(req.body, 'portionUnitId');
     const note = typeof req.body.note === 'string' ? req.body.note : '';
@@ -158,8 +175,11 @@ cardsRouter.patch(
     await tx(async (client) => {
       await assertBaseUnit(client, portionUnitId, 'Техкарта');
       await assertNameFree(client, name, 'tech_cards', id);
+      if (nameEn) await assertNameFree(client, nameEn, 'tech_cards', id, 'name_en');
+      if (nameSr) await assertNameFree(client, nameSr, 'tech_cards', id, 'name_sr');
       const { rows: before } = await client.query(
-        'select name, portion_qty::float8 as portion_qty, portion_unit_id, note, catalog_id from tech_cards where id = $1 for update',
+        `select name, name_en, name_sr, portion_qty::float8 as portion_qty, portion_unit_id, note, catalog_id
+           from tech_cards where id = $1 for update`,
         [id]
       );
       if (!before.length) throw new ApiError(404, 'Техкарта не найдена');
@@ -167,8 +187,10 @@ cardsRouter.patch(
       const { rows: beforeItems } = await client.query('select count(*)::int as n from tech_card_items where card_id = $1', [id]);
       const { rows: beforePackagings } = await client.query('select count(*)::int as n from product_packagings where card_id = $1', [id]);
       await client.query(
-        'update tech_cards set name=$2, portion_qty=$3, portion_unit_id=$4, note=$5, catalog_id=$6, updated_by=$7 where id=$1',
-        [id, name, portionQty, portionUnitId, note, catalogId, req.user?.id ?? null]
+        `update tech_cards
+            set name=$2, name_en=$3, name_sr=$4, portion_qty=$5, portion_unit_id=$6, note=$7, catalog_id=$8, updated_by=$9
+          where id=$1`,
+        [id, name, nameEn, nameSr, portionQty, portionUnitId, note, catalogId, req.user?.id ?? null]
       );
       await client.query('delete from tech_card_items where card_id = $1', [id]);
       await saveItems(client, id, items);
@@ -189,7 +211,8 @@ cardsRouter.patch(
         details: diff(
           { ...before[0], items: beforeItems[0].n, packagings: beforePackagings[0].n },
           {
-            name, portion_qty: portionQty, portion_unit_id: portionUnitId, note, catalog_id: catalogId,
+            name, name_en: nameEn, name_sr: nameSr,
+            portion_qty: portionQty, portion_unit_id: portionUnitId, note, catalog_id: catalogId,
             items: items.length, packagings: packagings ? packagings.length : beforePackagings[0].n,
           }
         ),

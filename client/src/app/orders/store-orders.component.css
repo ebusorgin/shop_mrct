@@ -7,8 +7,9 @@
 .err .btn { margin-left: 8px; }
 
 /* ---------- каркас «каталог + чек» ---------- */
-.order { padding: 0; overflow: hidden; }
-.layout { display: grid; grid-template-columns: 200px minmax(0, 1fr) 262px; }
+/* clip (не hidden): hidden сделал бы панель scroll-контейнером и сломал sticky-чек */
+.order { padding: 0; overflow: clip; }
+.layout { display: grid; grid-template-columns: 200px minmax(0, 1fr) 262px; align-items: start; }
 
 /* Цвет каталога: стабильная пара «акцент/подложка» по порядку каталогов. */
 .tone-0 { --cat: #5b6b7d; --cat-soft: #eef2f7; }
@@ -19,7 +20,7 @@
 .tone-5 { --cat: #96374d; --cat-soft: #fcecf0; }
 
 /* ---------- рейл каталогов ---------- */
-.rail { padding: 14px 10px; border-right: 1px solid var(--border); background: #f8fafd; }
+.rail { align-self: stretch; padding: 14px 10px; border-right: 1px solid var(--border); background: #f8fafd; }
 .rail-cap {
   display: flex; align-items: baseline; justify-content: space-between;
   padding: 0 8px 8px; color: var(--muted); font-size: 11px; font-weight: 700;
@@ -99,22 +100,54 @@
 .empty b { display: block; margin-bottom: 2px; color: var(--text); font-weight: 600; }
 
 /* ---------- чек ---------- */
+/* Чек «липнет» к экрану: страница скроллит список, а состав заказа остаётся на виду. */
 .receipt {
-  display: flex; flex-direction: column; border-left: 1px solid var(--border);
+  position: sticky; top: 16px;
+  display: flex; flex-direction: column;
+  max-height: calc(100vh - 32px);
+  overflow: hidden;
+  border-left: 1px solid var(--border);
   padding: 14px 14px 16px;
   background: linear-gradient(180deg, #fdf7cf 0, var(--panel) 112px);
 }
 .kicker { color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; }
 .receipt h3 { margin: 2px 0 0; font-size: 16px; font-weight: 700; }
 .date { margin-top: 2px; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+/* Таймер закрытия: ближайшая доставка и последний момент оформить заказ. */
+.deadline { margin-top: 10px; padding: 8px 10px; border: 1px solid #e6d9a8; border-radius: 8px; background: #fffbe8; }
+.deadline.soon { border-color: #eec2c2; background: var(--red-soft); }
+.dl-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 11.5px; }
+.dl-row span { color: var(--muted); }
+.dl-row b { font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; }
+.dl-count {
+  margin-top: 4px; padding-top: 4px; border-top: 1px dashed #d9c98f;
+  font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums;
+}
+.deadline.soon .dl-count { color: var(--red); border-top-color: #e6b3b3; }
+.deadline.off { color: var(--muted); font-size: 11.5px; line-height: 1.45; }
+.deadline.locked { border-color: var(--border); background: #f4f6f9; }
+.deadline.locked .dl-count { color: var(--muted); border-top-color: var(--border); }
 .rule { height: 1px; margin: 12px 0 10px; background: repeating-linear-gradient(90deg, var(--border) 0 4px, transparent 4px 8px); }
-.r-body { flex: 0 1 auto; }
+/* Состав заказа прокручивается внутри чека, шапка и кнопки остаются на месте. */
+.r-body { flex: 0 1 auto; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
 .r-empty { margin: 0; padding: 4px 0 12px; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .r-list { display: flex; flex-direction: column; gap: 7px; }
 .r-row { display: flex; align-items: baseline; gap: 7px; font-size: 12px; }
 .r-row span:first-child { min-width: 0; overflow-wrap: anywhere; }
 .r-row .dots { flex: 1 1 auto; min-width: 8px; border-bottom: 1px dotted #b9c7d6; transform: translateY(-2px); }
 .r-row b { flex: none; font-variant-numeric: tabular-nums; }
+.r-qty { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
+.r-qty small { color: var(--muted); font-size: 10.5px; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.r-comment { margin-top: 12px; }
+.r-comment label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 11px; font-weight: 600; }
+.r-comment textarea {
+  display: block; width: 100%; min-height: 62px; padding: 8px 9px;
+  border: 1px solid var(--border); border-radius: 7px; background: #fff;
+  color: var(--text); font: inherit; font-size: 12px; line-height: 1.45;
+  resize: vertical; box-sizing: border-box;
+}
+.r-comment textarea::placeholder { color: var(--muted); }
+.r-comment textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
 .total {
   display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
   margin-top: 12px; padding-top: 10px; border-top: 1px dashed #b9c7d6;
@@ -122,6 +155,14 @@
 .total span { color: var(--muted); font-size: 11px; letter-spacing: .4px; text-transform: uppercase; }
 .total b { font-size: 21px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .unit { margin-top: -2px; color: var(--muted); font-size: 11px; text-align: right; }
+.weight {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  margin-top: 6px; padding-top: 6px; border-top: 1px dotted #b9c7d6;
+  font-size: 12px;
+}
+.weight span { color: var(--muted); }
+.weight b { font-variant-numeric: tabular-nums; }
+.r-err { margin-top: 8px; color: var(--red); font-size: 11.5px; line-height: 1.4; }
 .actions { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
 .actions .btn { width: 100%; justify-content: center; }
 .note { margin-top: 8px; color: var(--muted); font-size: 10.5px; text-align: center; }
@@ -130,10 +171,12 @@
 @media (max-width: 1100px) {
   .layout { grid-template-columns: 176px minmax(0, 1fr); }
   .receipt {
-    grid-column: 1 / -1; flex-direction: row; flex-wrap: wrap; align-items: flex-start;
+    grid-column: 1 / -1; position: static; max-height: none; overflow: visible;
+    flex-direction: row; flex-wrap: wrap; align-items: flex-start;
     gap: 10px 24px; border-left: 0; border-top: 1px solid var(--border);
     background: linear-gradient(90deg, #fdf7cf 0, var(--panel) 220px);
   }
+  .r-body { overflow: visible; }
   .r-head { flex: 1 1 160px; }
   .r-head .rule { display: none; }
   .r-body { flex: 2 1 300px; }

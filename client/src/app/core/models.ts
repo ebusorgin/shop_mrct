@@ -245,6 +245,8 @@ export interface CardItem {
   sourceType: 'raw' | 'semi' | 'product';
   refId: number;
   refName?: string;
+  refNameEn?: string;
+  refNameSr?: string;
   qty: number;
   unitId: number;
   unitCode?: string;
@@ -260,9 +262,40 @@ export interface Packaging {
   minOrder: number;
   /** Можно ли уже заказывать эту фасовку магазинам. */
   available: boolean;
+  /** Цена за кг / л / шт (RSD); 0 — не задана. */
+  price: number;
 }
 
 export type PackagingInput = Omit<Packaging, 'id'> & { id?: number };
+
+/** Строка отчёта-отгрузки (Otpremnica): количество уже в кг / л / шт. */
+export interface ReportLine {
+  name: string;
+  unit: 'kg' | 'l' | 'kom';
+  qty: number;
+  price: number;
+  vatRate: number;
+  net: number;
+  vat: number;
+  gross: number;
+}
+
+/** Документ отчёта по заказу одного магазина за дату доставки. */
+export interface ReportDoc {
+  number: string;
+  deliveryDate: string;
+  savedAt: string;
+  supplier: { name: string; address: string; pib: string; mbr: string; account: string };
+  buyer: { name: string; address: string; pib: string; mbr: string; account: string };
+  lines: ReportLine[];
+  net: number;
+  vat: number;
+  gross: number;
+}
+
+export interface OrderReport {
+  documents: ReportDoc[];
+}
 
 /** Продукция производства в форме заказа магазина: строка = фасовка. */
 export interface OrderCatalogItem {
@@ -270,6 +303,9 @@ export interface OrderCatalogItem {
   id: number;
   cardId: number;
   name: string;
+  /** То же название техкарты на других языках (пусто — показываем name). */
+  nameEn?: string;
+  nameSr?: string;
   note: string;
   /** Вес/объём одной упаковки. */
   qtyBase: number;
@@ -282,9 +318,86 @@ export interface OrderCatalogItem {
   catalogColor?: string | null;
 }
 
+/** Позиция сохранённого заказа магазина. */
+export interface StoreOrderItem {
+  packagingId: number;
+  qty: number;
+}
+
+/** Заказ магазина на конкретную дату доставки. */
+export interface StoreOrder {
+  id: number;
+  deliveryDate: string;
+  comment: string;
+  updatedAt: string;
+  items: StoreOrderItem[];
+}
+
+/** Текущий заказ магазина и окно приёма на выбранную доставку. */
+export interface StoreOrderWindow {
+  today: string;
+  cutoffHours: number;
+  /** Выбранная доставка; без ?date= — ближайшая с открытым приёмом. */
+  deliveryDate: string | null;
+  /** Момент закрытия приёма, ISO; null — доставки нет. */
+  deadline: string | null;
+  order: StoreOrder | null;
+}
+
+/** Позиция заказа в архиве офиса. */
+export interface ArchiveOrderItem {
+  packagingId: number;
+  qty: number;
+  cardName: string;
+  cardNameEn?: string;
+  cardNameSr?: string;
+  packagingName: string;
+  qtyBase: number;
+  unitCode: string;
+}
+
+/** Сохранённый заказ в архиве: магазин, состав и итоги. */
+export interface ArchiveOrder {
+  id: number;
+  deliveryDate: string;
+  storeId: number;
+  storeCode: string;
+  storeName: string;
+  comment: string;
+  createdAt: string;
+  updatedAt: string;
+  packages: number;
+  positions: number;
+  /** Вес заказа в граммах (только позиции с единицей «г»). */
+  weightG: number;
+  items: ArchiveOrderItem[];
+}
+
+/** Будущая дата доставки: open — приём заказа ещё не закрыт. */
+export interface UpcomingDelivery {
+  date: string;
+  open: boolean;
+}
+
+export interface OrderArchive {
+  today: string;
+  orders: ArchiveOrder[];
+  /** Даты доставки впереди, в том числе без сохранённых заказов. */
+  upcoming: UpcomingDelivery[];
+}
+
+/** Срок приёма заказа в настройках доставок. */
+export interface DeliveryCutoff {
+  cutoffHours: number;
+}
+
 export interface TechCard {
   id: number;
   name: string;
+  /** Название на английском; пусто — показываем основное. */
+  nameEn: string;
+  /** Название на сербском; пусто — показываем основное. */
+  nameSr: string;
   note: string;
   portionQty: number;
   portionUnitId: number;
@@ -541,6 +654,17 @@ export interface GoogleSheet {
   tabs: GoogleSheetTab[];
   /** Позиции, которых нет в «Продукции». */
   unmatched: string[];
+}
+
+/** Итог импорта истории заказов из сохранённых листов Google-таблицы. */
+export interface OrderHistoryResult {
+  from: string | null;
+  to: string | null;
+  dates: number;
+  orders: number;
+  positions: number;
+  rounded: number;
+  skipped: string[];
 }
 
 /** Категория сырья (product_categories) для управления в Настройках. */

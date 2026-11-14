@@ -16,15 +16,19 @@ import {
   type DeliveryRule,
 } from '../services/delivery-rule';
 import {
+  CUTOFF_MAX_HOURS,
+  deliverySettings,
   GPT_DEFAULTS,
   gptSettings,
   normalizeProxyUrl,
   proxyTarget,
+  saveDeliverySettings,
   saveGptSettings,
   tcpProbe,
 } from '../services/settings';
 import { createGptClient } from '../services/gpt-transport';
 import { savedGoogleSheet, setSheetRowLink, syncGoogleSheet } from '../services/google-sheet';
+import { importOrderHistory } from '../services/order-history';
 
 export const settingsRouter = Router();
 
@@ -150,6 +154,40 @@ settingsRouter.patch(
 );
 
 /**
+ * Срок приёма заказа магазина: за сколько часов до конца дня доставки он закрывается.
+ * День доставки длится до 24:00, поэтому 36 ч — это 12:00 предыдущего дня.
+ */
+settingsRouter.get(
+  '/delivery-cutoff',
+  requireOffice,
+  wrap(async (_req, res) => {
+    res.json(await deliverySettings());
+  })
+);
+
+settingsRouter.put(
+  '/delivery-cutoff',
+  requireOffice,
+  wrap(async (req, res) => {
+    const raw = (req.body ?? {}) as { cutoffHours?: unknown };
+    const hours = Number(raw.cutoffHours);
+    if (!Number.isInteger(hours) || hours < 0 || hours > CUTOFF_MAX_HOURS) {
+      throw new ApiError(400, `Поле «cutoffHours»: целое число часов от 0 до ${CUTOFF_MAX_HOURS}`);
+    }
+    const before = await deliverySettings();
+    const next = await saveDeliverySettings({ cutoffHours: hours }, req.user);
+    await audit(req.user, {
+      action: 'update',
+      entity: 'setting',
+      entityId: 'delivery-cutoff',
+      title: `Приём заказа магазина: за ${hours} ч до конца дня доставки`,
+      details: { from: before, to: next },
+    });
+    res.json(next);
+  })
+);
+
+/**
  * «Синхронизация Excel»: сохранённая Google-таблица из отдельной базы.
  * null — таблицу ещё ни разу не скачивали.
  */
@@ -189,6 +227,34 @@ settingsRouter.post(
       },
     });
     res.json(sheet);
+  })
+);
+
+/**
+ * «Синхронизировать историю»: сохранённые листы раскладываются по магазинам и датам
+ * и записываются в заказы магазинов. Повторный запуск обновляет те же заказы.
+ */
+settingsRouter.post(
+  '/google-sheet/order-history',
+  requireOffice,
+  wrap(async (req, res) => {
+    const result = await importOrderHistory();
+    await audit(req.user, {
+      action: 'sync',
+      entity: 'store_order',
+      entityId: 'order-history',
+      title: `История заказов из Google-таблицы: дат ${result.dates}, заказов ${result.orders}, позиций ${result.positions}`,
+      details: {
+        from: result.from,
+        to: result.to,
+        dates: result.dates,
+        orders: result.orders,
+        positions: result.positions,
+        rounded: result.rounded,
+        skipped: result.skipped,
+      },
+    });
+    res.json(result);
   })
 );
 

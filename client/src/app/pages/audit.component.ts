@@ -260,6 +260,7 @@ export class AuditComponent implements OnInit {
     tech_card: 'Техкарта',
     batch: 'Партия',
     store: 'Точка',
+    store_order: 'Заказ магазина',
     user: 'Пользователь',
     stock: 'Склад',
     diagram: 'Блок-схема',

@@ -140,6 +140,8 @@ comment on column semi_inputs.source_type is 'raw = складское сырь�
 create table if not exists tech_cards (
   id              serial primary key,
   name            text not null,
+  name_en         text not null default '',
+  name_sr         text not null default '',
   portion_qty     numeric not null check (portion_qty > 0),
   portion_unit_id int not null,
   note            text default '',
@@ -152,6 +154,10 @@ create table if not exists tech_cards (
 
 -- каталог продукции появился позже — добавляем колонку в уже работающие базы
 alter table tech_cards add column if not exists catalog_id int;
+
+-- названия на английском и сербском: основной язык остаётся в name
+alter table tech_cards add column if not exists name_en text not null default '';
+alter table tech_cards add column if not exists name_sr text not null default '';
 
 -- остатки старого модуля заказов
 alter table tech_cards drop column if exists category_id;
@@ -181,9 +187,12 @@ create table if not exists product_packagings (
   name       text not null check (btrim(name) <> ''),
   qty_base   numeric not null check (qty_base > 0 and qty_base < 'Infinity'::numeric),
   min_order  int not null default 1 check (min_order > 0),
-  is_default boolean not null default false
+  is_default boolean not null default false,
+  price      numeric not null default 0
 );
 
+-- цена продажи за единицу измерения (кг / л / шт) — для отчёта-отгрузки магазину
+alter table product_packagings add column if not exists price numeric not null default 0;
 -- в старых базах была кратность заказа order_step — заменяем минимальным заказом
 alter table product_packagings add column if not exists min_order int not null default 1;
 -- фасовку можно заказывать магазинам, только если она включена в доставку
@@ -500,3 +509,30 @@ begin
   end if;
 end
 $period_cleanup$;
+
+-- ---------- Заказы магазинов: один заказ на точку и дату доставки ----------
+-- Строки заказа хранят количество упаковок фасовки; срок редактирования
+-- ограничен окном приёма (deliverySettings.cutoffHours), проверка — на сервере.
+
+create table if not exists store_orders (
+  id            serial primary key,
+  store_id      int not null references stores(id),
+  delivery_date date not null,
+  comment       text not null default '',
+  created_by    int references users(id) on delete set null,
+  created_at    timestamptz not null default now(),
+  updated_by    int references users(id) on delete set null,
+  updated_at    timestamptz not null default now()
+);
+
+create unique index if not exists store_orders_store_date_uniq
+  on store_orders (store_id, delivery_date);
+create index if not exists store_orders_delivery_idx
+  on store_orders (delivery_date desc);
+
+create table if not exists store_order_items (
+  order_id     int not null references store_orders(id) on delete cascade,
+  packaging_id int not null references product_packagings(id),
+  qty          int not null check (qty > 0 and qty <= 999),
+  primary key (order_id, packaging_id)
+);

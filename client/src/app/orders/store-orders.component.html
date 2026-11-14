@@ -110,15 +110,15 @@
                     }
                   </span>
                   <div class="info">
-                    <b>{{ p.name }}</b>
+                    <b>{{ displayName(p) }}</b>
                     <span>фасовка {{ fmtQty(p.qtyBase, p.unitCode) }} · мин. заказ {{ p.minOrder }} уп.</span>
                   </div>
-                  <div class="stepper" role="group" [attr.aria-label]="'Количество упаковок: ' + p.name">
-                    <button type="button" class="step" (click)="dec(p)" [disabled]="qtyOf(p.id) === 0"
-                            [attr.aria-label]="'Убрать упаковку: ' + p.name">−</button>
+                  <div class="stepper" role="group" [attr.aria-label]="'Количество упаковок: ' + displayName(p)">
+                    <button type="button" class="step" (click)="dec(p)" [disabled]="!windowOpen() || qtyOf(p.id) === 0"
+                            [attr.aria-label]="'Убрать упаковку: ' + displayName(p)">−</button>
                     <span class="qty" aria-live="polite">{{ qtyOf(p.id) }}</span>
-                    <button type="button" class="step" (click)="inc(p)"
-                            [attr.aria-label]="'Добавить упаковку: ' + p.name">+</button>
+                    <button type="button" class="step" (click)="inc(p)" [disabled]="!windowOpen()"
+                            [attr.aria-label]="'Добавить упаковку: ' + displayName(p)">+</button>
                   </div>
                 </div>
               }
@@ -132,11 +132,33 @@
         }
       </div>
 
-      <aside class="receipt" aria-label="Черновик заказа">
+      <aside class="receipt" aria-label="Заказ магазина">
         <div class="r-head">
-          <div class="kicker">Черновик заказа</div>
+          <div class="kicker">{{ savedOrder() ? 'Заказ магазина' : 'Черновик заказа' }}</div>
           <h3>Заказ в производство</h3>
-          <div class="date">{{ today }} · не отправлено</div>
+          <div class="date">
+            {{ today }} ·
+            @if (savedOrder()) {
+              сохранён {{ savedLabel() }}
+            } @else {
+              не оформлен
+            }
+          </div>
+          @if (orderDeadline(); as dl) {
+            <div class="deadline" [class.soon]="deadlineSoon()" [class.locked]="!windowOpen()">
+              <div class="dl-row"><span>Доставка</span><b>{{ deliveryLabel() }}</b></div>
+              <div class="dl-row"><span>Приём до</span><b>{{ deadlineLabel() }}</b></div>
+              <div class="dl-count">
+                @if (windowOpen()) {
+                  Осталось {{ deadlineCountdown() }}
+                } @else {
+                  Приём закрыт
+                }
+              </div>
+            </div>
+          } @else {
+            <div class="deadline off">Приём заказов закрыт — доступных дат доставки нет</div>
+          }
           <div class="rule" aria-hidden="true"></div>
         </div>
         <div class="r-body">
@@ -144,9 +166,12 @@
             <div class="r-list">
               @for (p of selected(); track p.id) {
                 <div class="r-row">
-                  <span>{{ p.name }}</span>
+                  <span>{{ displayName(p) }}</span>
                   <span class="dots" aria-hidden="true"></span>
-                  <b>{{ qtyOf(p.id) }} уп.</b>
+                  <span class="r-qty">
+                    <b>{{ qtyOf(p.id) }} уп.</b>
+                    <small>{{ fmtQty(weightOf(p), p.unitCode) }}</small>
+                  </span>
                 </div>
               }
             </div>
@@ -154,17 +179,35 @@
             <p class="r-empty">Добавьте продукцию из списка — здесь появится состав заказа.</p>
           }
         </div>
+        <div class="r-comment">
+          <label for="order-comment">Комментарий к заказу</label>
+          <textarea id="order-comment" rows="3" placeholder="Например: доставить к 12:00, позвонить за час"
+                    [ngModel]="comment()" (ngModelChange)="comment.set($event)"
+                    [disabled]="!windowOpen()"></textarea>
+        </div>
         <div class="r-foot">
           <div class="total"><span>Всего</span><b>{{ totalPackages() }}</b></div>
           <div class="unit">
             {{ totalPackages() }} {{ plural(totalPackages(), 'упаковка', 'упаковки', 'упаковок') }} ·
             {{ selectedCount() }} {{ plural(selectedCount(), 'позиция', 'позиции', 'позиций') }}
           </div>
+          <div class="weight"><span>Общий вес</span><b>{{ fmtQty(totalWeight(), 'г') }}</b></div>
           <div class="actions">
-            <button type="button" class="btn primary" (click)="submitOrder()" [disabled]="!selectedCount()">Оформить заказ</button>
-            <button type="button" class="btn" (click)="clearOrder()" [disabled]="!selectedCount()">Очистить</button>
+            <button type="button" class="btn primary" (click)="saveOrder()"
+                    [disabled]="!windowOpen() || !selectedCount() || saving() || (!!savedOrder() && !orderDirty())">
+              {{ saving() ? 'Сохраняем…' : (savedOrder() ? 'Сохранить изменения' : 'Оформить заказ') }}
+            </button>
+            <button type="button" class="btn" (click)="clearOrder()"
+                    [disabled]="!windowOpen() || (!selectedCount() && !comment())">Очистить</button>
           </div>
-          <div class="note">Отправка на производство появится позже</div>
+          @if (saveErr()) { <div class="r-err" role="alert">{{ saveErr() }}</div> }
+          <div class="note">
+            @if (!windowOpen()) {
+              Приём закрыт — изменения больше не сохраняются
+            } @else {
+              Заказ можно менять до срока приёма
+            }
+          </div>
         </div>
       </aside>
     </div>

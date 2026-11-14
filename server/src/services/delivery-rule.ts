@@ -71,3 +71,29 @@ export async function writeDeliveryRule(client: Pool | PoolClient, next: Deliver
   return next;
 }
 
+/**
+ * Дни доставки от `from` на `days` вперёд: ручные отметки и совпадения правила.
+ * Нужны магазину, чтобы посчитать срок закрытия заказа, не зная самого правила.
+ */
+export async function deliveryDates(from: string, days: number, client: Pool | PoolClient = pool): Promise<string[]> {
+  const rule = await deliveryRule(client);
+  const { rows } = await client.query<{ dates: string[] }>(
+    `select coalesce(array_agg(to_char(delivery_date, 'YYYY-MM-DD') order by delivery_date),
+                     '{}'::text[]) as dates
+       from delivery_schedule
+      where delivery_date >= $1::date`,
+    [from]
+  );
+  const start = new Date(`${from}T00:00:00Z`);
+  const horizon = new Date(start.getTime() + days * 86400000).toISOString().slice(0, 10);
+  const dates = new Set(rows[0].dates.filter((date) => date <= horizon));
+  for (let shift = 0; shift <= days; shift++) {
+    const day = new Date(start.getTime() + shift * 86400000);
+    const weekday = day.getUTCDay() || 7;
+    if (rule.weekdays.includes(weekday) || rule.monthDays.includes(day.getUTCDate())) {
+      dates.add(day.toISOString().slice(0, 10));
+    }
+  }
+  return [...dates].sort();
+}
+

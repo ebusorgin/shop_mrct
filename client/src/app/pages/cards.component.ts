@@ -2,7 +2,7 @@ import { ChangeDetectionStrategy, Component, ElementRef, OnInit, computed, injec
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ApiService } from '../core/api.service';
-import { CardItem, ExpansionRow, Product, ProductCatalog, Semi, TechCard, Unit } from '../core/models';
+import { CardItem, ExpansionRow, PriceBasis, Product, ProductCatalog, Semi, TechCard, Unit } from '../core/models';
 import { fmtQty, httpErr, trim } from '../core/format';
 import { Conv, NO_CONV, dimOf, reachableDims } from '../core/units';
 import { LangService } from '../core/lang.service';
@@ -27,8 +27,12 @@ interface CardDraftPackaging {
   minOrder: number | null;
   /** Можно ли уже заказывать эту фасовку магазинам. */
   available: boolean;
-  /** Цена за кг / л / шт (RSD); 0 — не задана. */
+  /** Цена продажи (RSD); 0 — не задана. */
   price: number | null;
+  /** Себестоимость в RSD за ту же базу, что и цена; 0 — не задана. */
+  cost: number | null;
+  /** За что указана цена: кг/л/шт, порция (упаковка) или штука. */
+  priceBasis: PriceBasis;
 }
 
 interface CardDraft {
@@ -86,6 +90,14 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
       /* метка каталога в списке: фон и иконка из настроек каталога */
       .cat-chip { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px;
         line-height: 16px; color: #26303f; vertical-align: baseline; }
+      /* база цены фасовки: кг/л/шт, порция или штука */
+      .price-basis { flex: 0 1 auto; }
+      .pb-opts { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-height: 37px; }
+      .pb-opts label { display: inline-flex; align-items: center; gap: 4px; font-size: 12px;
+        color: var(--text); white-space: nowrap; }
+      .pb-opts input[type='radio'] { width: auto; margin: 0; padding: 0; box-shadow: none;
+        accent-color: var(--brand-blue); }
+      @media (max-width: 640px) { .price-basis { flex: 1 1 100%; } }
     `,
   ],
   template: `
@@ -160,7 +172,7 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
             <label class="f">Выход<input type="number" [(ngModel)]="d.portionQty" /></label>
             <label class="f">Ед.
               <select [(ngModel)]="d.portionUnitId">
-                @for (u of units(); track u.id) { <option [ngValue]="u.id">{{ u.code }}</option> }
+                @for (u of outputUnits(); track u.id) { <option [ngValue]="u.id">{{ u.code }}</option> }
               </select>
             </label>
             <label class="f" style="flex:1">Примечание<input [(ngModel)]="d.note" /></label>
@@ -177,6 +189,7 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
           <p class="muted" style="font-size:12px; margin:0 0 8px">
             Выход упаковки — в единице выхода техкарты ({{ unitCode(d.portionUnitId) }}).
             Галочка «в доставке» разрешает магазинам заказывать продукт в этой фасовке.
+            Себестоимость вводится за ту же базу, что и цена, и подставляется в отчёт по выбору.
           </p>
           @for (pk of d.packagings; track $index) {
             <div class="row" style="align-items:center;margin-bottom:6px">
@@ -184,9 +197,31 @@ interface DEdge { x1: number; y1: number; x2: number; y2: number; label: string;
                 <input type="number" [(ngModel)]="pk.qtyBase" />
               </label>
               <label class="f">Мин. заказ, уп.<input type="number" [(ngModel)]="pk.minOrder" min="1" step="1" /></label>
-              <label class="f">Цена, RSD/{{ priceUnit(d.portionUnitId) }}
-                <input type="number" [(ngModel)]="pk.price" min="0" step="0.01" />
+              <label class="f">Цена, RSD
+                <input type="number" [(ngModel)]="pk.price" min="0" step="0.01"
+                       (blur)="pk.price = roundPrice(pk.price)" />
               </label>
+              <label class="f" title="Себестоимость за ту же базу, что и цена (кг/л/шт, порцию или шт). Используется в отчёте-отгрузке при выборе «по себестоимости»">Себест., RSD
+                <input type="number" [(ngModel)]="pk.cost" min="0" step="0.01"
+                       (blur)="pk.cost = roundPrice(pk.cost)" />
+              </label>
+              <div class="f price-basis">
+                <span>Цена за</span>
+                <div class="pb-opts" role="radiogroup" [attr.aria-label]="'Цена за, упаковка ' + ($index + 1)">
+                  <label>
+                    <input type="radio" [attr.name]="'price-basis-' + $index" [name]="'price-basis-' + $index" value="unit"
+                           [(ngModel)]="pk.priceBasis" /> {{ priceUnit(d.portionUnitId) }}
+                  </label>
+                  <label>
+                    <input type="radio" [attr.name]="'price-basis-' + $index" [name]="'price-basis-' + $index" value="portion"
+                           [(ngModel)]="pk.priceBasis" /> порцию
+                  </label>
+                  <label>
+                    <input type="radio" [attr.name]="'price-basis-' + $index" [name]="'price-basis-' + $index" value="piece"
+                           [(ngModel)]="pk.priceBasis" /> шт
+                  </label>
+                </div>
+              </div>
               <label class="f" style="flex:0 0 auto; flex-direction:row; align-items:center; gap:6px">
                 <input type="checkbox" [(ngModel)]="pk.available" /> в доставке
               </label>
@@ -314,6 +349,8 @@ export class CardsComponent implements OnInit {
   semis = signal<Semi[]>([]);
   products = signal<Product[]>([]);
   units = signal<Unit[]>([]);
+  /** Выход техкарты задаётся только в граммах или миллилитрах. */
+  outputUnits = computed(() => this.units().filter((u) => u.dimension !== 'count'));
   catalogs = signal<ProductCatalog[]>([]);
   draft = signal<CardDraft | null>(null);
   err = signal('');
@@ -468,6 +505,11 @@ export class CardsComponent implements OnInit {
     return this.units().find((u) => u.id === id)?.code ?? '';
   }
 
+  /** Цена в RSD хранится и показывается с точностью до сотых. */
+  roundPrice(value: number | null | undefined): number {
+    return Math.round((Number(value ?? 0) + Number.EPSILON) * 100) / 100;
+  }
+
   /** Единица цены фасовки: масса — кг, объём — л, штучное — шт. */
   priceUnit(id: number | null): string {
     const dimension = this.units().find((u) => u.id === id)?.dimension;
@@ -562,7 +604,7 @@ export class CardsComponent implements OnInit {
       portionUnitId: unit?.id ?? null,
       catalogId: null,
       items: [],
-      packagings: [{ id: null, qtyBase: 1000, minOrder: 1, available: true, price: 0 }],
+      packagings: [{ id: null, qtyBase: 1000, minOrder: 1, available: true, price: 0, cost: 0, priceBasis: 'unit' }],
     });
     this.buildDiagram();
     this.revealEditor();
@@ -574,7 +616,9 @@ export class CardsComponent implements OnInit {
     this.preview.set([]);
     const packagings = (c.packagings ?? []).map((pk) => ({
       id: pk.id, qtyBase: pk.qtyBase, minOrder: pk.minOrder,
-      available: pk.available !== false, price: pk.price ?? 0,
+      available: pk.available !== false, price: this.roundPrice(pk.price),
+      cost: this.roundPrice(pk.cost),
+      priceBasis: pk.priceBasis ?? 'unit',
     }));
     this.draft.set({
       id: c.id, name: c.name, nameEn: c.nameEn ?? '', nameSr: c.nameSr ?? '', note: c.note,
@@ -584,7 +628,7 @@ export class CardsComponent implements OnInit {
         sourceType: i.sourceType, refId: i.refId, qty: i.qty, unitId: i.unitId,
         refQuery: this.refLabel(i),
       })),
-      packagings: packagings.length ? packagings : [{ id: null, qtyBase: c.portionQty, minOrder: 1, available: true, price: 0 }],
+      packagings: packagings.length ? packagings : [{ id: null, qtyBase: c.portionQty, minOrder: 1, available: true, price: 0, cost: 0, priceBasis: 'unit' }],
     });
     this.buildDiagram();
     this.revealEditor();
@@ -625,7 +669,7 @@ export class CardsComponent implements OnInit {
   addPackaging(): void {
     const d = this.draft();
     if (!d) return;
-    d.packagings.push({ id: null, qtyBase: null, minOrder: 1, available: true, price: 0 });
+    d.packagings.push({ id: null, qtyBase: null, minOrder: 1, available: true, price: 0, cost: 0, priceBasis: 'unit' });
     this.draft.set({ ...d });
   }
 
@@ -657,7 +701,9 @@ export class CardsComponent implements OnInit {
       qtyBase: pk.qtyBase,
       minOrder: pk.minOrder,
       available: pk.available,
-      price: pk.price == null ? 0 : pk.price,
+      price: this.roundPrice(pk.price),
+      cost: this.roundPrice(pk.cost),
+      priceBasis: pk.priceBasis,
     }));
     if (!packagings.length) {
       this.err.set('Добавьте хотя бы одну фасовку');

@@ -1,12 +1,20 @@
 <div class="head no-print">
-  <a class="link-back" routerLink="/orders" [queryParams]="date ? { date } : {}">← Архив заказов</a>
+  <a class="link-back" [routerLink]="backLink" [queryParams]="date ? { date } : {}">← {{ storeMode ? 'Мои заказы' : 'Архив заказов' }}</a>
   <h1 class="page-title">Отчёт-отгрузка</h1>
   @if (date) { <span class="badge blue">Доставка {{ dateLabel() }}</span> }
   @if (!loading() && !err() && documents().length) {
     <span class="badge gray">{{ scopeLabel() }}</span>
     <span class="badge gray">{{ documents().length }} {{ plural(documents().length, 'документ', 'документа', 'документов') }}</span>
+    @if (priceMode() === 'cost') { <span class="badge amber">Себестоимость</span> }
   }
   <div class="spacer"></div>
+  @if (!storeMode) {
+    <label class="cost-toggle" title="Подставить в документ себестоимость фасовок из техкарт вместо продажной цены. Документ строится заново.">
+      <input type="checkbox" [checked]="priceMode() === 'cost'" [disabled]="loading()"
+             (change)="setPriceMode($any($event.target).checked ? 'cost' : 'sale')" />
+      по себестоимости
+    </label>
+  }
   <button type="button" class="btn primary" (click)="print()" [disabled]="loading() || !documents().length">
     <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
       <path d="M4.5 6V2.5h7V6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
@@ -29,15 +37,23 @@
 } @else if (!documents().length) {
   <section class="panel no-print">
     <p class="empty">
-      <b>Заказов за эту дату нет</b>
-      Отчёт-отгрузка строится по сохранённым заказам магазинов на выбранную доставку.
+      <b>{{ storeMode ? 'Вашего заказа на эту дату нет' : 'Заказов за эту дату нет' }}</b>
+      @if (storeMode) {
+        Отчёт-отгрузка строится по сохранённому заказу вашего магазина на выбранную доставку.
+      } @else {
+        Отчёт-отгрузка строится по сохранённым заказам магазинов на выбранную доставку.
+      }
     </p>
   </section>
 } @else {
-  @if (missingPrices()) {
+  @if (missingPrices() && !storeMode) {
     <div class="warn no-print" role="alert">
-      <b>Цена не задана у {{ missingPrices() }} {{ plural(missingPrices(), 'позиции', 'позиций', 'позиций') }}.</b>
-      Заполните цену фасовки (RSD за кг / л / шт) в техкарте — суммы и PDV пересчитаются автоматически.
+      <b>{{ priceMode() === 'cost' ? 'Себестоимость' : 'Цена' }} не задана у {{ missingPrices() }} {{ plural(missingPrices(), 'позиции', 'позиций', 'позиций') }}.</b>
+      @if (priceMode() === 'cost') {
+        Заполните себестоимость фасовки (RSD за кг, л, порцию или шт) в техкарте — суммы и PDV пересчитаются автоматически.
+      } @else {
+        Заполните цену фасовки (RSD за кг, л, порцию или шт) в техкарте — суммы и PDV пересчитаются автоматически.
+      }
     </div>
   }
 

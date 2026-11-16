@@ -115,7 +115,6 @@ export class AppComponent {
       items: [
         { path: 'suppliers', icon: '🚚', labelKey: 'nav.suppliers' },
         { path: 'points', icon: '🏪', labelKey: 'nav.points' },
-        { path: 'audit', icon: '📜', labelKey: 'nav.audit' },
         { path: 'users', icon: '👤', labelKey: 'nav.users', admin: true },
         { path: 'settings', icon: '⚙️', labelKey: 'nav.settings', admin: true },
       ],

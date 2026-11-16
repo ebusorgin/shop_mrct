@@ -148,9 +148,8 @@ export class OrdersComponent implements OnInit {
   /** Магазин может оформить заказ на выбранную дату, пока приём не закрыт. */
   canOrderSelected = computed(() => this.storeMode && !!this.selectedWindow()?.open);
 
-  /** Офис может выгрузить отчёт-отгрузку, когда приём заказов на дату уже закрыт. */
+  /** Отчёт-отгрузку можно выгрузить, когда приём заказов на дату уже закрыт. */
   canDownloadReport = computed(() => {
-    if (this.storeMode) return false;
     const date = this.selectedDate();
     if (!date || !this.group()) return false;
     const window = this.upcoming().get(date);

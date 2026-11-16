@@ -1,9 +1,10 @@
-import { ChangeDetectionStrategy, Component, DestroyRef, HostListener, OnInit, computed, effect, inject, signal, untracked } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, ElementRef, HostListener, Injector, OnInit, computed, effect, inject, signal, untracked, viewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute } from '@angular/router';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ApiService } from '../core/api.service';
+import { LogService } from '../core/log.service';
 import { Product, Unit, Waybill, WaybillShort, ImportParseResult, ImportItem, ImportDiscount } from '../core/models';
 import { cents, fmtCost, fmtDateTime, fmtMoney, fmtQty, httpErr, today, trim } from '../core/format';
 
@@ -12,6 +13,14 @@ interface DraftItem {
   qty: number | null;
   unitId: number | null;
   price: number | null;
+}
+
+/** Категория номенклатуры из справочника: имя + оформление (иконка/цвет) для выбора. */
+interface CategoryOption {
+  id: number;
+  name: string;
+  icon?: string;
+  color?: string;
 }
 
 /** Решение по одной распознанной строке: привязать к позиции или создать новую. */
@@ -24,6 +33,7 @@ interface ImpDraft {
   docPricePrinted: number | null; // напечатанная цена за напечатанную единицу — редактируется
   qtyForecast: boolean;      // qty пересчитан по решению GPT (упаковки -> г/мл)
   doubt: string | null;      // вопрос GPT по строке — подсветить человеку
+  warnings: string[];        // замечания именно по этой строке — показываются в карточке
   price: number | null;       // цена за базовую единицу — производная, только чтение
   vatRate: number | null;     // ставка PDV, % (5/10/20) или null
   vatSuspect: boolean;        // ставка прочитана неуверенно — проверить по фото
@@ -55,6 +65,27 @@ interface ImpDraft {
     .drop-hint{font-size:12px;color:var(--muted);min-height:16px}
     .drop.busy .drop-btn{animation:pulse 1.2s ease-in-out infinite}
     @keyframes pulse{50%{opacity:.55}}
+    /* вкладки умного прихода: GPT или Qoder CLI */
+    .smart-tabs{display:inline-flex;gap:4px;margin:10px 0 12px;padding:3px;background:#eef2f7;border-radius:10px}
+    .smart-tabs button{border:0;background:transparent;border-radius:8px;padding:7px 14px;font-size:13px;font-weight:600;color:var(--muted);cursor:pointer}
+    .smart-tabs button.on{background:#fff;color:var(--text);box-shadow:0 1px 3px rgba(15,23,42,.14)}
+
+    /* живой лог сервера: этапы GPT/CLI и рассуждения модели */
+    .ai-log{margin:10px 0 12px;border:1px solid #dbe3ee;border-radius:10px;background:#0f172a;overflow:hidden}
+    .ai-log-head{display:flex;align-items:center;gap:8px;padding:7px 10px;background:#16213a;color:#cbd5e1;font-size:12px}
+    .ai-log-head b{color:#e2e8f0;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
+    .ai-log-head .btn{padding:2px 8px;font-size:11px}
+    .ai-log-body{max-height:230px;overflow:auto;padding:8px 10px;font-family:ui-monospace,Consolas,monospace;font-size:12px;line-height:1.45;color:#cbd5e1}
+    .ai-line{white-space:pre-wrap;word-break:break-word;margin:2px 0}
+    .ai-line .t{color:#64748b;margin-right:7px;font-variant-numeric:tabular-nums}
+    .ai-line.k-thinking{color:#a5b4fc;font-style:italic}
+    .ai-line.k-tool{color:#7dd3fc}
+    .ai-line.k-result{color:#86efac}
+    .ai-line.k-error{color:#fca5a5}
+    .live-dot{width:8px;height:8px;border-radius:50%;background:#64748b;flex:0 0 auto}
+    .live-dot.on{background:#22c55e;animation:live 1.4s ease-in-out infinite}
+    @keyframes live{50%{opacity:.35}}
+
 
     /* ===== умный приход: просмотр фото документа ===== */
     .imp-file{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--muted)}
@@ -89,6 +120,9 @@ interface ImpDraft {
     .imp-card{display:grid;padding:10px;border:1px solid var(--border);border-radius:10px;background:#fff;margin-top:8px;box-shadow:var(--shadow)}
     .imp-card:hover{background:#fbfcfe}
     .imp-card.warn-card{border-color:#e3c56b;background:#fffdf4}
+    /* замечания строки — в самой карточке, чтобы было видно, к какой позиции они относятся */
+    .c-notes{grid-column:1/-1;display:grid;gap:3px;margin-top:2px}
+    .c-note{font-size:12px;line-height:1.4;color:#8a5a00;background:#fff7e2;border:1px solid #f0d9a6;border-radius:6px;padding:4px 8px}
     .c-name{display:flex;flex-direction:column;gap:4px;min-width:0}
     .c-name .badge{align-self:flex-start}
     /* название из документа правится прямо в карточке: по нему сервер запоминает псевдоним */
@@ -119,6 +153,10 @@ interface ImpDraft {
     .create-box{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:6px}
     .create-box input,.create-box select{width:100%;min-width:0}
     .create-box .cb-name{grid-column:1/-1}
+    /* категория новой позиции: селект из справочника + метка с иконкой и цветом выбранной категории */
+    .cb-cat-wrap{display:flex;align-items:center;gap:6px;min-width:0}
+    .cb-cat-wrap select{flex:1 1 auto;width:auto;min-width:0}
+    .cb-cat-badge{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:7px;border:1px solid rgba(15,23,42,.08);font-size:15px;line-height:1}
     .alias-hint{font-size:12px;color:var(--muted)}
     .seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;width:fit-content;max-width:100%}
     .seg button{border:0;background:#fff;padding:5px 10px;font-size:12px;font-weight:600;color:var(--muted);cursor:pointer}
@@ -348,10 +386,47 @@ interface ImpDraft {
 
     <!-- ===== умный импорт из файла ===== -->
     <div class="panel" id="smart" style="margin-top:16px">
-      <h3>🤖 Умный приход: файл накладной → GPT → склад</h3>
+      <h3>🤖 Умный приход: файл накладной → {{ smartTab() === 'cli' ? 'Qoder CLI' : 'GPT' }} → склад</h3>
+      <div class="smart-tabs" role="tablist" aria-label="Способ распознавания накладной">
+        <button type="button" role="tab" [class.on]="smartTab() === 'gpt'" [attr.aria-selected]="smartTab() === 'gpt'"
+                [disabled]="impBusy()" (click)="switchSmartTab('gpt')">🤖 GPT</button>
+        <button type="button" role="tab" [class.on]="smartTab() === 'cli'" [attr.aria-selected]="smartTab() === 'cli'"
+                [disabled]="impBusy()" (click)="switchSmartTab('cli')">💻 Qoder CLI</button>
+      </div>
+      <p class="muted" style="font-size:12px;margin:-4px 0 10px">
+        @if (smartTab() === 'cli') {
+          Qoder CLI читает файл на сервере и возвращает те же позиции в форму ниже.
+        } @else {
+          GPT читает фото или PDF и заполняет форму ниже.
+        }
+      </p>
+      @if (logs.lines().length || impBusy()) {
+        <div class="ai-log">
+          <div class="ai-log-head">
+            <span class="live-dot" [class.on]="impBusy()"></span>
+            <b>{{ impBusy() ? (lastLog() || 'Сервер работает…') : 'Лог распознавания' }}</b>
+            <button type="button" class="btn sm" (click)="logOpen.set(!logOpen())">
+              {{ logOpen() ? 'свернуть' : 'показать' }}
+            </button>
+          </div>
+          @if (logOpen()) {
+            <div class="ai-log-body" #logBox>
+              @for (l of logs.lines(); track $index) {
+                <div [class]="'ai-line k-' + l.kind"><span class="t">{{ l.time }}</span>{{ l.text }}</div>
+              } @empty {
+                <div class="ai-line">Жду события сервера…</div>
+              }
+            </div>
+          }
+        </div>
+      }
       <label class="drop" [class.busy]="impBusy()">
         <input type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif,application/pdf" (change)="onImpFile($event)" />
-        <span class="drop-btn">{{ impBusy() ? 'Читаем документ…' : '📷 Фото или PDF накладной — можно несколько' }}</span>
+        <span class="drop-btn">
+          {{ impBusy()
+            ? (smartTab() === 'cli' ? 'Qoder CLI читает документ…' : 'Читаем документ…')
+            : (smartTab() === 'cli' ? '💻 Файл накладной для Qoder CLI' : '📷 Фото или PDF накладной — можно несколько') }}
+        </span>
         <span class="drop-hint">{{ busyHint() }}</span>
       </label>
       @if (impErr()) { <div class="err">{{ impErr() }}</div> }
@@ -367,8 +442,14 @@ interface ImpDraft {
           <label class="add-more" title="Добавить ещё фото того же документа">
             ＋<input type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif,application/pdf" (change)="addMoreFiles($event)" />
           </label>
-          <button class="btn primary" [disabled]="impBusy()" (click)="parseFiles()">Разобрать как одну накладную</button>
-          <span class="muted files-hint">GPT склеит листы в один документ и уберёт повторы дублей</span>
+          <button class="btn primary" [disabled]="impBusy()" (click)="parseFiles()">
+            {{ smartTab() === 'cli' ? 'Разобрать через Qoder CLI' : 'Разобрать как одну накладную' }}
+          </button>
+          <span class="muted files-hint">
+            {{ smartTab() === 'cli'
+              ? 'Qoder CLI прочитает листы как один документ'
+              : 'GPT склеит листы в один документ и уберёт повторы дублей' }}
+          </span>
         </div>
       }
 
@@ -394,13 +475,15 @@ interface ImpDraft {
               }
               · модель {{ p.model }}
             </span>
-            <button
-              type="button"
-              class="btn sm"
-              [disabled]="impBusy()"
-              title="Перечитать фото заново и показать, что именно распознала модель — когда цифра в строке не сходится с документом"
-              (click)="reparseWithTranscript()"
-            >🔍 сверить с фото</button>
+            @if (p.model !== 'Qoder CLI') {
+              <button
+                type="button"
+                class="btn sm"
+                [disabled]="impBusy()"
+                title="Перечитать фото заново и показать, что именно распознала модель — когда цифра в строке не сходится с документом"
+                (click)="reparseWithTranscript()"
+              >🔍 сверить с фото</button>
+            }
           </div>
           @if (p.transcript; as tr) {
             <pre class="transcript">{{ tr }}</pre>
@@ -439,7 +522,7 @@ interface ImpDraft {
         </div>
 
         @for (it of impItems(); track $index) {
-          <div class="imp-card" [class.warn-card]="it.vatSuspect || it.vatInferred || it.qtyForecast || it.doubt || lineMismatch(it)">
+          <div class="imp-card" [class.warn-card]="it.vatSuspect || it.vatInferred || it.qtyForecast || it.doubt || it.warnings.length || lineMismatch(it)">
             <div class="c-name">
               <input class="doc-name" [(ngModel)]="it.rawName" title="Название товара, как напечатано в накладной — можно поправить, псевдоним запомнится по нему" aria-label="Название из документа" />
               @if (it.via; as v) {
@@ -531,7 +614,21 @@ interface ImpDraft {
               } @else {
                 <div class="create-box">
                   <input class="cb-name" [(ngModel)]="it.newName" placeholder="Название на склад" aria-label="Название на склад" />
-                  <input [(ngModel)]="it.newCategory" placeholder="Категория" aria-label="Категория" />
+                  <div class="cb-cat-wrap">
+                    <select class="cb-cat" [(ngModel)]="it.newCategory" title="Категория из справочника (настраивается в Настройках: иконка и цвет)" aria-label="Категория">
+                      <option value="прочее">— категория «прочее» —</option>
+                      @for (c of categories(); track c.id) {
+                        <option [value]="c.name">{{ c.icon ? c.icon + ' ' : '' }}{{ c.name }}</option>
+                      }
+                      @if (it.newCategory && !catOf(it.newCategory)) {
+                        <option [value]="it.newCategory">{{ it.newCategory }} — нет в справочнике</option>
+                      }
+                    </select>
+                    @if (catOf(it.newCategory); as cat) {
+                      <span class="cb-cat-badge" [style.background]="cat.color || '#eef2f7'"
+                            [title]="'Категория: ' + cat.name + (cat.color ? ' · цвет ' + cat.color : '')">{{ cat.icon || '·' }}</span>
+                    }
+                  </div>
                   <select class="cb-unit" [(ngModel)]="it.newUnitId" aria-label="Складская единица">
                     @for (u of baseUnits(); track u.id) { <option [ngValue]="u.id">хранить в {{ u.code }}</option> }
                   </select>
@@ -540,6 +637,14 @@ interface ImpDraft {
             </div>
 
             <button class="btn sm danger c-del" title="Убрать строку" (click)="removeImp($index)">✕<span class="del-name"> Убрать строку</span></button>
+
+            @if (it.warnings.length) {
+              <div class="c-notes" aria-label="Замечания по строке">
+                @for (w of it.warnings; track $index) {
+                  <div class="c-note">⚠ {{ w }}</div>
+                }
+              </div>
+            }
           </div>
         }
 
@@ -633,6 +738,16 @@ export class WaybillsComponent implements OnInit {
   private api = inject(ApiService);
   private route = inject(ActivatedRoute);
   private destroyRef = inject(DestroyRef);
+  /** effect() в ngOnInit вне инжект-контекста — передаём инжектор явно */
+  private injector = inject(Injector);
+  /** Живой лог сервера (WebSocket): что делает GPT/CLI и как рассуждает модель. */
+  logs = inject(LogService);
+  logOpen = signal(true);
+  lastLog = computed(() => {
+    const arr = this.logs.lines();
+    return arr.length ? arr[arr.length - 1].text : '';
+  });
+  private logBox = viewChild<ElementRef<HTMLDivElement>>('logBox');
 
   /** Esc закрывает увеличенное фото, стрелки листают пакет (как в нормальных просмотрщиках). */
   @HostListener('window:keydown.escape')
@@ -655,6 +770,8 @@ export class WaybillsComponent implements OnInit {
   detail = signal<Waybill | null>(null);
   products = signal<Product[]>([]);
   units = signal<Unit[]>([]);
+  /** Справочник категорий номенклатуры — селект категории при создании новой позиции из разбора. */
+  categories = signal<CategoryOption[]>([]);
   err = signal('');
   msg = signal('');
   saving = signal(false);
@@ -691,8 +808,11 @@ export class WaybillsComponent implements OnInit {
 
   ngOnInit(): void {
     this.reload();
+    // живой канал логов держим открытым заранее — первые события разбора не потеряются
+    this.logs.connect();
     this.api.products$().subscribe((p) => this.products.set(p));
     this.api.units$().subscribe((u) => this.units.set(u));
+    this.api.categoriesDictionary$().subscribe((c) => this.categories.set(c));
     // быстрые действия панели приходят как ?panel=new|smart|journal — прокручиваем к нужной панели
     this.route.queryParams
       .pipe(takeUntilDestroyed(this.destroyRef))
@@ -700,15 +820,27 @@ export class WaybillsComponent implements OnInit {
         const v = typeof p['panel'] === 'string' ? p['panel'] : '';
         this.anchor.set(['new', 'smart', 'journal'].includes(v) ? v : null);
       });
-    effect(() => {
-      const id = this.anchor();
-      if (id && this.list().length) {
-        untracked(() => {
-          this.anchor.set(null);
-          document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        });
-      }
-    });
+    effect(
+      () => {
+        this.logs.lines();
+        const box = this.logBox()?.nativeElement;
+        if (box) queueMicrotask(() => (box.scrollTop = box.scrollHeight));
+      },
+      { injector: this.injector }
+    );
+    effect(
+      () => {
+        const id = this.anchor();
+        if (id) {
+          untracked(() => {
+            this.anchor.set(null);
+            // панель может отрисоваться в этом же тике — прокручиваем после рендера
+            queueMicrotask(() => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+          });
+        }
+      },
+      { injector: this.injector }
+    );
   }
 
   reload(): void {
@@ -770,6 +902,8 @@ export class WaybillsComponent implements OnInit {
 
   // ==================== умный импорт из файла ====================
 
+  /** Какая вкладка распознаёт документ: GPT или Qoder CLI. */
+  smartTab = signal<'gpt' | 'cli'>('gpt');
   parsed = signal<ImportParseResult | null>(null);
   impItems = signal<ImpDraft[]>([]);
   impBusy = signal(false);
@@ -859,14 +993,42 @@ export class WaybillsComponent implements OnInit {
     return n > 1 ? `фото · ${this.sheetsWord(n)}` : 'фото накладной';
   }
 
+  /** Переключение вкладки: прежний разбор и выбранные файлы не смешиваем с новым способом. */
+  switchSmartTab(tab: 'gpt' | 'cli'): void {
+    if (tab === this.smartTab() || this.impBusy()) return;
+    this.smartTab.set(tab);
+    this.parsed.set(null);
+    this.impItems.set([]);
+    this.pendFiles.set([]);
+    this.extrasPreview.set([]);
+    this.impErr.set('');
+    this.impFileName.set('');
+    this.impNumber = '';
+    this.impSupplier = '';
+    this.impDate = today();
+    this.impDocNet = null;
+    this.impDocVat = null;
+    this.impDocGross = null;
+    this.lastPackage = [];
+    this.curLb.set(null);
+    this.discNotes.set([]);
+    this.logs.clear();
+  }
+
   /** Подсказка под кнопкой выбора файла: что загружаем сейчас и какие файлы подходят. */
   busyHint(): string {
-    if (this.impBusy()) return 'Распознавание занимает 10–60 сек — не закрывайте страницу';
+    if (this.impBusy()) {
+      return this.smartTab() === 'cli'
+        ? 'Qoder CLI распознаёт документ — обычно 20–90 сек, пакет листов дольше, не закрывайте страницу'
+        : 'Распознавание занимает 10–60 сек — не закрывайте страницу';
+    }
     const n = this.pendFiles().length;
     if (!this.parsed() && n) return `листов в пакете: ${n} — можно добавить ещё или разбирать`;
     return (
       this.impFileName() ||
-      'JPG / PNG / WEBP / GIF / PDF до 15 МБ каждое. Накладную можно сфотографировать кусками или несколько раз — система соберёт из фото одну накладную'
+      (this.smartTab() === 'cli'
+        ? 'JPG / PNG / WEBP / GIF / PDF до 15 МБ каждое. Qoder CLI читает файл на сервере — личный кабинет CLI должен быть авторизован'
+        : 'JPG / PNG / WEBP / GIF / PDF до 15 МБ каждое. Накладную можно сфотографировать кусками или несколько раз — система соберёт из фото одну накладную')
     );
   }
 
@@ -1083,12 +1245,21 @@ export class WaybillsComponent implements OnInit {
 
   private doParse(list: { uid: string; name: string; mime: string; dataUrl: string }[], debug = false): void {
     this.lastPackage = list;
-    this.api
-      .importParse$({
-        files: list.map((f) => ({ fileName: f.name, mime: f.mime, base64: f.dataUrl.split(',')[1] ?? '' })),
-        ...(debug ? { debug: true } : {}),
-      })
-      .subscribe({
+    const jobId =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    this.logOpen.set(true);
+    this.logs.watch(jobId);
+    const payload = {
+      jobId,
+      files: list.map((f) => ({ fileName: f.name, mime: f.mime, base64: f.dataUrl.split(',')[1] ?? '' })),
+    };
+    const request$ =
+      this.smartTab() === 'cli' && !debug
+        ? this.api.importParseCli$(payload)
+        : this.api.importParse$({ ...payload, ...(debug ? { debug: true } : {}) });
+    request$.subscribe({
         next: (r) => {
           this.impBusy.set(false);
           this.parsed.set(r);
@@ -1144,6 +1315,7 @@ export class WaybillsComponent implements OnInit {
       docPricePrinted: it.docPricePrinted ?? null,
       qtyForecast: !!it.qtyForecast,
       doubt: doubt || null,
+      warnings: it.warnings ?? [],
       price: it.price,
       vatRate: it.vatRate,
       vatSuspect: !!it.vatSuspect,
@@ -1163,6 +1335,12 @@ export class WaybillsComponent implements OnInit {
 
   unitCodeOf(unitId: number | null): string {
     return this.units().find((u) => u.id === unitId)?.code ?? '';
+  }
+
+  /** Категория справочника по имени (регистр/пробелы не важны); null — такой категории ещё нет. */
+  catOf(name: string | null | undefined): CategoryOption | null {
+    const n = (name ?? '').trim().toLowerCase();
+    return n ? this.categories().find((c) => c.name.trim().toLowerCase() === n) ?? null : null;
   }
 
   /** Подсказка под количеством: читаемое из базового + как напечатано в документе. */

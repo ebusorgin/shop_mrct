@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { Router } from 'express';
 import { pool, tx } from '../db';
@@ -8,6 +9,15 @@ import { parseWaybillDoc, CatalogProduct } from '../services/llm';
 import { convertAcross, type ProdConv } from '../services/expansion';
 import { ingestWaybill } from './waybills';
 import { auditTx, type Actor } from '../services/audit';
+import { logSink, type LogKind } from '../services/ws-log';
+import {
+  detectRotationsAsync,
+  prepareVisionFilesAsync,
+  runAuditReader,
+  runReaderAgent,
+  runStructurerAgent,
+} from '../services/invoice-agents';
+import { classifyNewProduct, findLexEntry, matchByMeaning } from '../services/product-lexicon';
 
 export const importRouter = Router();
 
@@ -63,14 +73,16 @@ const DOC_UNITS: Record<string, { code: string; factor: number }> = {
   ton: { code: 'г', factor: 1000000 }, tons: { code: 'г', factor: 1000000 }, tone: { code: 'г', factor: 1000000 },
   мл: { code: 'мл', factor: 1 }, ml: { code: 'мл', factor: 1 }, миллилитр: { code: 'мл', factor: 1 },
   миллилитров: { code: 'мл', factor: 1 }, миллилитра: { code: 'мл', factor: 1 },
-  л: { code: 'мл', factor: 1000 }, l: { code: 'мл', factor: 1000 }, liter: { code: 'мл', factor: 1000 },
+  л: { code: 'мл', factor: 1000 }, l: { code: 'мл', factor: 1000 }, lk: { code: 'мл', factor: 1000 }, liter: { code: 'мл', factor: 1000 },
   liters: { code: 'мл', factor: 1000 }, litres: { code: 'мл', factor: 1000 }, litre: { code: 'мл', factor: 1000 },
   литр: { code: 'мл', factor: 1000 }, литров: { code: 'мл', factor: 1000 },
   литра: { code: 'мл', factor: 1000 },
   шт: { code: 'шт', factor: 1 }, шт1: { code: 'шт', factor: 1 }, штука: { code: 'шт', factor: 1 },
   штук: { code: 'шт', factor: 1 }, szt: { code: 'шт', factor: 1 }, pcs: { code: 'шт', factor: 1 },
   pc: { code: 'шт', factor: 1 }, kom: { code: 'шт', factor: 1 }, komada: { code: 'шт', factor: 1 },
-  kos: { code: 'шт', factor: 1 },
+  ko: { code: 'шт', factor: 1 }, komad: { code: 'шт', factor: 1 }, kos: { code: 'шт', factor: 1 },
+  ut: { code: 'шт', factor: 1 }, dose: { code: 'шт', factor: 1 },
+  packung: { code: 'шт', factor: 1 }, pakovanje: { code: 'шт', factor: 1 },
   des: { code: 'шт', factor: 10 }, десяток: { code: 'шт', factor: 10 }, десятков: { code: 'шт', factor: 10 },
   dozen: { code: 'шт', factor: 10 },
 };
@@ -89,7 +101,10 @@ const roundPriceBase = (n: number): number => Math.round(n * 1e10) / 1e10;
  * хвосты слов через \p{L} (флаг u).
  */
 const PKG_RE =
-  /(\d+(?:[.,]\d+)?)\s*(грам\p{L}*|grams?|gr|гр|килограм\p{L}*|кг|kg|мл|ml|миллилитр\p{L}*|mililitr\p{L}*|литр\p{L}*|liters?|l|л|тон\p{L}*|tons?|т|g|г)(?![\p{L}\p{N}])/giu;
+  /(\d+(?:[.,]\d+)?)\s*(грам\p{L}*|grams?|gr|гр|килограм\p{L}*|кг|kg|lk|мл|ml|миллилитр\p{L}*|mililitr\p{L}*|литр\p{L}*|liters?|l|л|тон\p{L}*|tons?|т|g|г)(?![\p{L}\p{N}])/giu;
+
+/** Мультиупаковка в названии: «JAJA 30/1», «180/1 kutija», «6/1» — N штук содержимого. */
+const MULTIPACK_RE = /(?:^|[^\d])(\d{1,4})\s*\/\s*1(?![\d])/;
 
 /** -> { code: базовая г/мл, per: фасовка в базовых } или null, если в названии фасовки нет. */
 export function pkgFromName(name: string): { code: string; per: number } | null {
@@ -99,10 +114,27 @@ export function pkgFromName(name: string): { code: string; per: number } | null 
     const du = DOC_UNITS[normName(m[2])];
     if (du && du.code !== 'шт') return { code: du.code, per: num * du.factor };
   }
+  const mp = name.match(MULTIPACK_RE);
+  if (mp) {
+    const n = parseInt(mp[1], 10);
+    if (isFinite(n) && n > 1) return { code: 'шт', per: n };
+  }
   return null;
 }
 
 interface UnitRow { id: number; code: string; factor: number; dimension: string }
+
+/**
+ * Замечание строки (notes из baseLine) начинается с «Название»: — в карточке позиции название
+ * уже стоит первой строкой, поэтому префикс срезаем иначе текст читается как «то же имя» дважды.
+ */
+export function stripLineName(note: string, name: string): string {
+  const text = note.trim();
+  const prefix = `«${name}»`;
+  if (!text.startsWith(prefix)) return text;
+  const rest = text.slice(prefix.length).replace(/^\s*[:—–-]\s*/, '').trim();
+  return rest || text;
+}
 
 /** Что GPT решила про строку (смысл), в отличие от того, что напечатано (числа). */
 export interface LineRead {
@@ -146,7 +178,7 @@ export function baseLine(
   let code = printed ? printed.code : null;
   let unitId = (printed && units.get(printed.code)?.id) ?? null;
   let forecast = false;
-  let doubt: string | null = line.doubt ? `GPT: ${line.doubt}` : null;
+  let doubt: string | null = line.doubt ? `Склад: ${line.doubt}` : null;
 
   // фасовка, о которой сказала модель (в базовых единицах), либо null
   const baseHint = line.baseUnit ? DOC_UNITS[normName(line.baseUnit)]?.code ?? null : null;
@@ -192,11 +224,11 @@ export function baseLine(
 
   if (line.countAs === 'contents') {
     if (pack) {
-      asContents(pack, `GPT: считается содержимым, фасовка ${trimNum(pack.per)} ${pack.code}`);
+      asContents(pack, `Склад: считается содержимым, фасовка ${trimNum(pack.per)} ${pack.code}`);
     } else {
       const pkg = pkgFromName(line.name);
       if (pkg) {
-        asContents(pkg, `GPT: считается содержимым, но фасовку не назвала — взял ${trimNum(pkg.per)} ${pkg.code} из названия`);
+        asContents(pkg, `Склад: считается содержимым, но фасовку не назвала — взял ${trimNum(pkg.per)} ${pkg.code} из названия`);
       } else {
         doubt = doubt ?? 'GPT решила считать содержимым, но размер упаковки не назван — укажите количество и единицу вручную';
         notes.push(`${name}: ${doubt}`);
@@ -295,8 +327,11 @@ async function trgmCandidates(norm: string): Promise<{ productId: number; name: 
  */
 importRouter.post(
   '/parse',
-  wrap(async (_req, res) => {
-    const body = _req.body ?? {};
+  wrap(async (req, res) => {
+    const startedAt = Date.now();
+    const body = req.body ?? {};
+    const jobId = typeof body.jobId === 'string' ? body.jobId : '';
+    const log = logSink(req.user?.id, jobId);
     interface InFile { fileName: string; mime: string; base64: string }
     let list: InFile[];
     if (Array.isArray(body.files) && body.files.length) {
@@ -340,14 +375,22 @@ importRouter.post(
     const fileName = list[0].fileName;
     const storedFile = storedFiles[0];
     const extraStored = storedFiles.slice(1).map((stored, idx) => ({ stored, name: list[idx + 1].fileName }));
+    log(
+      'stage',
+      `Файл получен: ${fileName}${list.length > 1 ? ` + ещё ${list.length - 1} (${list.length} листа)` : ''} · ${(totalBytes / 1024).toFixed(0)} КБ`
+    );
+    log('stage', 'Готовлю каталог и единицы склада…');
 
     const catalog = await loadCatalog();
     const units = await loadUnitRows();
+    log('stage', `Каталог загружен: ${catalog.products.length} позиций · отправляю в GPT`);
     const { doc, model, transcript, corrections } = await parseWaybillDoc({
       files: list.map((f) => ({ mime: f.mime, base64: f.base64 })),
       catalog: catalog.products,
       unitCodes: units.map((u) => u.code),
+      onLog: (text) => log('stage', text),
     });
+    log('stage', `GPT ответила: ${doc.items.length} строк · сопоставляю с каталогом…`);
     const products = catalog.products;
     const { byNormName, byAlias } = catalog;
     const validIds = new Set(products.map((p) => p.id));
@@ -380,6 +423,8 @@ importRouter.post(
     };
     const discountsOut: DiscOut[] = (doc.discounts?.items ?? [])
       .filter((d) => d.name || d.amount != null)
+      // «R. % (rabat) 0,00» — пустая графа бланка, а не скидка: не показываем и не считаем
+      .filter((d) => !(Math.abs(d.amount ?? 0) < 0.005 && Math.abs(d.percent ?? 0) < 0.005 && !d.doubt))
       .map((d) => ({
         name: d.name || 'скидка',
         productName: d.productName,
@@ -393,6 +438,7 @@ importRouter.post(
     // скидка, уже учтённая в суммах товарных строк, в отдельной росписи не нуждается — не двойим её
     for (const d of discountsOut) {
       if (d.includedInLineSum === true) continue;
+      if (d.amount == null || Math.abs(d.amount) < 0.005) continue; // «R.% 0,00» — не скидка, шум
       serviceLines.push({ kind: 'discount', name: d.name, amount: d.amount });
     }
     /** Names already represented by the GPT discounts block — the fallback classifier must not double them. */
@@ -411,18 +457,22 @@ importRouter.post(
           if (kind === 'discount' && discountNames.has(normName(it.name))) continue;
           const amt =
             it.lineSum ?? (it.qty != null && it.price != null ? Math.round(it.qty * it.price * 100) / 100 : null);
+          if (kind === 'discount' && (amt == null || Math.abs(amt) < 0.005)) continue;
           serviceLines.push({ kind, name: it.name.trim(), amount: amt != null ? Math.round(amt * 100) / 100 : null });
         }
         continue;
       }
       const norm = normName(it.name);
-      // 1) точное совпадение с именем, 2) запомненный псевдоним, 3) уверенный GPT
-      let match: { productId: number; name: string; unitCode: string; via: 'name' | 'alias' | 'llm' } | null = null;
-      const byName = byNormName.get(norm);
-      const byAl = byAlias.get(norm);
-      if (byName) match = { productId: byName.id, name: byName.name, unitCode: byName.unitCode, via: 'name' };
-      else if (byAl) match = { productId: byAl.id, name: byAl.name, unitCode: byAl.unitCode, via: 'alias' };
-      else if (it.productId != null && validIds.has(it.productId)) {
+      // 1) точное имя, 2) псевдоним, 3) словарь товароведа (сербский/немецкий/английский -> склад),
+      // 4) уверенная GPT. Если словарь знает строку и говорит «это НЕ наш товар» (свежий огурец,
+      // перец горошком и т.п.), ответу GPT не верим — иначе он цепляет похожее, но другое.
+      const meaning = matchByMeaning(it.name, products, byNormName, byAlias);
+      const lex = findLexEntry(it.name);
+      let match: { productId: number; name: string; unitCode: string; via: 'name' | 'alias' | 'llm' | 'lexicon' } | null = null;
+      if (meaning.match) {
+        const p = meaning.match.product;
+        match = { productId: p.id, name: p.name, unitCode: p.unitCode, via: meaning.match.via };
+      } else if (!lex && it.productId != null && validIds.has(it.productId)) {
         const p = products.find((x) => x.id === it.productId)!;
         match = { productId: p.id, name: p.name, unitCode: p.unitCode, via: 'llm' };
       }
@@ -455,12 +505,16 @@ importRouter.post(
         },
         { units: unitByCode, printed: du, productUnitCode: match?.unitCode ?? null, productConv: match ? convByProduct.get(match.productId) ?? null : null }
       );
-      warnings.push(...conv.notes);
+      // замечания этой строки живут в её карточке, а не общим списком над таблицей
+      const itemNotes = conv.notes.map((n) => stripLineName(n, it.name));
+      const doubtText = (conv.doubt ?? '').replace(/^(?:GPT|Склад|Товаровед):\s*/i, '').trim();
       const qtyBase = conv.qty;
       const priceBase = conv.price;
       const unitIdOut = conv.unitId;
       const qtyForecast = conv.forecast;
       const doubt = conv.doubt;
+      if (it.qty == null && !qtyForecast) itemNotes.push('количество не прочитано — укажите вручную');
+      if (it.unitCode && !du) itemNotes.push(`единица «${it.unitCode}» не распознана — укажите базовую (г/мл/шт) и проверьте количество`);
 
       items.push({
         rawName: it.name,
@@ -475,6 +529,8 @@ importRouter.post(
         qtyForecast,
         /** сомнение GPT по строке — карточка подсвечивается человеку */
         doubt,
+        /** замечания по этой строке — показываются в её карточке (название в тексте уже не дублируем) */
+        warnings: itemNotes.filter((n) => n && n !== doubtText),
         price: priceBase,
         // строки «без НДС» (выведенная ставка 0) отдаём как null: 0 % и пустая ставка в UI — одно и то же
         vatRate: it.vatRate ? it.vatRate : null,
@@ -487,10 +543,21 @@ importRouter.post(
         lineSumPrinted: it.lineSum != null && it.lineSum > 0,
         match,
         candidates: filtered,
-        newHint: it.newHint,
+        // подсказка для нового товара: словарь точнее «прочее» от модели
+        newHint: match
+          ? null
+          : it.newHint && it.newHint.category && it.newHint.category !== 'прочее'
+            ? it.newHint
+            : classifyNewProduct(it.name) ?? it.newHint,
       });
-      if (it.qty == null && !qtyForecast) warnings.push(`«${it.name}» — количество не прочитано, укажите вручную`);
-      if (it.unitCode && !du) warnings.push(`«${it.name}»: единица «${it.unitCode}» не распознана — укажите базовую (г/мл/шт) и проверьте количество`);
+    }
+    {
+      const matched = (items as { match: unknown }[]).filter((x) => !!x.match).length;
+      const warnCount = warnings.length + (items as { warnings?: string[] }[]).reduce((s, x) => s + (x.warnings?.length ?? 0), 0);
+      log(
+        'stage',
+        `Сопоставление: ${matched} из ${items.length} ${items.length === 1 ? 'строки' : 'строк'} уже есть в каталоге${warnCount ? ` · предупреждений: ${warnCount}` : ''}`
+      );
     }
     // сверка итога по строкам с общим итогом документа
     if (doc.totalSum != null && doc.totalSum > 0) {
@@ -543,6 +610,13 @@ importRouter.post(
       warnings.unshift(`Разобрал ${storedFiles.length} фото как одну накладную — сверьте линии: совмещённые листы могли пропустить край строки`);
     }
     if (!items.length) warnings.push('GPT не распознал ни одной позиции — проверьте читаемость файла');
+    {
+      const warnCount = warnings.length + (items as { warnings?: string[] }[]).reduce((s, x) => s + (x.warnings?.length ?? 0), 0);
+      log(
+        'result',
+        `Готово за ${((Date.now() - startedAt) / 1000).toFixed(1)} с: ${items.length} ${items.length === 1 ? 'позиция' : 'позиций'}${warnCount ? `, требуют внимания: ${warnCount}` : ''}`
+      );
+    }
 
     res.json({
       storedFile,
@@ -575,6 +649,390 @@ importRouter.post(
     });
   })
 );
+
+/**
+ * POST /api/import/parse-cli — умный приход через Qoder CLI.
+ * Конвейер специализированных агентов (см. services/invoice-agents.ts):
+ *   «Чтец» (vision: дословная транскрипция) -> «Товаровед» (структура + каталог)
+ *   -> «Счетовод» (арифметика/сверки в коде; при расхождении — точечное перечитывание «Чтецом»).
+ */
+importRouter.post(
+  '/parse-cli',
+  wrap(async (req, res) => {
+    const startedAt = Date.now();
+    const body = req.body ?? {};
+    const jobId = typeof body.jobId === 'string' ? body.jobId : '';
+    const log = logSink(req.user?.id, jobId);
+    interface InFile { fileName: string; mime: string; base64: string }
+    let list: InFile[];
+    if (Array.isArray(body.files) && body.files.length) {
+      list = body.files.map((f: Record<string, unknown>, idx: number) => ({
+        fileName: String(reqStr(f, 'fileName')).slice(0, 200) || `фото ${idx + 1}`,
+        mime: (typeof f.mime === 'string' && f.mime) || guessMime(String(f.fileName ?? '')),
+        base64: reqStr(f, 'base64'),
+      }));
+    } else {
+      const fileName = reqStr(body, 'fileName');
+      list = [{ fileName, mime: (typeof body.mime === 'string' && body.mime) || guessMime(fileName), base64: reqStr(body, 'base64') }];
+    }
+    if (list.length > 8) throw new ApiError(400, 'Не больше 8 фото на одну накладную');
+    const bufs: Buffer[] = [];
+    let totalBytes = 0;
+    for (const f of list) {
+      if (!/^image\/(png|jpeg|jpg|webp|gif)$|^application\/pdf$/.test(f.mime)) {
+        throw new ApiError(400, 'Поддерживаются png/jpg/webp/gif и pdf');
+      }
+      const buf = Buffer.from(f.base64, 'base64');
+      if (buf.length < 100) throw new ApiError(400, `Файл «${f.fileName}» пустой`);
+      if (buf.length > 15 * 1024 * 1024) throw new ApiError(400, `Файл «${f.fileName}» больше 15 МБ`);
+      totalBytes += buf.length;
+      bufs.push(buf);
+    }
+    if (totalBytes > 24 * 1024 * 1024) throw new ApiError(400, 'Пакет фото больше 24 МБ — снимайте ближе и по одному листу');
+
+    fs.mkdirSync(config.uploadsDir, { recursive: true });
+    const storedFiles = list.map((f, idx) => {
+      const safe = f.fileName.replace(/[^A-Za-z0-9._-]+/g, '_').slice(-40) || 'doc';
+      const stored = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${safe}`;
+      fs.writeFileSync(path.join(config.uploadsDir, stored), bufs[idx]);
+      return stored;
+    });
+    const fileName = list[0].fileName;
+    const storedFile = storedFiles[0];
+    const extraStored = storedFiles.slice(1).map((stored, idx) => ({ stored, name: list[idx + 1].fileName }));
+
+    // Временная папка — рабочая директория агентов; после разбора её удаляем.
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mixmarkt-cli-'));
+    try {
+      const sources = list.map((f, idx) => ({ name: f.fileName, mime: f.mime, buf: bufs[idx] }));
+      /** Время по этапам (мс) — в debug-ответе, чтобы понимать, где уходит минута-другая. */
+      const timings: Record<string, number> = {};
+      let stageAt = Date.now();
+      const rotations = await detectRotationsAsync(sources, workDir, log);
+      timings.orientation = Date.now() - stageAt;
+      stageAt = Date.now();
+      const prepared = await prepareVisionFilesAsync(sources, workDir, rotations);
+      timings.prepare = Date.now() - stageAt;
+      log(
+        'stage',
+        `Агенты получили документ: ${prepared.files.map((f) => f.name).join(', ')} · ${(prepared.totalBytes / 1024).toFixed(0)} КБ · фото выпрямлены`
+      );
+
+      // ── агент «Чтец» ──────────────────────────────────────────────────
+      stageAt = Date.now();
+      const transcript = await runReaderAgent(prepared.files, workDir, log);
+      timings.reader = Date.now() - stageAt;
+      const firstLine = transcript.split('\n')[0] ?? '';
+      const notInvoice = /^ТИП:\s*НЕ\s*НАКЛАДНАЯ/i.test(firstLine.trim());
+      log('stage', notInvoice ? '«Чтец»: документ не похож на накладную' : `«Чтец»: прочитано ${transcript.length.toLocaleString('ru-RU')} символов`);
+
+      const catalog = await loadCatalog();
+      const units = await loadUnitRows();
+      const categories = await loadCategoryNames();
+      const validIds = new Set(catalog.products.map((p) => p.id));
+      const unitByCode = new Map(units.map((u) => [u.code, u]));
+      const { rows: convRows } = await pool.query(
+        'select id, g_per_pcs::float8 as gp, ml_per_pcs::float8 as mp, g_per_ml::float8 as gm from products'
+      );
+      const convByProduct = new Map<number, ProdConv>(
+        convRows.map((r: { id: number; gp: number | null; mp: number | null; gm: number | null }) => [
+          r.id as number,
+          { gPerPcs: r.gp == null ? null : Number(r.gp), mlPerPcs: r.mp == null ? null : Number(r.mp), gPerMl: r.gm == null ? null : Number(r.gm) },
+        ])
+      );
+      log('stage', `Каталог: ${catalog.products.length} позиций · категорий: ${categories.length} · агент «Товаровед» сопоставляет строки`);
+
+      if (notInvoice) {
+        const reason = firstLine.replace(/^ТИП:\s*/i, '').trim();
+        res.json({
+          storedFile,
+          fileName,
+          extraFiles: extraStored,
+          model: 'Qoder CLI · агенты',
+          doc: { number: null, supplier: null, date: null, supplierPib: null, currency: 'RSD', totalSum: null, totalVat: null, totalGross: null },
+          items: [],
+          warnings: [`Файл не распознан как накладная: ${reason || 'нет таблицы товаров'} — снимите документ целиком и ближе`],
+          corrections: [],
+          serviceLines: [],
+          discounts: { total: null, items: [], doubt: null },
+          ...(body.debug === true ? { transcript, timings } : {}),
+        });
+        return;
+      }
+
+      // ── агент «Товаровед» ─────────────────────────────────────────────
+      stageAt = Date.now();
+      const doc = await runStructurerAgent(
+        { transcript, catalog: catalog.products, categories, unitCodes: units.map((u) => u.code) },
+        workDir,
+        log
+      );
+      timings.structurer = Date.now() - stageAt;
+      const corrections: string[] = [];
+      if (!doc.items.length) corrections.push('«Товаровед» не увидел товарных строк — проверьте фото и заголовки колонок');
+
+      // ── «Счетовод»: сверка таблицы с напечатанным итогом ──────────────
+      // При расхождении просим «Чтеца» перечитать ВСЕ строки таблицы, но правим только
+      // те цифры, которые (а) внутренне согласованы qty×price=lineSum и (б) не меняют
+      // масштаб строки больше чем в 10 раз (иначе это подгонка, а не OCR-ошибка).
+      if (doc.totalSum != null && doc.totalSum > 0 && doc.items.length) {
+        const discAmt = doc.discounts?.total ?? doc.discounts?.items.reduce((s, d) => s + (d.amount ?? 0), 0) ?? 0;
+        const sumLines0 = doc.items.reduce((s, it) => s + (it.lineSum ?? 0), 0);
+        const dNet0 = doc.totalSum - sumLines0;
+        const explainedByDiscount = discAmt > 0 && Math.abs(dNet0 - discAmt) <= Math.max(2, doc.totalSum * 0.02);
+        const maxLine0 = Math.max(0, ...doc.items.map((it) => it.lineSum ?? 0));
+        const missingRows = dNet0 > 0 && dNet0 > maxLine0 * 10 + 10;
+        if (!explainedByDiscount && !missingRows && Math.abs(dNet0) > Math.max(2, doc.totalSum * 0.02)) {
+          const table = doc.items
+            .map((it, i) => `${i + 1} | ${it.name} | qty=${it.qty ?? '?'} ${it.unitCode ?? ''} | price=${it.price ?? '?'} | сумма=${it.lineSum ?? '?'}`)
+            .join('\n');
+          const asked =
+            `Σ строк ${trimNum(sumLines0)} ≠ итог без PDV ${trimNum(doc.totalSum)} (Δ ${trimNum(dNet0)}). ` +
+            `Проверь qty/price/lineSum посимвольно по фото, особенно строки с несовпадением qty×price≠сумма:\n${table}`;
+          log('stage', `Счетовод: расхождение с итогом ${trimNum(dNet0)} — запускаю сверочное перечитывание`);
+          const fixed = await runAuditReader(prepared.files, asked, workDir, log);
+          const lines = Array.isArray(fixed?.lines) ? (fixed!.lines as Record<string, unknown>[]) : [];
+          let remaining = dNet0;
+          for (const ln of lines) {
+            const nln = normName(String(ln.name ?? ''));
+            const it =
+              doc.items.find((x) => normName(x.name) === nln) ??
+              (nln ? doc.items.find((x) => normName(x.name).includes(nln) || nln.includes(normName(x.name))) : undefined);
+            if (!it) continue;
+            const q = typeof ln.qty === 'number' && ln.qty > 0 ? ln.qty : null;
+            const p = typeof ln.price === 'number' ? ln.price : null;
+            const ls = typeof ln.lineSum === 'number' && ln.lineSum > 0 ? ln.lineSum : null;
+            if (q == null || p == null || ls == null) continue;
+            if (Math.abs(q * p - ls) > Math.max(1, ls * 0.02)) continue;
+            const hi = Math.max(ls, it.lineSum ?? 0);
+            const lo = Math.min(ls, it.lineSum ?? 0);
+            if (lo > 0 && hi > lo * 10 + 1) continue;
+            const diff = ls - (it.lineSum ?? 0);
+            if (!diff || Math.sign(diff) !== Math.sign(remaining) || Math.abs(diff) > Math.abs(remaining) + 2) continue;
+            const qtyChanged = q !== it.qty;
+            it.qty = q;
+            it.price = p;
+            it.lineSum = ls;
+            if (typeof ln.vatRate === 'number' && ln.vatRate >= 0 && ln.vatRate <= 30) it.vatRate = ln.vatRate;
+            if (qtyChanged && it.countAs) {
+              it.countAs = null;
+              it.packQty = null;
+              it.doubt = it.doubt ?? 'количество исправлено при сверке — решите заново, в чём считать';
+            }
+            remaining -= diff;
+            const unit = typeof ln.unitCode === 'string' && ln.unitCode ? ln.unitCode : it.unitCode;
+            it.unitCode = unit;
+            corrections.push(`«${it.name}» — сверка с итогом исправила: ${q} × ${p}, сумма ${ls}`);
+          }
+        }
+      }
+
+      // ── сборка позиций: «Товаровед» + словарь + каталог + арифметика ─
+      const items = [] as unknown[];
+      const warnings: string[] = [];
+      type ServiceLine = { kind: 'discount' | 'service'; name: string; amount: number | null };
+      const serviceLines: ServiceLine[] = [];
+      const discItems = (doc.discounts?.items ?? []).filter(
+        // «R. % (rabat) 0,00» — пустая графа бланка, а не скидка: не показываем и не считаем
+        (d) => !(Math.abs(d.amount ?? 0) < 0.005 && Math.abs(d.percent ?? 0) < 0.005)
+      );
+      for (const d of discItems) {
+        if (d.includedInLineSum === true) continue;
+        if (d.amount == null || Math.abs(d.amount) < 0.005) continue; // «R.% 0,00» — не скидка, шум
+        serviceLines.push({ kind: 'discount', name: d.name, amount: d.amount });
+      }
+      const discountNames = new Set(discItems.filter((d) => d.includedInLineSum !== true).map((d) => normName(d.name)));
+      const catSet = new Set(categories);
+
+      for (const it of doc.items) {
+        if (!it.name) continue;
+        const kind = classifyNonProduct(it.name);
+        if (kind) {
+          if (kind !== 'total') {
+            if (kind === 'discount' && discountNames.has(normName(it.name))) continue;
+            const amt = it.lineSum ?? (it.qty != null && it.price != null ? Math.round(it.qty * it.price * 100) / 100 : null);
+            if (kind === 'discount' && (amt == null || Math.abs(amt) < 0.005)) continue;
+            serviceLines.push({ kind, name: it.name.trim(), amount: amt != null ? Math.round(amt * 100) / 100 : null });
+          }
+          continue;
+        }
+
+        const meaning = matchByMeaning(it.name, catalog.products, catalog.byNormName, catalog.byAlias);
+        const lex = findLexEntry(it.name);
+        let match: { productId: number; name: string; unitCode: string; via: 'name' | 'alias' | 'llm' | 'lexicon' } | null = null;
+        if (meaning.match) {
+          const p = meaning.match.product;
+          match = { productId: p.id, name: p.name, unitCode: p.unitCode, via: meaning.match.via };
+        } else if (!lex && it.productId != null && validIds.has(it.productId)) {
+          // словарь не знает строку — доверяем «Товароведу», он видел весь каталог
+          const p = catalog.products.find((x) => x.id === it.productId)!;
+          match = { productId: p.id, name: p.name, unitCode: p.unitCode, via: 'llm' };
+        }
+
+        const candidates = await trgmCandidates(normName(it.name));
+        for (const id of it.candidates) {
+          if (candidates.length >= 4) break;
+          if (id === match?.productId || candidates.some((c) => c.productId === id)) continue;
+          const p = catalog.products.find((x) => x.id === id);
+          if (p) candidates.push({ productId: p.id, name: p.name, sim: 0 });
+        }
+        const filtered = candidates.filter((c) => c.productId !== match?.productId);
+
+        const du = it.unitCode ? DOC_UNITS[normName(it.unitCode)] : undefined;
+        const conv = baseLine(
+          {
+            name: it.name,
+            unitCode: it.unitCode ?? null,
+            qty: it.qty,
+            price: it.price,
+            lineSum: it.lineSum,
+            countAs: it.countAs ?? null,
+            packQty: it.packQty ?? null,
+            packUnit: it.packUnit ?? null,
+            baseUnit: it.baseUnit ?? null,
+            doubt: it.doubt ?? null,
+          },
+          { units: unitByCode, printed: du, productUnitCode: match?.unitCode ?? null, productConv: match ? convByProduct.get(match.productId) ?? null : null }
+        );
+        const itemNotes = conv.notes.map((n) => stripLineName(n, it.name));
+        const doubtText = (conv.doubt ?? '').replace(/^(?:GPT|Склад|Товаровед):\s*/i, '').trim();
+        if (it.qty == null && !conv.forecast) itemNotes.push('количество не прочитано — укажите вручную');
+        if (it.unitCode && !du) itemNotes.push(`единица «${it.unitCode}» не распознана — укажите базовую (г/мл/шт) и проверьте количество`);
+        if (it.qty != null && it.price != null && it.lineSum != null && it.lineSum > 0) {
+          const calc = it.qty * it.price;
+          if (Math.abs(calc - it.lineSum) > Math.max(1, it.lineSum * 0.02)) {
+            itemNotes.push(`в документе Кол × Цена = ${trimNum(calc)}, а сумма строки ${trimNum(it.lineSum)} — сверьте с фото`);
+          }
+        }
+
+        const hint = it.newHint && catSet.has(it.newHint.category)
+          ? it.newHint
+          : meaning.hint
+            ? { name: meaning.hint.name, category: catSet.has(meaning.hint.category) ? meaning.hint.category : 'прочее' }
+            : classifyNewProduct(it.name) ?? (it.newHint ?? { name: it.name, category: 'прочее' });
+
+        items.push({
+          rawName: it.name,
+          qty: conv.qty,
+          unitId: conv.unitId,
+          docUnitPrinted: it.unitCode ?? null,
+          docQtyPrinted: it.qty ?? null,
+          docPricePrinted: it.price ?? null,
+          qtyForecast: conv.forecast,
+          doubt: conv.doubt,
+          warnings: itemNotes.filter((n) => n && n !== doubtText),
+          price: conv.price,
+          vatRate: it.vatRate ? it.vatRate : null,
+          vatInferred: !!it.vatInferred,
+          vatSuspect: false,
+          lineSum: it.lineSum,
+          lineSumPrinted: it.lineSum != null && it.lineSum > 0,
+          match,
+          candidates: filtered,
+          newHint: match ? null : hint,
+        });
+      }
+
+      // ── «Счетовод»: НДС, итоги, предупреждения ────────────────────────
+      type OutItem = { rawName: string; lineSum: number | null; vatRate: number | null; warnings?: string[] };
+      const outItems = items as OutItem[];
+      const lineVat = (sum: number, rate: number): number => Math.round(((sum * rate) / 100) * 100) / 100;
+
+      // ставка PDV не напечатана в строках — выводим арифметикой по итогу НДС
+      if (doc.totalVat != null && doc.totalVat > 0) {
+        const open = outItems.filter((x) => x.vatRate == null);
+        if (open.length) {
+          const known = outItems.reduce((s, x) => (x.vatRate == null ? s : s + lineVat(x.lineSum ?? 0, x.vatRate)), 0);
+          const rest = doc.totalVat - known;
+          const rate = [0, 5, 10, 20].find((r) => Math.abs(open.reduce((s, x) => s + lineVat(x.lineSum ?? 0, r), 0) - rest) <= 1.5);
+          if (rate != null) {
+            for (const x of open) x.vatRate = rate;
+            corrections.push(rate > 0 ? `Ставка PDV не напечатана — вывел ${rate}% по итогу НДС документа` : 'Строки без PDV: итог НДС уже закрыт другими строками');
+          }
+        }
+      }
+
+      const sumLines = outItems.reduce((s, x) => s + (x.lineSum ?? 0), 0);
+      if (doc.totalSum != null && doc.totalSum > 0 && sumLines > 0) {
+        const dNet = doc.totalSum - sumLines;
+        const discAmt = doc.discounts?.total ?? discItems.reduce((s, d) => s + (d.amount ?? 0), 0);
+        const explainedByDisc = discAmt > 0 && Math.abs(dNet - discAmt) <= Math.max(2, doc.totalSum * 0.01);
+        const svcAbs = serviceLines.reduce((s, x) => s + Math.abs(x.amount ?? 0), 0);
+        const explainedBySvc = svcAbs > 0 && Math.abs(Math.abs(dNet) - svcAbs) <= Math.max(2, doc.totalSum * 0.02);
+        if (!explainedByDisc && !explainedBySvc && Math.abs(dNet) > Math.max(2, doc.totalSum * 0.02)) {
+          const maxLine = Math.max(0, ...outItems.map((x) => x.lineSum ?? 0));
+          if (dNet > 0 && dNet > maxLine * 10 + 10) {
+            warnings.push(
+              `Σ распознанных строк ${trimNum(sumLines)} меньше нетто документа ${trimNum(doc.totalSum)} на ${trimNum(dNet)} — не все позиции попали в разбор. Добавьте недостающие вручную: итог подгонкой не дорисовываем`
+            );
+          } else {
+            warnings.push(`Σ строк ${trimNum(sumLines)} ≠ нетто документа ${trimNum(doc.totalSum)} (Δ ${trimNum(dNet)}) — сверьте позиции с фото (агенты уже перечитывали спорные строки)`);
+          }
+        }
+      }
+      if (doc.totalVat != null && doc.totalVat > 0) {
+        const calcVat = outItems.reduce((s, x) => s + lineVat(x.lineSum ?? 0, x.vatRate ?? 0), 0);
+        if (Math.abs(calcVat - doc.totalVat) > 1.5) {
+          warnings.push(`Σ PDV по ставкам ${trimNum(calcVat)} ≠ PDV в документе ${trimNum(doc.totalVat)} — проверьте ставки`);
+        }
+      }
+      if (list.length > 1) {
+        warnings.unshift(`Разобрал ${list.length} файла как одну накладную — сверьте строки на стыках листов`);
+      }
+      if (!items.length) warnings.push('«Чтец» и «Товаровед» не нашли ни одной товарной строки — проверьте читаемость фото');
+      {
+        const matched = (items as { match: unknown }[]).filter((x) => !!x.match).length;
+        const warnCount = warnings.length + (items as { warnings?: string[] }[]).reduce((s, x) => s + (x.warnings?.length ?? 0), 0);
+        log(
+          'stage',
+          `Сопоставление: ${matched} из ${items.length} строк уже есть в каталоге${warnCount ? ` · предупреждений: ${warnCount}` : ''}`
+        );
+      }
+      {
+        const warnCount = warnings.length + (items as { warnings?: string[] }[]).reduce((s, x) => s + (x.warnings?.length ?? 0), 0);
+        log(
+          'result',
+          `Готово за ${((Date.now() - startedAt) / 1000).toFixed(1)} с: ${items.length} ${items.length === 1 ? 'позиция' : 'позиций'}${warnCount ? `, требуют внимания: ${warnCount}` : ''}`
+        );
+      }
+
+      res.json({
+        storedFile,
+        fileName,
+        extraFiles: extraStored,
+        model: 'Qoder CLI · агенты',
+        doc: {
+          number: doc.number,
+          supplier: doc.supplier,
+          date: doc.date,
+          supplierPib: doc.supplierPib,
+          currency: doc.currency ?? 'RSD',
+          totalSum: doc.totalSum,
+          totalVat: doc.totalVat,
+          totalGross: doc.totalGross,
+        },
+        items,
+        warnings,
+        corrections,
+        serviceLines,
+        discounts: {
+          total: doc.discounts?.total ?? null,
+          items: discItems,
+          doubt: null,
+        },
+        ...(body.debug === true ? { transcript, timings } : {}),
+      });
+    } finally {
+      fs.rmSync(workDir, { recursive: true, force: true });
+    }
+  })
+);
+
+/** Категории номенклатуры из настроек — для подсказок новых товаров. */
+async function loadCategoryNames(): Promise<string[]> {
+  const { rows } = await pool.query('select name from product_categories order by name');
+  return rows.map((r) => String(r.name));
+}
 
 function guessMime(fileName: string): string {
   const ext = path.extname(fileName).toLowerCase();

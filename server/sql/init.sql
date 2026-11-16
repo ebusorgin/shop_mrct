@@ -188,11 +188,18 @@ create table if not exists product_packagings (
   qty_base   numeric not null check (qty_base > 0 and qty_base < 'Infinity'::numeric),
   min_order  int not null default 1 check (min_order > 0),
   is_default boolean not null default false,
-  price      numeric not null default 0
+  price      numeric not null default 0,
+  -- за что указана цена: unit — за кг/л/шт, portion — за упаковку (порцию), piece — за штуку
+  price_basis text not null default 'unit' check (price_basis in ('unit','portion','piece')),
+  -- себестоимость фасовки в RSD за ту же базу, что и цена; 0 — не задана
+  cost       numeric not null default 0
 );
 
--- цена продажи за единицу измерения (кг / л / шт) — для отчёта-отгрузки магазину
+-- цена продажи и база цены (кг/л/шт, порция или штука) — для отчёта-отгрузки магазину
 alter table product_packagings add column if not exists price numeric not null default 0;
+alter table product_packagings add column if not exists price_basis text not null default 'unit';
+-- себестоимость (внутренняя цена) в RSD за ту же базу, что и цена продажи
+alter table product_packagings add column if not exists cost numeric not null default 0;
 -- в старых базах была кратность заказа order_step — заменяем минимальным заказом
 alter table product_packagings add column if not exists min_order int not null default 1;
 -- фасовку можно заказывать магазинам, только если она включена в доставку
@@ -217,6 +224,14 @@ begin
        and conrelid = 'product_packagings'::regclass
   ) then
     alter table product_packagings add constraint product_packagings_min_order_check check (min_order > 0);
+  end if;
+  if not exists (
+    select 1 from pg_constraint
+     where conname = 'product_packagings_price_basis_check'
+       and conrelid = 'product_packagings'::regclass
+  ) then
+    alter table product_packagings add constraint product_packagings_price_basis_check
+      check (price_basis in ('unit','portion','piece'));
   end if;
 end $$;
 

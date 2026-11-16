@@ -7,6 +7,13 @@
 }
 .link-back:hover { border-color: var(--accent); color: var(--accent); }
 
+.cost-toggle {
+  display: inline-flex; align-items: center; gap: 6px; padding: 7px 10px; border: 1px solid var(--border);
+  border-radius: 8px; background: #fff; color: var(--text); font-size: 12.5px; font-weight: 600;
+  cursor: pointer; user-select: none;
+}
+.cost-toggle input { width: auto; margin: 0; accent-color: var(--brand-blue); }
+
 .warn {
   margin: 0 auto 14px; max-width: 210mm; padding: 10px 14px; border-radius: 8px;
   background: var(--amber-soft); color: #7a5a00; font-size: 12.5px; line-height: 1.45;

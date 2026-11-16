@@ -1,6 +1,6 @@
 /**
  * Отчёт-отгрузка (Otpremnica) по сохранённым заказам магазинов за дату доставки.
- * Цена фасовки хранится за единицу измерения (кг / л / шт), PDV — 20%.
+ * Цена фасовки хранится за выбранную базу: кг/л/шт, порцию (упаковку) или штуку; PDV — 20%.
  * storeId = null — документы по всем магазинам, у которых есть заказ на дату.
  */
 import { pool } from '../db';
@@ -18,7 +18,8 @@ const SUPPLIER = {
 
 export interface ReportLine {
   name: string;
-  unit: 'kg' | 'l' | 'kom';
+  /** Единица количества в документе: кг/л/шт или порция — как задана база цены в фасовке. */
+  unit: 'kg' | 'l' | 'kom' | 'porcija';
   qty: number;
   price: number;
   vatRate: number;
@@ -38,7 +39,12 @@ export interface ReportDoc {
   net: number;
   vat: number;
   gross: number;
+  /** По какой цене построен документ: продажная или себестоимость. */
+  priceMode: ReportPriceMode;
 }
+
+/** Цена в документе: продажная (как в каталоге) или себестоимость из техкарты. */
+export type ReportPriceMode = 'sale' | 'cost';
 
 interface ReportRow {
   orderId: number;
@@ -56,6 +62,8 @@ interface ReportRow {
   qty: number;
   qtyBase: number;
   price: number;
+  cost: number;
+  priceBasis: 'unit' | 'portion' | 'piece';
   dimension: 'mass' | 'volume' | 'count';
 }
 
@@ -69,9 +77,29 @@ function unitOf(dimension: ReportRow['dimension']): ReportLine['unit'] {
   return 'kom';
 }
 
+/**
+ * Количество в единицах, за которые указана цена фасовки:
+ * кг/л (unit, вес/объём), порции (portion, упаковки), штуки (piece).
+ * Для штучной продукции цена за штуку — это количество штук в упаковках;
+ * для весовой «за штуку» считаем одну упаковку одной штукой.
+ */
+function quantityOf(r: ReportRow): { unit: ReportLine['unit']; qty: number } {
+  if (r.priceBasis === 'portion') {
+    return { unit: 'porcija', qty: r.qty };
+  }
+  if (r.priceBasis === 'piece') {
+    return { unit: 'kom', qty: r.dimension === 'count' ? r.qty * r.qtyBase : r.qty };
+  }
+  return {
+    unit: unitOf(r.dimension),
+    qty: r.dimension === 'count' ? r.qty * r.qtyBase : (r.qty * r.qtyBase) / 1000,
+  };
+}
+
 export async function orderReport(
   deliveryDate: string,
-  storeId: number | null
+  storeId: number | null,
+  priceMode: ReportPriceMode = 'sale'
 ): Promise<{ documents: ReportDoc[] }> {
   const { rows } = await pool.query<ReportRow>(
     `select o.id as "orderId",
@@ -81,8 +109,8 @@ export async function orderReport(
             s.address as "storeAddress", s.pib as "storePib",
             s.mbr as "storeMbr", s.account_no as "storeAccount",
             tc.name as "cardName", tc.name_sr as "cardNameSr",
-            i.qty, pk.qty_base::float8 as "qtyBase", pk.price::float8 as price,
-            u.dimension
+            i.qty, pk.qty_base::float8 as "qtyBase", pk.price::float8 as price, pk.cost::float8 as cost,
+            pk.price_basis as "priceBasis", u.dimension
        from store_orders o
        join stores s on s.id = o.store_id
        join store_order_items i on i.order_id = o.id
@@ -115,18 +143,19 @@ export async function orderReport(
         net: 0,
         vat: 0,
         gross: 0,
+        priceMode,
       };
       docs.set(r.orderId, doc);
     }
-    const unit = unitOf(r.dimension);
-    const qty = r.dimension === 'count' ? r.qty * r.qtyBase : (r.qty * r.qtyBase) / 1000;
-    const net = round2(qty * r.price);
+    const { unit, qty } = quantityOf(r);
+    const price = priceMode === 'cost' ? r.cost : r.price;
+    const net = round2(qty * price);
     const vat = round2((net * VAT_RATE) / 100);
     doc.lines.push({
       name: r.cardNameSr || r.cardName,
       unit,
       qty,
-      price: r.price,
+      price,
       vatRate: VAT_RATE,
       net,
       vat,

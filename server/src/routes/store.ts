@@ -6,6 +6,7 @@
  *   GET /api/store/orders/current — выбранный заказ (?date=YYYY-MM-DD) и окно приёма
  *   PUT /api/store/orders/current — сохранить/изменить заказ до срока приёма
  *   GET /api/store/orders/archive — история заказов своей точки по датам доставки
+ *   GET /api/store/orders/report — отчёт-отгрузка своей точки за дату доставки
  */
 import { Router } from 'express';
 import { pool, tx } from '../db';
@@ -13,6 +14,7 @@ import { ApiError, wrap } from '../http';
 import { audit } from '../services/audit';
 import { requireStore } from '../services/auth';
 import { orderArchive } from '../services/order-archive';
+import { orderReport } from '../services/order-report';
 import { deliveryWindows } from '../services/order-window';
 import { packagingLabel, packagingWeight } from '../services/packagings';
 
@@ -151,6 +153,24 @@ storeRouter.get(
   wrap(async (req, res) => {
     const storeId = req.user?.storeId as number;
     res.json(await orderArchive(storeId));
+  })
+);
+
+/**
+ * Отчёт-отгрузка своей точки за дату доставки (Otpremnica).
+ * Магазин видит только собственный документ: storeId берём из сессии.
+ */
+storeRouter.get(
+  '/orders/report',
+  requireStore,
+  wrap(async (req, res) => {
+    const storeId = req.user?.storeId as number;
+    const date = typeof req.query['date'] === 'string' ? req.query['date'] : '';
+    const parsed = new Date(`${date}T00:00:00Z`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) {
+      throw new ApiError(400, 'date: требуется дата в формате YYYY-MM-DD');
+    }
+    res.json(await orderReport(date, storeId));
   })
 );
 

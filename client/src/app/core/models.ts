@@ -122,6 +122,8 @@ export interface ImportItem {
   qtyForecast?: boolean;
   /** сомнение GPT по строке — карточка подсвечивается, чтобы человек посмотрел фото */
   doubt?: string | null;
+  /** замечания именно по этой строке (пересчёт по фасовке, единица и т. п.) — показываются в её карточке */
+  warnings?: string[];
   /** цена за базовую единицу — производная от денег строки (сумма ÷ количество), не вводится вручную */
   price: number | null;
   /** Ставка PDV, % (5/10/20) или null. */
@@ -284,6 +286,9 @@ export interface CardItem {
   position?: number;
 }
 
+/** За что указана цена фасовки: кг/л/шт, упаковка (порция) или штука. */
+export type PriceBasis = 'unit' | 'portion' | 'piece';
+
 /** Фасовка техкарты — продаваемая позиция (SKU): выход упаковки и минимальный заказ. */
 export interface Packaging {
   id: number;
@@ -293,8 +298,12 @@ export interface Packaging {
   minOrder: number;
   /** Можно ли уже заказывать эту фасовку магазинам. */
   available: boolean;
-  /** Цена за кг / л / шт (RSD); 0 — не задана. */
+  /** Цена продажи (RSD); 0 — не задана. */
   price: number;
+  /** База цены: за кг/л/шт, за порцию (упаковку) или за штуку. */
+  priceBasis: PriceBasis;
+  /** Себестоимость (RSD за ту же базу, что и цена); 0 — не задана. */
+  cost: number;
 }
 
 export type PackagingInput = Omit<Packaging, 'id'> & { id?: number };
@@ -302,7 +311,7 @@ export type PackagingInput = Omit<Packaging, 'id'> & { id?: number };
 /** Строка отчёта-отгрузки (Otpremnica): количество уже в кг / л / шт. */
 export interface ReportLine {
   name: string;
-  unit: 'kg' | 'l' | 'kom';
+  unit: 'kg' | 'l' | 'kom' | 'porcija';
   qty: number;
   price: number;
   vatRate: number;
@@ -322,6 +331,8 @@ export interface ReportDoc {
   net: number;
   vat: number;
   gross: number;
+  /** По какой цене построен документ: продажная или себестоимость. */
+  priceMode: 'sale' | 'cost';
 }
 
 export interface OrderReport {

@@ -11,9 +11,9 @@ export class ApiService {
   // ---- meta ----
   units$(): Observable<M.Unit[]> { return this.http.get<M.Unit[]>(`${this.base}/meta/units`); }
   categories$(): Observable<string[]> { return this.http.get<string[]>(`${this.base}/meta/categories`); }
-  /** Справочник категорий номенклатуры (управляется в настройках). */
-  categoriesDictionary$(): Observable<{ id: number; name: string }[]> {
-    return this.http.get<{ id: number; name: string }[]>(`${this.base}/meta/categories-dictionary`);
+  /** Справочник категорий номенклатуры (управляется в настройках): имя + иконка и цвет для выбора. */
+  categoriesDictionary$(): Observable<{ id: number; name: string; icon?: string; color?: string }[]> {
+    return this.http.get<{ id: number; name: string; icon?: string; color?: string }[]>(`${this.base}/meta/categories-dictionary`);
   }
 
   // ---- products ----
@@ -78,6 +78,15 @@ export class ApiService {
   }
   importConfirm$(body: unknown): Observable<M.ImportConfirmResult> {
     return this.http.post<M.ImportConfirmResult>(`${this.base}/import/confirm`, body);
+  }
+  /** Разбор накладной второй вкладкой — через Qoder CLI на сервере. */
+  importParseCli$(body: {
+    fileName?: string;
+    mime?: string;
+    base64?: string;
+    files?: { fileName: string; mime: string; base64: string }[];
+  }): Observable<M.ImportParseResult> {
+    return this.http.post<M.ImportParseResult>(`${this.base}/import/parse-cli`, body);
   }
 
   // ---- semis ----
@@ -158,15 +167,20 @@ export class ApiService {
   orderArchive$(): Observable<M.OrderArchive> {
     return this.http.get<M.OrderArchive>(`${this.base}/orders/archive`);
   }
-  /** Отчёт-отгрузка за дату доставки; storeId не указан — все магазины. */
-  orderReport$(date: string, storeId?: number): Observable<M.OrderReport> {
+  /** Отчёт-отгрузка за дату доставки; storeId не указан — все магазины. priceMode=cost — по себестоимости. */
+  orderReport$(date: string, storeId?: number, priceMode: 'sale' | 'cost' = 'sale'): Observable<M.OrderReport> {
     const params: Record<string, string> = { date };
     if (storeId !== undefined) params['storeId'] = String(storeId);
+    if (priceMode === 'cost') params['price'] = 'cost';
     return this.http.get<M.OrderReport>(`${this.base}/orders/report`, { params });
   }
   /** История заказов своего магазина (только магазин). */
   myOrderArchive$(): Observable<M.OrderArchive> {
     return this.http.get<M.OrderArchive>(`${this.base}/store/orders/archive`);
+  }
+  /** Отчёт-отгрузка своего магазина за дату доставки (только магазин). */
+  myOrderReport$(date: string): Observable<M.OrderReport> {
+    return this.http.get<M.OrderReport>(`${this.base}/store/orders/report`, { params: { date } });
   }
 
   // ---- журнал действий (кто, что, когда) ----

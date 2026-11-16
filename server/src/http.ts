@@ -1,4 +1,5 @@
 import { NextFunction, Request, RequestHandler, Response } from 'express';
+import { logToUser } from './services/ws-log';
 
 export class ApiError extends Error {
   constructor(public status: number, message: string, public details?: unknown) {
@@ -13,12 +14,18 @@ export const wrap =
     fn(req, res, next).catch(next);
   };
 
-export function errHandler(err: unknown, _req: Request, res: Response, _next: NextFunction): void {
+export function errHandler(err: unknown, req: Request, res: Response, _next: NextFunction): void {
+  const message = err instanceof ApiError ? err.message : 'Внутренняя ошибка сервера';
+  // Разбор накладной уже мог открыть живой лог — ошибку тоже показываем в нём.
+  if (req.user && req.path.startsWith('/api/import')) {
+    const rawJob = (req.body as { jobId?: unknown } | undefined)?.jobId;
+    logToUser(req.user.id, typeof rawJob === 'string' ? rawJob : '', 'error', message);
+  }
   if (err instanceof ApiError) {
     res.status(err.status).json({ error: err.message, details: err.details });
     return;
   }
-  console.error('[api]', err);
+  console.error('[api]', req.method, req.originalUrl, err);
   res.status(500).json({ error: 'Внутренняя ошибка сервера' });
 }
 

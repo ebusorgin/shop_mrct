@@ -24,6 +24,12 @@ export const routes: Routes = [
         data: { storeMode: true },
         loadComponent: () => import('./orders/orders.component').then((m) => m.OrdersComponent),
       },
+      {
+        path: 'store/history/report',
+        canActivate: [storeGuard],
+        data: { storeMode: true },
+        loadComponent: () => import('./orders/report.component').then((m) => m.OrderReportComponent),
+      },
       // офисная CRM: магазинному сотруднику закрыта (уводим на /store)
       {
         path: '',
@@ -47,7 +53,8 @@ export const routes: Routes = [
             loadComponent: () =>
               import('./pages/point-detail.component').then((m) => m.PointDetailComponent),
           },
-          { path: 'audit', loadComponent: () => import('./pages/audit.component').then((m) => m.AuditComponent) },
+          // журнал действий переехал во вкладку «Аудит» настроек
+          { path: 'audit', redirectTo: 'settings', pathMatch: 'full' },
           {
             path: 'users',
             canActivate: [adminGuard],

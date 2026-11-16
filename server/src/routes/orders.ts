@@ -18,7 +18,7 @@ ordersRouter.get(
   })
 );
 
-/** Предпросмотр отчёта-отгрузки: ?date=YYYY-MM-DD&storeId= (без storeId — все магазины). */
+/** Предпросмотр отчёта-отгрузки: ?date=YYYY-MM-DD&storeId=&price=sale|cost (без storeId — все магазины). */
 ordersRouter.get(
   '/report',
   wrap(async (req, res) => {
@@ -32,6 +32,10 @@ ordersRouter.get(
     if (storeId !== null && (!Number.isInteger(storeId) || storeId <= 0)) {
       throw new ApiError(400, 'storeId: требуется целое положительное число');
     }
-    res.json(await orderReport(date, storeId));
+    const rawPrice = req.query.price;
+    if (rawPrice !== undefined && rawPrice !== 'sale' && rawPrice !== 'cost') {
+      throw new ApiError(400, 'price: ожидается sale или cost');
+    }
+    res.json(await orderReport(date, storeId, rawPrice === 'cost' ? 'cost' : 'sale'));
   })
 );

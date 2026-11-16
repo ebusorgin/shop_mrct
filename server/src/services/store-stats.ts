@@ -82,10 +82,14 @@ export interface StoreStats {
   users: { login: string; name: string; active: boolean; lastLogin: string | null }[];
 }
 
-/** Сумма заказа в деньгах: та же формула, что в отчёте-отгрузке. */
-const LINE_NET = `case u.dimension
-                    when 'count' then i.qty * pk.qty_base
-                    else i.qty * pk.qty_base / 1000.0
+/** Сумма заказа в деньгах: та же формула, что в отчёте-отгрузке (с учётом базы цены фасовки). */
+const LINE_NET = `case pk.price_basis
+                    when 'portion' then i.qty
+                    when 'piece' then case when u.dimension = 'count' then i.qty * pk.qty_base else i.qty end
+                    else case u.dimension
+                           when 'count' then i.qty * pk.qty_base
+                           else i.qty * pk.qty_base / 1000.0
+                         end
                   end * pk.price`;
 
 const round2 = (value: unknown): number => Math.round(Number(value ?? 0) * 100) / 100;

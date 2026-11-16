@@ -90,15 +90,19 @@
             }
             @if (canDownloadReport()) {
               <div class="dh-actions">
-                <a class="btn sm" [routerLink]="['/orders/report']" [queryParams]="{ date: g.date }"
-                   title="Предпросмотр отчёта-отгрузки по всем магазинам за эту дату">
+                <a class="btn sm"
+                   [routerLink]="storeMode ? ['/store/history/report'] : ['/orders/report']"
+                   [queryParams]="{ date: g.date }"
+                   [title]="storeMode
+                     ? 'Отчёт-отгрузка вашего магазина за эту дату'
+                     : 'Предпросмотр отчёта-отгрузки по всем магазинам за эту дату'">
                   <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
                     <path d="M8 2v8m0 0 3-3m-3 3L5 7" fill="none" stroke="currentColor" stroke-width="1.6"
                           stroke-linecap="round" stroke-linejoin="round" />
                     <path d="M2.5 12.5v1h11v-1" fill="none" stroke="currentColor" stroke-width="1.6"
                           stroke-linecap="round" />
                   </svg>
-                  Отчёт по всем магазинам
+                  {{ storeMode ? 'Скачать отчёт' : 'Отчёт по всем магазинам' }}
                 </a>
               </div>
             }
@@ -138,7 +142,7 @@
                     @if (o.weightG > 0) { · {{ fmtQty(o.weightG, 'г') }} }
                     <span class="oc-time">сохранён {{ fmtDateTime(o.updatedAt) }}</span>
                   </div>
-                  @if (canDownloadReport()) {
+                  @if (canDownloadReport() && !storeMode) {
                     <a class="btn sm" [routerLink]="['/orders/report']" [queryParams]="{ date: g.date, storeId: o.storeId }"
                        title="Предпросмотр отчёта-отгрузки для этого магазина">
                       <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">

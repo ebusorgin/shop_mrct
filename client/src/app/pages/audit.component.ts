@@ -18,13 +18,13 @@ import { httpErr, fmtDateTime } from '../core/format';
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="bar">
-      <h1 class="page-title" style="margin:0">📜 Журнал действий</h1>
+      <h3>📜 Аудит</h3>
       <span class="spacer"></span>
       <span class="muted small">записей: {{ total() }}</span>
       <button class="btn sm" (click)="apply()" [disabled]="loading()">⟳</button>
     </div>
 
-    <div class="panel filters">
+    <div class="filters">
       <label class="f">
         Кто
         <select [(ngModel)]="fUser" (change)="apply()">
@@ -74,7 +74,7 @@ import { httpErr, fmtDateTime } from '../core/format';
 
     @if (err()) { <div class="err">{{ err() }}</div> }
 
-    <div class="panel">
+    <div class="audit-table">
       <table class="tbl stack">
         <thead>
           <tr>
@@ -134,9 +134,11 @@ import { httpErr, fmtDateTime } from '../core/format';
   styles: [
     `
       .bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+      .bar h3 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: -.015em; }
       .spacer { flex: 1 1 auto; }
       .small { font-size: 12px; }
-      .filters { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 14px; }
+      .filters { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 14px;
+        padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); }
       .filters .f { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
       .filters .f.grow { flex: 1 1 220px; min-width: 180px; }
       .filters input, .filters select { min-width: 120px; }

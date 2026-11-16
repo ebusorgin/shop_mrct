@@ -1,9 +1,11 @@
+import { createServer } from 'http';
 import { createApp } from './app';
 import { config } from './config';
 import { initDb } from './init-db';
 import { initSheetsDb } from './db-sheets';
 import { pool } from './db';
 import { ensureAdminUser, purgeExpiredSessions } from './services/auth';
+import { attachLogWs } from './services/ws-log';
 
 async function main(): Promise<void> {
   await initDb();
@@ -15,7 +17,10 @@ async function main(): Promise<void> {
     console.error('[sheets] отдельная база недоступна:', e instanceof Error ? e.message : e);
   });
   const app = createApp();
-  app.listen(config.port, config.host, () => {
+  const server = createServer(app);
+  // живой лог «что делает сервер» для офисных страниц (разбор накладной и т.п.)
+  attachLogWs(server);
+  server.listen(config.port, config.host, () => {
     console.log(`MIX markt CRM API: http://${config.host}:${config.port}/api`);
   });
 }

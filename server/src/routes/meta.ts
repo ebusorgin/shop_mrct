@@ -26,7 +26,7 @@ metaRouter.get(
 metaRouter.get(
   '/categories-dictionary',
   wrap(async (_req, res) => {
-    const { rows } = await pool.query('select id, name from product_categories order by name');
+    const { rows } = await pool.query('select id, name, icon, color from product_categories order by name');
     res.json(rows);
   })
 );

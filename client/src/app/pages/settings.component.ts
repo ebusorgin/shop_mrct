@@ -11,6 +11,7 @@ import { packagingLabel } from '../core/packaging-label';
 import { PasswordFormComponent } from '../shared/password-form.component';
 import { PickOption, PickerComponent } from '../shared/picker.component';
 import { TabItem, TabStripComponent } from '../shared/tab-strip.component';
+import { AuditComponent } from './audit.component';
 
 interface DeliveryDay {
   date: string;
@@ -37,7 +38,7 @@ function isoDateLabel(value: string): string {
 }
 
 /** Разделы верхнего меню настроек. */
-type SettingsTab = 'delivery' | 'gpt' | 'categories' | 'catalogs' | 'excel';
+type SettingsTab = 'delivery' | 'gpt' | 'categories' | 'catalogs' | 'excel' | 'audit';
 
 /** Тот же признак, что считает сервер: чем именно дата покрыта правилом. */
 type RuleKind = 'week' | 'month' | 'both';
@@ -64,7 +65,7 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
 @Component({
   selector: 'app-settings',
   standalone: true,
-  imports: [CommonModule, FormsModule, TranslatePipe, PasswordFormComponent, PickerComponent, TabStripComponent],
+  imports: [CommonModule, FormsModule, TranslatePipe, PasswordFormComponent, PickerComponent, TabStripComponent, AuditComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styles: [`
     .cat-badge { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; border-radius:8px; margin-right:8px; font-size:15px; line-height:1; vertical-align:middle; }
@@ -805,6 +806,12 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
         </div>
       }
     </div>
+
+    <!-- АУДИТ -->
+    <div id="settings-panel-audit" class="panel settings-section" role="tabpanel"
+         aria-labelledby="settings-tab-audit" [hidden]="settingsTab() !== 'audit'">
+      <app-audit />
+    </div>
       </div>
     </div>
 
@@ -828,6 +835,7 @@ export class SettingsComponent implements OnInit {
     { id: 'categories', label: 'Категории склада', icon: '📦', buttonId: 'settings-tab-categories', panelId: 'settings-panel-categories' },
     { id: 'catalogs', label: 'Каталоги продукции', icon: '🥗', buttonId: 'settings-tab-catalogs', panelId: 'settings-panel-catalogs' },
     { id: 'excel', label: 'Синхронизация Excel', icon: '📄', buttonId: 'settings-tab-excel', panelId: 'settings-panel-excel' },
+    { id: 'audit', label: 'Аудит', icon: '📜', buttonId: 'settings-tab-audit', panelId: 'settings-panel-audit' },
   ];
 
   openSettingsTab(id: string): void {

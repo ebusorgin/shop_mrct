@@ -31,16 +31,25 @@ export class OrderReportComponent implements OnInit {
   private destroyRef = inject(DestroyRef);
   private route = inject(ActivatedRoute);
 
+  /** true — кабинет магазина: отчёт строится только по своей точке (storeId из сессии). */
+  readonly storeMode = this.route.snapshot.data['storeMode'] === true;
+
   readonly date = this.route.snapshot.queryParamMap.get('date') ?? '';
   readonly storeId = (() => {
+    if (this.storeMode) return undefined;
     const raw = this.route.snapshot.queryParamMap.get('storeId');
     const n = raw ? Number(raw) : NaN;
     return Number.isInteger(n) && n > 0 ? n : undefined;
   })();
 
+  /** Куда вернуться по «←»: в кабинет магазина или в офисный архив. */
+  readonly backLink = this.storeMode ? '/store/history' : '/orders';
+
   report = signal<OrderReport | null>(null);
   loading = signal(false);
   err = signal('');
+  /** Офисный отчёт можно построить по себестоимости вместо продажной цены. */
+  priceMode = signal<'sale' | 'cost'>('sale');
 
   documents = computed(() => this.report()?.documents ?? []);
 
@@ -54,9 +63,10 @@ export class OrderReportComponent implements OnInit {
     return parts.length === 3 ? `${parts[2]}.${parts[1]}.${parts[0]}` : this.date;
   });
 
-  scopeLabel = computed(() =>
-    this.storeId === undefined ? 'Все магазины' : 'Один магазин'
-  );
+  scopeLabel = computed(() => {
+    if (this.storeMode) return 'Мой магазин';
+    return this.storeId === undefined ? 'Все магазины' : 'Один магазин';
+  });
 
   ngOnInit(): void {
     this.load();
@@ -66,8 +76,10 @@ export class OrderReportComponent implements OnInit {
     if (!this.date || this.loading()) return;
     this.loading.set(true);
     this.err.set('');
-    this.api
-      .orderReport$(this.date, this.storeId)
+    const request$ = this.storeMode
+      ? this.api.myOrderReport$(this.date)
+      : this.api.orderReport$(this.date, this.storeId, this.priceMode());
+    request$
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (report) => {
@@ -79,6 +91,13 @@ export class OrderReportComponent implements OnInit {
           this.err.set(httpErr(e));
         },
       });
+  }
+
+  /** Переключение «по себестоимости»: документ строится заново с другим набором цен. */
+  setPriceMode(mode: 'sale' | 'cost'): void {
+    if (this.priceMode() === mode) return;
+    this.priceMode.set(mode);
+    this.load();
   }
 
   print(): void {

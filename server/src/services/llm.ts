@@ -265,8 +265,10 @@ async function toVisionParts(files: LlmFile[]): Promise<OpenAI.ChatCompletionCon
       continue;
     }
     try {
-      // обрезаем однотонные поля — полосы дают больше эффективных пикселей на текст
+      // обрезаем однотонные поля — полосы дают больше эффективных пикселей на текст;
+      // .rotate() без аргументов выпрямляет фото «боком» по EXIF orientation (телефон снимает 90°)
       let buf = Buffer.from(base64, 'base64');
+      buf = await sharp(buf).rotate().toBuffer();
       try {
         buf = await sharp(buf).trim({ threshold: 8 }).toBuffer();
       } catch { /* фон не однотонный — режем как есть */ }
@@ -542,7 +544,10 @@ export async function parseWaybillDoc(opts: {
   files: LlmFile[];
   catalog: CatalogProduct[];
   unitCodes: string[];
+  /** Живой лог для окна «что делает сервер»: этапы GPT по-русски. */
+  onLog?: (text: string) => void;
 }): Promise<{ doc: LlmDoc; model: string; transcript: string; corrections: string[] }> {
+  const log = (text: string): void => opts.onLog?.(text);
   if (!config.openaiKey) {
     throw new ApiError(501, 'OPENAI_API_KEY не задан в server/.env — импорт из файлов недоступен');
   }
@@ -561,11 +566,13 @@ export async function parseWaybillDoc(opts: {
   const imageParts = await toVisionParts(files);
   const visionParts: OpenAI.ChatCompletionContentPart[] = [...imageParts, { type: 'text', text: TRANSCRIBE_TASK }];
 
+  log(`GPT: отправляю ${files.length === 1 ? 'документ' : `${files.length} листа`} — первый проход, чтение текста`);
   // проход 1: транскрипция (если обрезалась на лимите — повторяем с удвоенным)
   let transcript = '';
   {
     let limit = Number(process.env.LLM_TRANSCRIBE_MAX_TOKENS ?? 3000);
     for (let attempt = 0; attempt < 3 && limit <= 12000; attempt++, limit *= 2) {
+      if (attempt > 0) log(`GPT: текст обрезался на лимите — перечитываю с лимитом ${limit} токенов`);
       let res: { text: string; truncated: boolean } | null = null;
       try {
         const r1 = await oa.chat.completions.create({
@@ -587,10 +594,12 @@ export async function parseWaybillDoc(opts: {
     }
   }
   if (!transcript) throw new ApiError(502, 'GPT не смог прочитать документ (пустая транскрипция)');
+  log(`GPT: текст прочитан — ${transcript.length.toLocaleString('ru-RU')} символов`);
 
   // проход 2: структурирование по тексту (лимит с запасом + ретраи с удвоением при обрезке ответа)
   let doc: LlmDoc;
   let docRecovered = false;
+  log('GPT: разбираю текст на позиции, количества, цены и PDV');
   try {
     const r = await jsonChat(oa, {
       system: STRUCTURE_SYSTEM,
@@ -604,6 +613,7 @@ export async function parseWaybillDoc(opts: {
     if (e instanceof ApiError) throw e;
     throw new ApiError(502, `GPT вернул не JSON: ${String(e).slice(0, 200)}`);
   }
+  log(`GPT: в документе ${Array.isArray(doc.items) ? doc.items.length : 0} товарных строк`);
   if (!Array.isArray(doc.items)) doc.items = [];
   const numOrNull = (x: unknown): number | null => (typeof x === 'number' && isFinite(x) ? x : null);
   doc.totalSum = numOrNull(doc.totalSum);
@@ -710,6 +720,7 @@ export async function parseWaybillDoc(opts: {
       if (pass === 0) {
         corrections.push(`Σ строк ${Math.round(sumLines * 100) / 100} ≠ нетто в документе ${doc.totalSum} (Δ ${Math.round(dNet * 100) / 100}) — сверочное перечитывание таблицы`);
       }
+      log(`GPT: сверяю суммы строк с итогом — расхождение ${Math.round(dNet * 100) / 100}`);
       let applied = 0;
       try {
         const rv = await oa.chat.completions.create({

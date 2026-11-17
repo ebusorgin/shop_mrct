@@ -548,6 +548,28 @@ create unique index if not exists store_orders_store_date_uniq
 create index if not exists store_orders_delivery_idx
   on store_orders (delivery_date desc);
 
+-- Номера отчётов-отгрузок (Otpremnica): формат «год-номер», сквозная нумерация
+-- с 843 для действующих и будущих заказов. Старые документы сохраняют прежний номер.
+alter table store_orders add column if not exists doc_no bigint;
+create unique index if not exists store_orders_doc_no_uniq
+  on store_orders (doc_no) where doc_no is not null;
+create sequence if not exists store_order_doc_seq start with 843 minvalue 1;
+
+-- Одноразовый бэкфилл: заказы на сегодня и вперёд получают номер в стабильном
+-- порядке (дата доставки, точка, id), чтобы уже существующие отчёты не менялись.
+do $$
+declare r record;
+begin
+  for r in
+    select id
+      from store_orders
+     where doc_no is null and delivery_date >= current_date
+     order by delivery_date, store_id, id
+  loop
+    update store_orders set doc_no = nextval('store_order_doc_seq') where id = r.id;
+  end loop;
+end $$;
+
 create table if not exists store_order_items (
   order_id     int not null references store_orders(id) on delete cascade,
   packaging_id int not null references product_packagings(id),

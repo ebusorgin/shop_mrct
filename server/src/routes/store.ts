@@ -216,6 +216,14 @@ storeRouter.put(
         [storeId, deliveryDate, comment, req.user?.id ?? null]
       );
       const id = rows[0].id;
+      // Номер отчёта-отгрузки выдаётся один раз: обновление заказа его не меняет
+      // и не расходует номер (nextval вычисляется только для строки без doc_no).
+      await client.query(
+        `update store_orders
+            set doc_no = nextval('store_order_doc_seq')
+          where id = $1 and doc_no is null and delivery_date >= current_date`,
+        [id]
+      );
       await client.query('delete from store_order_items where order_id = $1', [id]);
       for (const item of items) {
         await client.query(

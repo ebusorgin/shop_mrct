@@ -48,6 +48,8 @@ export type ReportPriceMode = 'sale' | 'cost';
 
 interface ReportRow {
   orderId: number;
+  /** Сквозной номер отчёта из последовательности; null — старый заказ до введения нумерации. */
+  docNo: string | null;
   deliveryDate: string;
   savedAt: string;
   storeId: number;
@@ -103,6 +105,7 @@ export async function orderReport(
 ): Promise<{ documents: ReportDoc[] }> {
   const { rows } = await pool.query<ReportRow>(
     `select o.id as "orderId",
+            o.doc_no as "docNo",
             to_char(o.delivery_date, 'YYYY-MM-DD') as "deliveryDate",
             o.updated_at as "savedAt",
             s.id as "storeId", s.code as "storeCode", s.name as "storeName",
@@ -128,7 +131,9 @@ export async function orderReport(
     let doc = docs.get(r.orderId);
     if (!doc) {
       doc = {
-        number: `${r.deliveryDate.slice(0, 4)}-${r.orderId}`,
+        // С сегодняшнего дня — сквозной номер 2026-843, 2026-844…;
+        // у старых заказов без номера остаётся прежний вид год-id.
+        number: `${r.deliveryDate.slice(0, 4)}-${r.docNo ?? r.orderId}`,
         deliveryDate: r.deliveryDate,
         savedAt: r.savedAt,
         supplier: SUPPLIER,

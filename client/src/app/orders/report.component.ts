@@ -199,6 +199,11 @@ export class OrderReportComponent implements OnInit {
     return grouped(line.qty, 3);
   }
 
+  /** Единица для узкой колонки JM: «porcija» не помещается — печатаем «porc.». */
+  unitLabel(unit: ReportLine['unit']): string {
+    return unit === 'porcija' ? 'porc.' : unit;
+  }
+
   money(value: number): string {
     return grouped(value, 2);
   }

@@ -46,8 +46,8 @@
 
 .doc-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 11px; }
 .doc-table col.c-no { width: 6%; }
-.doc-table col.c-name { width: 27%; }
-.doc-table col.c-jm { width: 6%; }
+.doc-table col.c-name { width: 26%; }
+.doc-table col.c-jm { width: 7%; }
 .doc-table col.c-qty { width: 12%; }
 .doc-table col.c-price { width: 12%; }
 .doc-table col.c-rate { width: 10%; }
@@ -58,6 +58,7 @@
 .doc-table td { line-height: 1.3; }
 .doc-table .name { text-align: left; overflow-wrap: anywhere; }
 .doc-table .center, .doc-table .num { text-align: center; }
+.doc-table td.center { white-space: nowrap; } /* единица измерения не рвётся на две строки */
 .doc-table .money { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 /* ручной порядок строк: ручка ⋮⋮, подсветка цели и состояние перетаскивания */

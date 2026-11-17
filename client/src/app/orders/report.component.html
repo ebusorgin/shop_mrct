@@ -132,7 +132,7 @@
                 }
                 {{ line.name }}
               </td>
-              <td class="center">{{ line.unit }}</td>
+              <td class="center" [title]="line.unit === 'porcija' ? 'porcija' : line.unit">{{ unitLabel(line.unit) }}</td>
               <td class="center">{{ qty(line) }}</td>
               <td class="money">{{ money(line.price) }}</td>
               <td class="center">{{ line.vatRate }}</td>

@@ -14,8 +14,10 @@ import {
   detectRotationsAsync,
   prepareVisionFilesAsync,
   runAuditReader,
+  runHeaderTotalsAgent,
   runReaderAgent,
   runStructurerAgent,
+  type AgentDoc,
 } from '../services/invoice-agents';
 import { classifyNewProduct, findLexEntry, lexIdentity, matchByMeaning } from '../services/product-lexicon';
 
@@ -148,6 +150,54 @@ export interface LineRead {
   packUnit: string | null;
   baseUnit: string | null;
   doubt: string | null;
+}
+
+/** Дата из транскрипции «ДАТА: 26.4.2026» -> 2026-04-26 (без перестановки дня и месяца). */
+function dateFromTranscript(transcript: string): string | null {
+  const m = transcript.match(/^\s*ДАТА\s*:\s*(.+)$/im);
+  if (!m) return null;
+  const raw = m[1].trim();
+  const dmy = raw.match(/(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{4})/);
+  if (dmy) {
+    const day = Number(dmy[1]);
+    const month = Number(dmy[2]);
+    const year = Number(dmy[3]);
+    if (day >= 1 && day <= 31 && month >= 1 && month <= 12 && year >= 2000 && year <= 2100) {
+      return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    }
+  }
+  const iso = raw.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
+  return iso ? iso[0] : null;
+}
+
+/**
+ * «Каталог» иногда меняет местами нетто и PDV. Если сумма и налог в сумме дают
+ * «к оплате», но PDV больше нетто — это перестановка, возвращаем на места.
+ */
+function fixSwappedTotals(doc: AgentDoc): string | null {
+  const sum = doc.totalSum;
+  const vat = doc.totalVat;
+  const gross = doc.totalGross;
+  if (sum == null || vat == null || gross == null) return null;
+  const close = (a: number, b: number): boolean => Math.abs(a - b) <= Math.max(2, Math.abs(b) * 0.002);
+  if (!close(sum + vat, gross)) return null;
+  if (vat > sum) {
+    doc.totalSum = vat;
+    doc.totalVat = sum;
+    return 'Итоги нетто и PDV были перепутаны местами — исправил по сумме «к оплате»';
+  }
+  return null;
+}
+
+/** Применить детерминированные уточнения к разобранному документу. */
+function normalizeAgentDoc(doc: AgentDoc, transcript: string, notes: string[]): void {
+  const date = dateFromTranscript(transcript);
+  if (date && doc.date !== date) {
+    doc.date = date;
+    notes.push(`Дата взята из напечатанного «Datum»: ${date}`);
+  }
+  const totals = fixSwappedTotals(doc);
+  if (totals) notes.push(totals);
 }
 
 /** Русское склонение после числа: 1 позиция, 3 позиции, 5 позиций. */
@@ -795,6 +845,8 @@ importRouter.post(
         log
       );
       timings.structurer = Date.now() - stageAt;
+      const docFixes: string[] = [];
+      normalizeAgentDoc(doc, transcript, docFixes);
       // «Распознавание» на плотной таблице иногда уводит числа на соседние строки. Итоги документа
       // он читает стабильно, поэтому сверяем Σ строк со скидками с нетто и, если не сошлось,
       // перечитываем лист вторым проходом — оставляем тот разбор, что ближе к напечатанному итогу.
@@ -818,15 +870,59 @@ importRouter.post(
               log
             ).catch(() => null);
             timings.structurer = (timings.structurer ?? 0) + (Date.now() - s2);
-            if (doc2 && gapOf(doc2) < gapOf(doc) - 0.01) {
-              log('stage', `«Распознавание»: второй проход точнее (Δ ${trimNum(gapOf(doc2))}) — беру его`);
-              transcript = transcript2;
-              doc = doc2;
+            if (doc2) {
+              const fixes2: string[] = [];
+              normalizeAgentDoc(doc2, transcript2, fixes2);
+              if (gapOf(doc2) < gapOf(doc) - 0.01) {
+                log('stage', `«Распознавание»: второй проход точнее (Δ ${trimNum(gapOf(doc2))}) — беру его`);
+                transcript = transcript2;
+                doc = doc2;
+                docFixes.length = 0;
+                docFixes.push(...fixes2);
+              }
             }
           }
         }
       }
-      const corrections: string[] = [];
+      // Шапка и итоги: если числа не бьются со строками или противоречат друг другу,
+      // отдельный фокусный агент перечитывает только блок итогов (числа строк ему не мешают).
+      {
+        const discountAbs = (doc.discounts?.items ?? []).reduce((s, x) => s + Math.abs(x.amount ?? 0), 0);
+        const linesNet = doc.items.reduce((s, x) => s + (x.lineSum ?? 0), 0) - discountAbs;
+        const totalsInvalid =
+          doc.totalSum == null ||
+          doc.totalGross == null ||
+          (doc.totalVat != null && Math.abs(doc.totalSum + doc.totalVat - doc.totalGross) > Math.max(2, doc.totalGross * 0.002)) ||
+          Math.abs(linesNet - doc.totalSum) > Math.max(5, Math.abs(doc.totalSum) * 0.01);
+        if (totalsInvalid) {
+          const ht = await runHeaderTotalsAgent(prepared.files, workDir, log).catch(() => null);
+          if (ht) {
+            const validTotals =
+              ht.totalSum != null &&
+              ht.totalVat != null &&
+              ht.totalGross != null &&
+              Math.abs(ht.totalSum + ht.totalVat - ht.totalGross) <= Math.max(2, ht.totalGross * 0.002) &&
+              ht.totalGross > ht.totalSum &&
+              ht.totalVat < ht.totalSum;
+            if (validTotals) {
+              doc.totalSum = ht.totalSum;
+              doc.totalVat = ht.totalVat;
+              doc.totalGross = ht.totalGross;
+              docFixes.push(
+                `Итоги перечитаны агентом «Сверка»: нетто ${trimNum(ht.totalSum!)}, PDV ${trimNum(ht.totalVat!)}, к оплате ${trimNum(ht.totalGross!)}`
+              );
+            }
+            // Дату не перезаписываем: она уже взята из напечатанного «ДАТА» в транскрипции.
+            // Фокусный агент читает только итоги; его дата — лишь заполнение пустого поля.
+            if (ht.date && !doc.date) {
+              doc.date = ht.date;
+              docFixes.push(`Дата из шапки: ${ht.date}`);
+            }
+            if (!doc.number && ht.number) doc.number = ht.number;
+          }
+        }
+      }
+      const corrections: string[] = [...docFixes];
       if (!doc.items.length) corrections.push('«Каталог» не увидел товарных строк — проверьте фото и заголовки колонок');
 
       // ── «Сверка»: скидки, ставки PDV и налог из напечатанных сумм ────
@@ -1563,6 +1659,56 @@ importRouter.post(
         warnings.unshift(`Разобрал ${list.length} файла как одну накладную — сверьте строки на стыках листов`);
       }
       if (!items.length) warnings.push('«Распознавание» и «Каталог» не нашли ни одной товарной строки — проверьте читаемость фото');
+      // Контроль читаемости: строка-шифра без названия и точные дубли — только предупреждаем,
+      // строки не удаляем и не переставляем.
+      {
+        let unnamed = 0;
+        let duplicates = 0;
+        const seen = new Map<string, number>();
+        for (const it of outItems) {
+          const raw = String(it.rawName ?? '').trim();
+          if (/^\d{8,15}$/.test(raw)) {
+            it.warnings = [...(it.warnings ?? []), 'название не распознано — указана только шифра/штрихкод; укажите товар вручную'];
+            unnamed++;
+          }
+          const key = [raw.toLowerCase(), it.docQtyPrinted, it.docPricePrinted, it.lineSum].join('|');
+          if (seen.has(key)) {
+            it.warnings = [...(it.warnings ?? []), 'точная копия строки выше — проверьте, не дубль ли это'];
+            duplicates++;
+          } else {
+            seen.set(key, 1);
+          }
+        }
+        if (unnamed || duplicates) {
+          log('stage', `Контроль: строк без названия — ${unnamed}, возможных дублей — ${duplicates}`);
+        }
+      }
+      // Сверка уже поправила количества/суммы: снимаем устаревшие «Кол × Цена» или обновляем цифры.
+      {
+        let cleaned = 0;
+        for (const it of outItems) {
+          const warns = it.warnings;
+          if (!warns?.length) continue;
+          const idx = warns.findIndex((w) => w.startsWith('в документе Кол × Цена ='));
+          if (idx < 0) continue;
+          const qty = it.docQtyPrinted;
+          const price = it.docPricePrinted;
+          const sum = it.lineSum;
+          if (qty == null || price == null || sum == null) continue;
+          const disc = it.rowDiscount?.amount ?? 0;
+          const calc = qty * price - disc;
+          if (Math.abs(calc - sum) <= Math.max(1, Math.abs(sum) * 0.002)) {
+            it.warnings = warns.filter((w) => !w.startsWith('в документе Кол × Цена ='));
+            cleaned++;
+          } else {
+            const calcText = disc > 0
+              ? `Кол × Цена − скидка ${trimNum(disc)} = ${trimNum(calc)}`
+              : `Кол × Цена = ${trimNum(calc)}`;
+            warns[idx] = `в документе ${calcText}, а сумма строки ${trimNum(sum)} — сверьте с фото`;
+          }
+        }
+        if (cleaned) log('stage', `Сверка: снял устаревшие замечания по ${cleaned} строкам`);
+      }
       {
         const matched = (items as { match: unknown }[]).filter((x) => !!x.match).length;
         const warnCount = warnings.length + (items as { warnings?: string[] }[]).reduce((s, x) => s + (x.warnings?.length ?? 0), 0);

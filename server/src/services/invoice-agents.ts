@@ -213,7 +213,7 @@ export function readerPrompt(fileNames: string[]): string {
     `ТИП: НАКЛАДНАЯ\n` +
     `ФОРМАТ: METRO | MONOLITH | OTPREMNICA | OTHER\n` +
     `НОМЕР: <номер документа>\n` +
-    `ДАТА: <дата как напечатана или пусто>\n` +
+    `ДАТА: <дата ровно как напечатана, например 26.4.2026; не преобразуй и не переставляй день/месяц>\n` +
     `ПОСТАВЩИК: <продавец из шапки/логотипа бланка; «Primaoc», «Kupac», «Покупатель» и MIX MARKT — это ПОЛУЧАТЕЛЬ (наш склад), НЕ поставщик; «Prevoznik» — перевозчик, тоже не поставщик>\n` +
     `ПОКУПАТЕЛЬ: <получатель/прималац>\n` +
     `PIB: <PIB продавца: 8-9 цифр; PIB из блока получателя (MIX MARKT) не бери; не уверен — пусто>\n` +
@@ -224,7 +224,8 @@ export function readerPrompt(fileNames: string[]): string {
     `СКИДКИ:\n` +
     `<скидка: код и название> | <товар: название или шифра> | <сумма без PDV со знаком> | <сумма с PDV> | <ставка PDV, если видно> | <учтена в напечатанных итогах: да/нет/неясно>\n` +
     `ИТОГИ:\n` +
-    `<все напечатанные итоги по отдельности: нетто без PDV, PDV, к оплате с PDV>\n\n` +
+    `<ровно три денежные строки: нетто без PDV («Izn. bez PDV»), PDV («Iznos PDV»), к оплате с PDV («Ukupan iznos s PDV-om»). ` +
+    `«Ukupno komada» и «Ukupna tež.» — это количество/вес, в ИТОГИ не пиши>\n\n` +
     `КАК ЗАПОЛНЯТЬ КОЛОНКИ:\n` +
     `- Кол-во/цена/суммы — строго как напечатано. Десятичная запятая так и остаётся запятой; разделители тысяч сохраняй.\n` +
     `- Единица — как в колонке: kg, g, l, ml, kom, kos, pcs, ut, Pack, Dose, KO и т.п.\n` +
@@ -254,6 +255,10 @@ export function readerPrompt(fileNames: string[]): string {
     `«Iznos bez PDV» и «Iznos s PDV-om» — две последние числовые колонки строки, перед отметкой «A». ` +
     `Все колонки строки напечатаны на одной линии с названием: количество, цена, сумма без PDV и сумма с PDV относятся ТОЛЬКО ` +
     `к названию на этой же строке. Не сдвигай цифры на соседние строки — при мелком шрифте так легко «уехать», но это ошибка. ` +
+    `Для KO «Kol.» — число закупочных упаковок и может быть больше 1: например, «4250G ARO KRASTAVAC 9-12 KO», Kol.=26, ` +
+    `цена 719,99 -> нетто 18.719,74 (26 × 719,99). Не оставляй Kol.=1, если нетто делится на цену упаковки. ` +
+    `Одинаковые названия с разными весами/шифрами — это РАЗНЫЕ строки (например, «MC VIRŠLA (1,101) KG» и «MC VIRŠLA (1,105) KG»): ` +
+    `читай каждую отдельно и не переноси сумму с PDV одной строки в нетто другой. ` +
     `Проверяй каждую строку арифметикой: Кол. × Cena po pakovanju (для KG — Kol.po pak. × Jedinična cena) = Iznos bez PDV, ` +
     `а Iznos s PDV-om = Iznos bez PDV × 1,10 или × 1,20. Не сошлось — перечитай цифры этой строки, а не бери соседние. ` +
     `Колонка «A»: «P»/«P*»/«10» может отмечать льготную ставку, пусто — 20 %; но ставку всегда проверяй по суммам: ` +
@@ -377,9 +382,12 @@ export function structurerPrompt(input: StructureInput): string {
     `- lineGross — сумма строки С PDV, как напечатана в документе. Нет такой колонки — null.\n` +
     `- vatRate — ставка PDV строки: 1) печатная колонка ставки; 2) если её нет — по отношению lineGross/lineSum: ` +
     `1,10 -> 10, 1,20 -> 20, 1,05 -> 5 (допуск ±0,02); вывел арифметикой — vatInferred=true. Иначе null.\n` +
-    `- totalSum — итог БЕЗ PDV; totalGross — к оплате с PDV; чего нет — null. ` +
-    `totalVat — напечатанная отдельная строка PDV/Porez, если есть; если отдельной строки нет, но напечатаны оба итога ` +
-    `(нетто и к оплате) — totalVat = totalGross − totalSum, это законный расчёт налога из документа. Совсем нет данных — null. currency — RSD/EUR.\n` +
+    `- totalSum — итог БЕЗ PDV (строка «Izn. bez PDV» / «Ukupno bez PDV»); totalGross — к оплате с PDV ` +
+    `(«Ukupan iznos s PDV-om» / «Za plaćanje»); totalVat — отдельная строка «Iznos PDV» / «PDV/Porez». ` +
+    `Не путай их местами и не бери количество или вес («Ukupno komada», «Ukupna tež.») как деньги. ` +
+    `Обязательная проверка: totalSum + totalVat ≈ totalGross; totalGross > totalSum; PDV обычно меньше нетто. ` +
+    `Если после чтения это не выполняется — перечитай блок итогов, а не подставляй числа из строк. ` +
+    `Если отдельной строки PDV нет, но напечатаны нетто и к оплате — totalVat = totalGross − totalSum. Совсем нет данных — null. currency — RSD/EUR.\n` +
     `- СКИДКИ. POPUST/акция отдельной строкой с отрицательной суммой — это скидка на товар с той же шифрой (шифра в начале строки). ` +
     `Если по одной шифре в транскрипции несколько POPUST-строк (включая пару «−сумма» и «+та же сумма» — служебная арифметика акции), ` +
     `сложи их СО ЗНАКАМИ и выведи ОДНУ скидку на этот товар по модулю. ` +
@@ -390,7 +398,9 @@ export function structurerPrompt(input: StructureInput): string {
     `тогда amount=null и doubt «в POPUST-строку попали цифры соседнего товара». ` +
     `includedInLineSum=false — скидка отдельной строкой, в сумму строки товара она не входит (но входит в итоги документа). ` +
     `Если в документе отдельной строки скидки нет — скидку не выдумывай. total — напечатанный итог скидок, иначе null.\n` +
-    `- date — YYYY-MM-DD. supplierPib — только цифры (8-9). supplier — продавец из шапки. ` +
+    `- date — YYYY-MM-DD. Европейская дата читается как ДД.ММ.ГГГГ и НЕ переставляется: «26.4.2026» -> 2026-04-26, ` +
+    `«26.08.2026» -> 2026-08-26. Не путай месяц 4 (апрель) и 8 (август), день и месяц не меняй местами; ` +
+    `не угадывай дату по сегодняшнему числу. supplierPib — только цифры (8-9). supplier — продавец из шапки. ` +
     `Если транскрипция называет поставщиком MIX MARKT (или просто переписала блок «Primaoc/Kupac») — ` +
     `это наш склад-получатель, а не продавец: supplier=null, не подставляй его.\n` +
     `- Если транскрипция говорит «НЕ НАКЛАДНАЯ» — верни items:[], в каждом итоге null и discounts {total:0,items:[]}.\n\n` +
@@ -560,6 +570,63 @@ export async function runStructurerAgent(
  * Точечное перечитывание строк, у которых не сходится арифметика.
  * Возвращает исправления только для строк, где модель уверенно видит другую цифру.
  */
+export interface HeaderTotals {
+  number: string | null;
+  date: string | null;
+  totalSum: number | null;
+  totalVat: number | null;
+  totalGross: number | null;
+}
+
+/**
+ * Агент «Сверка»: точечно читает шапку и блок итогов, когда строки не сошлись
+ * с напечатанным итогом. Отдельный фокус не даёт числам строк/скидок
+ * подменить нетто, PDV и «к оплате».
+ */
+export async function runHeaderTotalsAgent(
+  files: AgentFile[],
+  workDir: string,
+  log: (kind: LogKind, text: string) => void
+): Promise<HeaderTotals | null> {
+  const fileList = files.map((f) => `«${f.name}»`).join(', ');
+  log('stage', 'Агент «Сверка»: перечитываю только шапку и блок итогов');
+  const prompt =
+    `Ты — агент «Сверка» в CRM пищевого склада. В папке: ${fileList}. ` +
+    `Прочитай ТОЛЬКО шапку документа и блок ИТОГОВ внизу листа. Документ может быть повёрнут — мысленно разверни текст. ` +
+    `Товарные строки не читай и не пересчитывай.\n` +
+    `Верни строго JSON без markdown:\n` +
+    `{"number":string|null,"date":"YYYY-MM-DD"|null,"totalSum":number|null,"totalVat":number|null,"totalGross":number|null}\n` +
+    `Правила:\n` +
+    `- number — «Broj dokumenta», «Br.», «OTPREMNICA br.».\n` +
+    `- date — «Datum» в формате ДД.ММ.ГГГГ: «26.4.2026» -> 2026-04-26, «26.08.2026» -> 2026-08-26. День и месяц не переставляй.\n` +
+    `- totalSum — строка «Izn. bez PDV» / «Ukupno bez PDV» (нетто без налога).\n` +
+    `- totalVat — строка «Iznos PDV» / «Iznos PDV-a» / «PDV» / «Porez».\n` +
+    `- totalGross — строка «Ukupan iznos s PDV-om» / «Za plaćanje» (к оплате).\n` +
+    `- НЕ бери «Ukupno komada» (штуки) и «Ukupna tež.» (вес) — это не деньги.\n` +
+    `- Десятичная запятая -> точка: 43.412,61 -> 43412.61.\n` +
+    `- Проверь: totalSum + totalVat ≈ totalGross; totalGross > totalSum; PDV меньше нетто. ` +
+    `Если числа не сходятся, верни те, что точно напечатаны, а сомнительные — null.`;
+  try {
+    const { text, durationMs } = await runCliLogged(prompt, workDir, log, {
+      timeoutMs: 180000,
+      extraArgs: ['--thinking', 'disabled'],
+    });
+    if (durationMs != null) log('stage', `Агент «Сверка» закончил за ${(durationMs / 1000).toFixed(1)} с`);
+    const raw = extractCliJson(text);
+    const rawDate = textOrNull(raw.date);
+    const date = rawDate && /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : null;
+    return {
+      number: textOrNull(raw.number),
+      date,
+      totalSum: numOrNull(raw.totalSum),
+      totalVat: numOrNull(raw.totalVat),
+      totalGross: numOrNull(raw.totalGross),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function runAuditReader(
   files: AgentFile[],
   asked: string,

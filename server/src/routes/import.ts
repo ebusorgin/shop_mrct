@@ -1963,13 +1963,16 @@ export async function confirmImport(input: ConfirmImportInput, actor: Actor, run
       const { rows: pn } = await client.query('select name from products where id = $1', [productId]);
       const alias = normName(rawName);
       if (alias && alias !== normName(pn[0].name)) {
-        const { rows: known } = await client.query('select 1 from product_aliases where alias = $1', [alias]);
-        await client.query(
+        // Алиас — устойчивая связка «написание → товар». Если он уже закреплён
+        // за другим товаром, молча перепривязывать нельзя: это испортит матчинг
+        // будущих накладных. Конфликт игнорируем, привязка остаётся прежней.
+        const inserted = await client.query(
           `insert into product_aliases (product_id, alias, alias_raw) values ($1, $2, $3)
-           on conflict (alias) do update set product_id = excluded.product_id, alias_raw = excluded.alias_raw`,
+           on conflict (alias) do nothing
+           returning product_id`,
           [productId, alias, rawName.trim()]
         );
-        if (!known.length) aliasesSaved++;
+        if (inserted.rowCount) aliasesSaved++;
       }
 
       items.push({ productId, qty, unitId, price, vatRate });

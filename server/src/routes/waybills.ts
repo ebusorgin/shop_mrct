@@ -71,27 +71,38 @@ export async function ingestWaybill(client: PoolClient, head: WaybillInHead, ite
   const extras = head.extraFiles?.length
     ? head.extraFiles.map((f) => ({ stored: f.stored, name: f.name, mime: f.mime, data: f.data.toString('base64') }))
     : null;
-  const { rows: wb } = await client.query(
-    `insert into waybills (number, supplier, doc_date, file_name, stored_file, file_data, file_mime, extra_files,
-                           currency, supplier_pib, total_net, total_vat, total_gross,
-                           doc_total_net, doc_total_vat, doc_total_gross,
-                           accepted_by, accepted_login, accepted_at)
-     values ($1, $2, coalesce($3::date, current_date), $4, $5, $6, $7, $8,
-             coalesce($9, 'RSD'), $10, $11, $12, $13, $14, $15, $16,
-             $17, $18, now())
-     returning id`,
-    [
-      head.number, head.supplier, head.docDate, head.fileName ?? null, head.storedFile ?? null,
-      head.fileData ?? null, head.fileMime ?? null,
-      extras ? JSON.stringify(extras) : null,
-      head.currency ?? null, head.supplierPib ?? null,
-      round2(totalNet), round2(totalVat), round2(round2(totalNet) + round2(totalVat)),
-      head.docTotalNet ?? null, head.docTotalVat ?? null, head.docTotalGross ?? null,
-      head.actor?.id ?? null, head.actor?.login ?? null,
-    ]
-  );
-  const waybillId = wb[0].id as number;
+  let waybillId: number;
+  try {
+    const { rows: wb } = await client.query<{ id: number }>(
+      `insert into waybills (number, supplier, doc_date, file_name, stored_file, file_data, file_mime, extra_files,
+                             currency, supplier_pib, total_net, total_vat, total_gross,
+                             doc_total_net, doc_total_vat, doc_total_gross,
+                             accepted_by, accepted_login, accepted_at)
+       values ($1, $2, coalesce($3::date, current_date), $4, $5, $6, $7, $8,
+               coalesce($9, 'RSD'), $10, $11, $12, $13, $14, $15, $16,
+               $17, $18, now())
+       returning id`,
+      [
+        head.number, head.supplier, head.docDate, head.fileName ?? null, head.storedFile ?? null,
+        head.fileData ?? null, head.fileMime ?? null,
+        extras ? JSON.stringify(extras) : null,
+        head.currency ?? null, head.supplierPib ?? null,
+        round2(totalNet), round2(totalVat), round2(round2(totalNet) + round2(totalVat)),
+        head.docTotalNet ?? null, head.docTotalVat ?? null, head.docTotalGross ?? null,
+        head.actor?.id ?? null, head.actor?.login ?? null,
+      ]
+    );
+    waybillId = wb[0].id;
+  } catch (e) {
+    // Параллельные запросы прошли предварительную проверку одновременно — уникальный
+    // индекс ловит дубль; наружу это должно быть 409, а не 500.
+    if ((e as { code?: string }).code === '23505') {
+      throw new ApiError(409, `Накладная №${head.number} уже проведена — документы с одним номером принимать нельзя`);
+    }
+    throw e;
+  }
 
+  const movesToApply: { productId: number; qtyBase: number; costBase: number }[] = [];
   for (const it of items) {
     if (it.qty <= 0) throw new ApiError(400, 'Количество должно быть > 0');
     // склад принимает строго базовые единицы (г/мл/шт): перевод «kg с бумаги -> г» делает импорт
@@ -119,11 +130,17 @@ export async function ingestWaybill(client: PoolClient, head: WaybillInHead, ite
       'insert into waybill_items (waybill_id, product_id, qty, unit_id, price, vat_rate, vat_amount) values ($1,$2,$3,$4,$5,$6,$7)',
       [waybillId, it.productId, it.qty, it.unitId, it.price ?? 0, it.vatRate ?? null, vatAmount]
     );
+    movesToApply.push({ productId: it.productId, qtyBase, costBase });
+  }
+
+  // Склад блокируем строго по возрастанию product_id: две накладные с общими
+  // товарами в разном порядке строк иначе упираются в дедлок PostgreSQL.
+  for (const m of [...movesToApply].sort((a, b) => a.productId - b.productId)) {
     await applyMovement(client, {
-      productId: it.productId,
+      productId: m.productId,
       type: 'receipt',
-      delta: qtyBase,
-      unitCost: costBase,
+      delta: m.qtyBase,
+      unitCost: m.costBase,
       docType: 'waybill',
       docId: waybillId,
       comment: `Приход по накладной №${head.number}`,

@@ -79,12 +79,14 @@ export class ApiService {
   importConfirm$(body: unknown): Observable<M.ImportConfirmResult> {
     return this.http.post<M.ImportConfirmResult>(`${this.base}/import/confirm`, body);
   }
-  /** Разбор накладной второй вкладкой — через Qoder CLI на сервере. */
+  /** Разбор накладной агентами ИИ на сервере. */
   importParseCli$(body: {
     fileName?: string;
     mime?: string;
     base64?: string;
     files?: { fileName: string; mime: string; base64: string }[];
+    /** true — сервер вернёт транскрипцию агента распознавания, чтобы сверить разбор с фото */
+    debug?: boolean;
   }): Observable<M.ImportParseResult> {
     return this.http.post<M.ImportParseResult>(`${this.base}/import/parse-cli`, body);
   }

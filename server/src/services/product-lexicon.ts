@@ -4,10 +4,11 @@
  * Накладные приходят на сербском/хорватском (krompir, luk, mleko), немецком
  * (Kondensmilch, Kartoffel), английском (potato, milk) и русском. Склад — русский.
  * Точное сравнение имён тут не работает, поэтому:
- *  1) «Чтец» переписывает название дословно;
- *  2) «Товаровед» (этот словарь + каталог) находит существующий товар по смыслу
+ *  1) «Распознавание» переписывает название дословно;
+ *  2) «Каталог» (этот словарь + каталог) находит существующий товар по смыслу
  *     или подсказывает русское складское имя и категорию для нового;
- *  3) «Счетовод» проверяет арифметику (фасовка, суммы, НДС).
+ *  3) «Сверка» проверяет арифметику (фасовка, суммы, НДС);
+ *  4) «Контроль» отбрасывает подсказки, противоречащие словарю.
  *
  * Правила консервативности:
  *  - совпадение только по однозначному смыслу; свежий огурец (krastavac) ≠ солёные огурцы,
@@ -103,14 +104,14 @@ function seqQuality(line: string[], term: string[]): number {
 export const LEXICON: LexEntry[] = [
   // ── овощи ────────────────────────────────────────────────────────────────
   { terms: ['krompir', 'kartoffel', 'kartoffeln', 'potato', 'potatoes', 'картофель', 'картошка'], product: 'картофель', category: 'овощи' },
-  { terms: ['luk crni', 'crni luk', 'luk crveni', 'luk beli', 'luk', 'zwiebel', 'onion', 'лук репчатый', 'лук'], product: 'лук репчатый', category: 'овощи' },
+  { terms: ['luk crni', 'crni luk', 'luk crveni', 'crveni luk', 'luk', 'zwiebel', 'onion', 'лук репчатый', 'лук'], product: 'лук репчатый', category: 'овощи' },
   { terms: ['luk crni mladi', 'luk mladi crni', 'crni luk mladi', 'mladi luk', 'luk mladi', 'frühlingszwiebel', 'spring onion', 'зелёный лук', 'лук зелёный'], newName: 'лук зелёный', category: 'овощи' },
   { terms: ['sargarepa', 'mrkva', 'karotte', 'möhre', 'carrot', 'морковь'], product: 'морковь', category: 'овощи' },
   { terms: ['kupus', 'kohl', 'cabbage', 'капуста белокочанная', 'капуста'], product: 'капуста белокочанная', category: 'овощи' },
   { terms: ['kineski kupus', 'pekinski kupus', 'chinakohl', 'napa cabbage', 'капуста пекинская'], product: 'капуста пекинская', category: 'овощи' },
   { terms: ['cvekla', 'rote bete', 'beetroot', 'свёкла', 'свекла'], product: 'свёкла', category: 'овощи' },
   { terms: ['sampinjon', 'sampinjoni', 'champignon', 'champignons', 'шампиньоны'], product: 'шампиньоны', category: 'овощи' },
-  { terms: ['beli luk', 'cesnjak', 'knoblauch', 'garlic', 'чеснок'], product: 'чеснок', category: 'овощи' },
+  { terms: ['beli luk', 'luk beli', 'cesnjak', 'knoblauch', 'garlic', 'чеснок'], product: 'чеснок', category: 'овощи' },
   { terms: ['djumbir', 'ingwer', 'ginger', 'имбирь'], product: 'имбирь', category: 'овощи' },
   { terms: ['krastavac svez', 'svezi krastavac', 'krastavac', 'gurke', 'cucumber', 'огурцы свежие'], newName: 'огурцы свежие', category: 'овощи' },
   { terms: ['kiseli krastavac', 'krastavci kiseli', 'krastavac kiseli', 'salatni krastavac', 'gurke essig', 'pickles', 'огурцы солёные', 'огурцы маринованные'], product: 'огурцы солёные', category: 'овощи' },
@@ -264,6 +265,19 @@ export function findLexEntry(name: string): { entry: LexEntry; score: number } |
   return best;
 }
 
+/**
+ * Устойчивая «личность» товара по словарю: одинаковый ключ у синонимов одного продукта
+ * (luk crni / crni luk / лук репчатый) и разный — у соседних товаров (чеснок, лук зелёный).
+ * Возвращает null, если фраза совпала только по основе или словарь её не знает:
+ * в таких случаях нельзя отбрасывать подсказки ИИ.
+ */
+export function lexIdentity(name: string): string | null {
+  const hit = findLexEntry(name);
+  if (!hit || hit.score < 20000) return null;
+  const label = hit.entry.product ?? hit.entry.newName;
+  return label ? normText(label) : null;
+}
+
 export interface CatalogLike {
   id: number;
   name: string;
@@ -293,7 +307,7 @@ export function matchByMeaning(
   if (byName) return { match: { product: byName, via: 'name' }, hint: null };
   const byAl = byAlias.get(norm);
   if (byAl) return { match: { product: byAl, via: 'alias' }, hint: null };
-  // салат/готовое блюдо не сопоставляем с ингредиентом из каталога: имя и категорию даст «Товаровед»
+  // салат/готовое блюдо не сопоставляем с ингредиентом из каталога: имя и категорию даст «Каталог»
   const lex = READY_DISH_RE.test(norm) ? null : findLexEntry(name);
   if (lex) {
     if (lex.entry.product) {

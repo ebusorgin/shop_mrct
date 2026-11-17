@@ -59,7 +59,7 @@ export function runQoderCli(
   return new Promise((resolve, reject) => {
     const bin = qoderCliBin();
     if (bin.includes(path.sep) && !fs.existsSync(bin)) {
-      reject(new ApiError(503, `Qoder CLI не найден на сервере: ${bin}. Установите CLI или задайте QODERCLI_BIN.`));
+      reject(new ApiError(503, `Сервис ИИ не найден на сервере: ${bin}. Установите CLI или задайте QODERCLI_BIN.`));
       return;
     }
     const args = [
@@ -109,7 +109,7 @@ export function runQoderCli(
     });
     child.on('error', (e) => {
       clearTimeout(timer);
-      reject(new ApiError(502, `Не удалось запустить Qoder CLI: ${e.message}`));
+      reject(new ApiError(502, `Не удалось запустить сервис ИИ: ${e.message}`));
     });
     child.on('close', (code) => {
       clearTimeout(timer);
@@ -156,7 +156,7 @@ export function consumeCliLine(
   const content = Array.isArray(msg?.content) ? (msg!.content as Record<string, unknown>[]) : [];
   if (j.type === 'system' && j.subtype === 'init') {
     state.model = typeof j.model === 'string' ? j.model : null;
-    log('stage', `Qoder CLI готов · модель ${state.model ?? 'Auto'}`);
+    log('stage', `ИИ готов · модель ${state.model ?? 'Auto'}`);
     return;
   }
   if (j.type === 'assistant') {
@@ -183,7 +183,7 @@ export function consumeCliLine(
   if (j.type === 'result') {
     state.durationMs = typeof j.duration_ms === 'number' ? j.duration_ms : null;
     if (typeof j.result === 'string' && j.result.trim()) state.final = j.result.trim();
-    if (j.is_error === true) log('error', String(j.result ?? 'Qoder CLI вернул ошибку').slice(0, 1000));
+    if (j.is_error === true) log('error', String(j.result ?? 'ИИ вернул ошибку').slice(0, 1000));
     return;
   }
 }

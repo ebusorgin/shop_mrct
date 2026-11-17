@@ -136,6 +136,19 @@ export interface ImportItem {
   lineSum: number | null;
   /** Сумма напечатана в документе; если false — это Кол × Цена, и подпись в карточке другая. */
   lineSumPrinted?: boolean;
+  /** Шифра/артикул поставщика (METRO Šifra) — по ней скидка POPUST находит свою строку. */
+  supplierCode?: string | null;
+  /** Сумма строки с PDV, как напечатана — по ней выводится ставка, если колонки ставки нет. */
+  docLineGross?: number | null;
+  /** Скидка на этот товар из отдельной строки POPUST — уже вычтена из lineSum и цены. */
+  rowDiscount?: {
+    name: string;
+    amount: number;
+    amountGross: number | null;
+    percent: number | null;
+    vatRate: number | null;
+    reason: string | null;
+  } | null;
   match: { productId: number; name: string; unitCode: string; via: 'name' | 'alias' | 'llm' } | null;
   candidates: { productId: number; name: string; sim: number }[];
   newHint: { name: string; category: string } | null;

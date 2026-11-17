@@ -17,7 +17,7 @@ import {
   runReaderAgent,
   runStructurerAgent,
 } from '../services/invoice-agents';
-import { classifyNewProduct, findLexEntry, matchByMeaning } from '../services/product-lexicon';
+import { classifyNewProduct, findLexEntry, lexIdentity, matchByMeaning } from '../services/product-lexicon';
 
 export const importRouter = Router();
 
@@ -150,6 +150,29 @@ export interface LineRead {
   doubt: string | null;
 }
 
+/** Русское склонение после числа: 1 позиция, 3 позиции, 5 позиций. */
+function pluralRu(n: number, one: string, few: string, many: string): string {
+  const m10 = n % 10;
+  const m100 = n % 100;
+  return m10 === 1 && m100 !== 11 ? one : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? few : many;
+}
+
+/**
+ * Сомнение модели — в читаемый вид: без служебных «id 29», префиксов и пустых скобок.
+ * Пользователь должен увидеть понятное замечание, а не отладочный вывод агента.
+ */
+function cleanDoubtText(s: string | null | undefined): string | null {
+  if (!s) return null;
+  const t = String(s)
+    .replace(/\b(?:id|ID)\s*[:#№]?\s*\d+\b/g, '')
+    .replace(/\(\s*\)/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\s+([,;.:])/g, '$1')
+    .replace(/^[-–—:;\s]+|[-–—:;\s]+$/g, '')
+    .trim();
+  return t || null;
+}
+
 /**
  * Строка документа -> базовые единицы склада (г/мл/шт). Чистая функция — тестируется без GPT.
  * СМЫСЛ строки (что это за товар и в чём его класть) решает GPT: countAs + packQty/packUnit.
@@ -178,7 +201,7 @@ export function baseLine(
   let code = printed ? printed.code : null;
   let unitId = (printed && units.get(printed.code)?.id) ?? null;
   let forecast = false;
-  let doubt: string | null = line.doubt ? `Склад: ${line.doubt}` : null;
+  let doubt: string | null = cleanDoubtText(line.doubt);
 
   // фасовка, о которой сказала модель (в базовых единицах), либо null
   const baseHint = line.baseUnit ? DOC_UNITS[normName(line.baseUnit)]?.code ?? null : null;
@@ -208,7 +231,7 @@ export function baseLine(
   const asContents = (p: { code: string; per: number }, why: string) => {
     const weightLine = printed && printed.code !== 'шт'; // Кол уже в г/кг/мл/л — упаковки нет, множиться не на что
     if (weightLine) {
-      notes.push(`${name}: GPT предложил считать содержимым (${trimNum(p.per)} ${p.code} в упаковке), но количество в строке уже весовое (${trimNum(line.qty ?? 0)} ${line.unitCode}) — оставляю как напечатано`);
+      notes.push(`${name}: ИИ предложил считать содержимым (${trimNum(p.per)} ${p.code} в упаковке), но количество в строке уже весовое (${trimNum(line.qty ?? 0)} ${line.unitCode}) — оставляю как напечатано`);
       return;
     }
     const packages = line.qty != null ? line.qty * (printed ? printed.factor : 1) : 1;
@@ -224,13 +247,13 @@ export function baseLine(
 
   if (line.countAs === 'contents') {
     if (pack) {
-      asContents(pack, `Склад: считается содержимым, фасовка ${trimNum(pack.per)} ${pack.code}`);
+      asContents(pack, `Считается содержимым: фасовка ${trimNum(pack.per)} ${pack.code}`);
     } else {
       const pkg = pkgFromName(line.name);
       if (pkg) {
-        asContents(pkg, `Склад: считается содержимым, но фасовку не назвала — взял ${trimNum(pkg.per)} ${pkg.code} из названия`);
+        asContents(pkg, `Считается содержимым, но фасовка не названа — принял ${trimNum(pkg.per)} ${pkg.code} из названия`);
       } else {
-        doubt = doubt ?? 'GPT решила считать содержимым, но размер упаковки не назван — укажите количество и единицу вручную';
+        doubt = doubt ?? 'ИИ предложил считать содержимым, но размер упаковки не назван — укажите количество и единицу вручную';
         notes.push(`${name}: ${doubt}`);
       }
     }
@@ -238,7 +261,7 @@ export function baseLine(
     // страховка: фасовка в названии написана, а модель настаивает на штуках — пусть человек посмотрит
     const pkg = pkgFromName(line.name);
     if (pkg && printed && printed.code === 'шт') {
-      notes.push(`${name}: GPT считает позицию штуками, но в названии написана фасовка ${trimNum(pkg.per)} ${pkg.code} — проверьте, не надо ли положить ${trimNum((line.qty ?? 1) * (printed.factor ?? 1) * pkg.per)} ${pkg.code}`);
+      notes.push(`${name}: ИИ считает позицию штуками, но в названии написана фасовка ${trimNum(pkg.per)} ${pkg.code} — проверьте, не надо ли положить ${trimNum((line.qty ?? 1) * (printed.factor ?? 1) * pkg.per)} ${pkg.code}`);
       doubt = doubt ?? `в названии фасовка ${trimNum(pkg.per)} ${pkg.code}, а посчитано штуками`;
     }
   }
@@ -383,14 +406,14 @@ importRouter.post(
 
     const catalog = await loadCatalog();
     const units = await loadUnitRows();
-    log('stage', `Каталог загружен: ${catalog.products.length} позиций · отправляю в GPT`);
+    log('stage', `Каталог загружен: ${catalog.products.length} позиций · отправляю в ИИ`);
     const { doc, model, transcript, corrections } = await parseWaybillDoc({
       files: list.map((f) => ({ mime: f.mime, base64: f.base64 })),
       catalog: catalog.products,
       unitCodes: units.map((u) => u.code),
       onLog: (text) => log('stage', text),
     });
-    log('stage', `GPT ответила: ${doc.items.length} строк · сопоставляю с каталогом…`);
+    log('stage', `ИИ ответил: ${doc.items.length} строк · сопоставляю с каталогом…`);
     const products = catalog.products;
     const { byNormName, byAlias } = catalog;
     const validIds = new Set(products.map((p) => p.id));
@@ -507,7 +530,7 @@ importRouter.post(
       );
       // замечания этой строки живут в её карточке, а не общим списком над таблицей
       const itemNotes = conv.notes.map((n) => stripLineName(n, it.name));
-      const doubtText = (conv.doubt ?? '').replace(/^(?:GPT|Склад|Товаровед):\s*/i, '').trim();
+      const doubtText = (conv.doubt ?? '').replace(/^(?:GPT|ИИ|Склад|Товаровед|Каталог|Распознавание|Сверка):\s*/i, '').trim();
       const qtyBase = conv.qty;
       const priceBase = conv.price;
       const unitIdOut = conv.unitId;
@@ -614,7 +637,7 @@ importRouter.post(
       const warnCount = warnings.length + (items as { warnings?: string[] }[]).reduce((s, x) => s + (x.warnings?.length ?? 0), 0);
       log(
         'result',
-        `Готово за ${((Date.now() - startedAt) / 1000).toFixed(1)} с: ${items.length} ${items.length === 1 ? 'позиция' : 'позиций'}${warnCount ? `, требуют внимания: ${warnCount}` : ''}`
+        `Готово за ${((Date.now() - startedAt) / 1000).toFixed(1)} с: ${items.length} ${pluralRu(items.length, 'позиция', 'позиции', 'позиций')}${warnCount ? `, требуют внимания: ${warnCount}` : ''}`
       );
     }
 
@@ -653,8 +676,8 @@ importRouter.post(
 /**
  * POST /api/import/parse-cli — умный приход через Qoder CLI.
  * Конвейер специализированных агентов (см. services/invoice-agents.ts):
- *   «Чтец» (vision: дословная транскрипция) -> «Товаровед» (структура + каталог)
- *   -> «Счетовод» (арифметика/сверки в коде; при расхождении — точечное перечитывание «Чтецом»).
+ *   «Распознавание» (vision: дословная транскрипция) -> «Каталог» (структура + каталог)
+ *   -> «Сверка» (арифметика/сверки в коде; при расхождении — точечное перечитывание спорных строк).
  */
 importRouter.post(
   '/parse-cli',
@@ -718,13 +741,13 @@ importRouter.post(
         `Агенты получили документ: ${prepared.files.map((f) => f.name).join(', ')} · ${(prepared.totalBytes / 1024).toFixed(0)} КБ · фото выпрямлены`
       );
 
-      // ── агент «Чтец» ──────────────────────────────────────────────────
+      // ── агент «Распознавание» ──────────────────────────────────────────────────
       stageAt = Date.now();
-      const transcript = await runReaderAgent(prepared.files, workDir, log);
+      let transcript = await runReaderAgent(prepared.files, workDir, log);
       timings.reader = Date.now() - stageAt;
       const firstLine = transcript.split('\n')[0] ?? '';
       const notInvoice = /^ТИП:\s*НЕ\s*НАКЛАДНАЯ/i.test(firstLine.trim());
-      log('stage', notInvoice ? '«Чтец»: документ не похож на накладную' : `«Чтец»: прочитано ${transcript.length.toLocaleString('ru-RU')} символов`);
+      log('stage', notInvoice ? '«Распознавание»: документ не похож на накладную' : `«Распознавание»: прочитано ${transcript.length.toLocaleString('ru-RU')} символов`);
 
       const catalog = await loadCatalog();
       const units = await loadUnitRows();
@@ -740,18 +763,22 @@ importRouter.post(
           { gPerPcs: r.gp == null ? null : Number(r.gp), mlPerPcs: r.mp == null ? null : Number(r.mp), gPerMl: r.gm == null ? null : Number(r.gm) },
         ])
       );
-      log('stage', `Каталог: ${catalog.products.length} позиций · категорий: ${categories.length} · агент «Товаровед» сопоставляет строки`);
+      log('stage', `Каталог: ${catalog.products.length} позиций · категорий: ${categories.length} · агент «Каталог» сопоставляет строки`);
 
       if (notInvoice) {
-        const reason = firstLine.replace(/^ТИП:\s*/i, '').trim();
+        const rawReason = firstLine.replace(/^ТИП:\s*/i, '').trim();
+        const reason = /^(НЕ\s*НАКЛАДНАЯ|NOT\s+(AN\s+)?INVOICE)$/i.test(rawReason) ? '' : rawReason;
         res.json({
           storedFile,
           fileName,
           extraFiles: extraStored,
-          model: 'Qoder CLI · агенты',
+          model: 'ИИ · агенты',
           doc: { number: null, supplier: null, date: null, supplierPib: null, currency: 'RSD', totalSum: null, totalVat: null, totalGross: null },
           items: [],
-          warnings: [`Файл не распознан как накладная: ${reason || 'нет таблицы товаров'} — снимите документ целиком и ближе`],
+          warnings: [
+            `Файл не распознан как накладная${reason ? `: ${reason}` : ''}. ` +
+              `Снимите лист с таблицей товаров и итогами целиком, без наклона и обрезанных краёв, и повторите разбор.`,
+          ],
           corrections: [],
           serviceLines: [],
           discounts: { total: null, items: [], doubt: null },
@@ -760,92 +787,255 @@ importRouter.post(
         return;
       }
 
-      // ── агент «Товаровед» ─────────────────────────────────────────────
+      // ── агент «Каталог» ─────────────────────────────────────────────
       stageAt = Date.now();
-      const doc = await runStructurerAgent(
+      let doc = await runStructurerAgent(
         { transcript, catalog: catalog.products, categories, unitCodes: units.map((u) => u.code) },
         workDir,
         log
       );
       timings.structurer = Date.now() - stageAt;
+      // «Распознавание» на плотной таблице иногда уводит числа на соседние строки. Итоги документа
+      // он читает стабильно, поэтому сверяем Σ строк со скидками с нетто и, если не сошлось,
+      // перечитываем лист вторым проходом — оставляем тот разбор, что ближе к напечатанному итогу.
+      {
+        const gapOf = (d: typeof doc): number => {
+          if (d.totalSum == null || !d.items.length) return Number.POSITIVE_INFINITY;
+          const disc = (d.discounts?.items ?? []).reduce((s, x) => s + Math.abs(x.amount ?? 0), 0);
+          const lines = d.items.reduce((s, x) => s + (x.lineSum ?? 0), 0);
+          return Math.abs(d.totalSum - (lines - disc));
+        };
+        const tol = doc.totalSum != null ? Math.max(5, doc.totalSum * 0.001) : 2;
+        if (doc.totalSum != null && gapOf(doc) > tol) {
+          log('stage', `«Распознавание»: строки не сошлись с итогом на ${trimNum(gapOf(doc))} — перечитываю лист вторым проходом`);
+          stageAt = Date.now();
+          const transcript2 = await runReaderAgent(prepared.files, workDir, log).catch(() => '');
+          if (transcript2 && !/^ТИП:\s*НЕ\s*НАКЛАДНАЯ/i.test((transcript2.split('\n')[0] ?? '').trim())) {
+            const s2 = Date.now();
+            const doc2 = await runStructurerAgent(
+              { transcript: transcript2, catalog: catalog.products, categories, unitCodes: units.map((u) => u.code) },
+              workDir,
+              log
+            ).catch(() => null);
+            timings.structurer = (timings.structurer ?? 0) + (Date.now() - s2);
+            if (doc2 && gapOf(doc2) < gapOf(doc) - 0.01) {
+              log('stage', `«Распознавание»: второй проход точнее (Δ ${trimNum(gapOf(doc2))}) — беру его`);
+              transcript = transcript2;
+              doc = doc2;
+            }
+          }
+        }
+      }
       const corrections: string[] = [];
-      if (!doc.items.length) corrections.push('«Товаровед» не увидел товарных строк — проверьте фото и заголовки колонок');
+      if (!doc.items.length) corrections.push('«Каталог» не увидел товарных строк — проверьте фото и заголовки колонок');
 
-      // ── «Счетовод»: сверка таблицы с напечатанным итогом ──────────────
-      // При расхождении просим «Чтеца» перечитать ВСЕ строки таблицы, но правим только
+      // ── «Сверка»: скидки, ставки PDV и налог из напечатанных сумм ────
+      const r2 = (n: number): number => Math.round(n * 100) / 100;
+      /** Ставка по отношению «с PDV / без PDV»: 1,05 / 1,10 / 1,20 (допуск ±2 %). */
+      const ratioRate = (net: number | null, gross: number | null): number | null => {
+        if (net == null || gross == null || net <= 0 || gross <= 0) return null;
+        const k = gross / net;
+        for (const rate of [5, 10, 20]) if (Math.abs(k - (1 + rate / 100)) <= 0.02) return rate;
+        return null;
+      };
+      // Суммы с PDV берём как прочитаны: в этом бланке они напечатаны ровно в строке товара,
+      // а «сдвиг», который мы видели на мелком фото, был ошибкой распознавания колонки.
+      // Поэтому ничего не переставляем, а неверные отношения ловим ниже проверкой ставки.
+      // POPUST-строки печатаются с минусом и иногда со знаком после числа: скидка — всегда плюс
+      const discItems = (doc.discounts?.items ?? [])
+        .map((d) => ({
+          ...d,
+          amount: d.amount == null ? null : Math.abs(d.amount),
+          amountGross: d.amountGross == null ? null : Math.abs(d.amountGross),
+        }))
+        // «R. % (rabat) 0,00» — пустая графа бланка, а не скидка
+        .filter((d) => !(Math.abs(d.amount ?? 0) < 0.005 && Math.abs(d.percent ?? 0) < 0.005));
+      const discNet = r2(discItems.reduce((s, d) => s + (d.amount ?? 0), 0));
+      if (discItems.length) {
+        doc.discounts = { total: discNet, items: discItems };
+        // итог по скидкам печатаем ПОСЛЕ привязки к строкам — там перепутанные суммы исправляются
+        const parts = discItems
+          .map((d) => `${d.name}${d.productName ? ` («${d.productName}»)` : ''}${d.amount != null ? ` −${trimNum(d.amount)}` : ' — сумма не прочитана'}`)
+          .join(', ');
+        corrections.push(`Найдены строки скидок: ${parts}`);
+      }
+      // ставка PDV: проверяем и печатную колонку по суммам строк, иначе выводим из отношения
+      let inferredRates = 0;
+      let fixedRates = 0;
+      for (const it of doc.items) {
+        const rate = ratioRate(it.lineSum, it.lineGross);
+        if (it.vatRate == null) {
+          if (rate != null) {
+            it.vatRate = rate;
+            it.vatInferred = true;
+            inferredRates++;
+          }
+        } else if (rate != null && rate !== it.vatRate) {
+          // модель угадала ставку по «P», а суммы говорят другое — верим напечатанным суммам
+          it.vatRate = rate;
+          it.vatInferred = true;
+          fixedRates++;
+        }
+      }
+      if (fixedRates) {
+        corrections.push(`Ставку PDV сверил по напечатанным суммам строк: исправил ${fixedRates} строк (10 % / 20 % по отношению «с PDV» к нетто)`);
+      }
+      if (inferredRates) {
+        corrections.push(
+          `Ставку PDV отдельной колонкой не печатают — вывел её по суммам строк: ${inferredRates} строк (10 % / 20 % по отношению «с PDV» к нетто)`
+        );
+      }
+      // налог отдельной строкой не напечатан — он законно выводится из двух напечатанных итогов
+      if (doc.totalVat == null && doc.totalSum != null && doc.totalGross != null && doc.totalGross > doc.totalSum) {
+        doc.totalVat = r2(doc.totalGross - doc.totalSum);
+        corrections.push(
+          `PDV отдельной строкой не напечатан — вычислил его из итогов: к оплате ${trimNum(doc.totalGross)} − нетто ${trimNum(doc.totalSum)} = ${trimNum(doc.totalVat)}`
+        );
+      }
+
+      // ── «Сверка»: сверка таблицы с напечатанным итогом ──────────────
+      // При расхождении запускаем повторное распознавание ВСЕХ строк таблицы, но правим только
       // те цифры, которые (а) внутренне согласованы qty×price=lineSum и (б) не меняют
       // масштаб строки больше чем в 10 раз (иначе это подгонка, а не OCR-ошибка).
       if (doc.totalSum != null && doc.totalSum > 0 && doc.items.length) {
-        const discAmt = doc.discounts?.total ?? doc.discounts?.items.reduce((s, d) => s + (d.amount ?? 0), 0) ?? 0;
         const sumLines0 = doc.items.reduce((s, it) => s + (it.lineSum ?? 0), 0);
-        const dNet0 = doc.totalSum - sumLines0;
-        const explainedByDiscount = discAmt > 0 && Math.abs(dNet0 - discAmt) <= Math.max(2, doc.totalSum * 0.02);
+        // скидки — отдельные строки ВНУТРИ напечатанных итогов: Σ товаров − скидки = нетто документа
+        const netAfterDisc = r2(sumLines0 - discNet);
+        const dNet0 = r2(doc.totalSum - netAfterDisc);
+        // сколько всего скидок подразумевают напечатанные итоги (Σ строк − нетто документа)
+        const needDisc = r2(sumLines0 - doc.totalSum);
         const maxLine0 = Math.max(0, ...doc.items.map((it) => it.lineSum ?? 0));
         const missingRows = dNet0 > 0 && dNet0 > maxLine0 * 10 + 10;
-        if (!explainedByDiscount && !missingRows && Math.abs(dNet0) > Math.max(2, doc.totalSum * 0.02)) {
-          const table = doc.items
-            .map((it, i) => `${i + 1} | ${it.name} | qty=${it.qty ?? '?'} ${it.unitCode ?? ''} | price=${it.price ?? '?'} | сумма=${it.lineSum ?? '?'}`)
-            .join('\n');
-          const asked =
-            `Σ строк ${trimNum(sumLines0)} ≠ итог без PDV ${trimNum(doc.totalSum)} (Δ ${trimNum(dNet0)}). ` +
-            `Проверь qty/price/lineSum посимвольно по фото, особенно строки с несовпадением qty×price≠сумма:\n${table}`;
-          log('stage', `Счетовод: расхождение с итогом ${trimNum(dNet0)} — запускаю сверочное перечитывание`);
-          const fixed = await runAuditReader(prepared.files, asked, workDir, log);
-          const lines = Array.isArray(fixed?.lines) ? (fixed!.lines as Record<string, unknown>[]) : [];
-          let remaining = dNet0;
-          for (const ln of lines) {
-            const nln = normName(String(ln.name ?? ''));
-            const it =
-              doc.items.find((x) => normName(x.name) === nln) ??
-              (nln ? doc.items.find((x) => normName(x.name).includes(nln) || nln.includes(normName(x.name))) : undefined);
-            if (!it) continue;
-            const q = typeof ln.qty === 'number' && ln.qty > 0 ? ln.qty : null;
-            const p = typeof ln.price === 'number' ? ln.price : null;
-            const ls = typeof ln.lineSum === 'number' && ln.lineSum > 0 ? ln.lineSum : null;
-            if (q == null || p == null || ls == null) continue;
-            if (Math.abs(q * p - ls) > Math.max(1, ls * 0.02)) continue;
-            const hi = Math.max(ls, it.lineSum ?? 0);
-            const lo = Math.min(ls, it.lineSum ?? 0);
-            if (lo > 0 && hi > lo * 10 + 1) continue;
-            const diff = ls - (it.lineSum ?? 0);
-            if (!diff || Math.sign(diff) !== Math.sign(remaining) || Math.abs(diff) > Math.abs(remaining) + 2) continue;
-            const qtyChanged = q !== it.qty;
-            it.qty = q;
-            it.price = p;
-            it.lineSum = ls;
-            if (typeof ln.vatRate === 'number' && ln.vatRate >= 0 && ln.vatRate <= 30) it.vatRate = ln.vatRate;
-            if (qtyChanged && it.countAs) {
-              it.countAs = null;
-              it.packQty = null;
-              it.doubt = it.doubt ?? 'количество исправлено при сверке — решите заново, в чём считать';
+        // «разница закрывается скидками» — только если после ВЫЧИТАНИЯ прочитанных скидок
+        // сумма действительно сходится с итогом; иначе строки всё равно надо перечитать
+        const discExplains = discItems.length > 0 && Math.abs(dNet0) <= Math.max(2, doc.totalSum * 0.02);
+        if (discExplains) {
+          log('stage', `Сверка: скидки закрывают расхождение (${trimNum(needDisc)}) — строки не перечитываю`);
+        } else if (!missingRows) {
+          // перечитываем до двух раз; принимаем только внутренне согласованные строки
+          // и только если от них Σ строк СТАНОВИТСЯ ближе к напечатанному итогу
+          const tol = Math.max(2, doc.totalSum * 0.02);
+          const gapNow = (): number =>
+            Math.abs(doc.totalSum! - (doc.items.reduce((s, it) => s + (it.lineSum ?? 0), 0) - discNet));
+          for (let round = 0; round < 2; round++) {
+            const sumNow = doc.items.reduce((s, it) => s + (it.lineSum ?? 0), 0);
+            const gap = gapNow();
+            if (gap <= tol) break;
+            const table = doc.items
+              .map((it, i) => `${i + 1} | ${it.name} | qty=${it.qty ?? '?'} ${it.unitCode ?? ''} | price=${it.price ?? '?'} | сумма=${it.lineSum ?? '?'} | с PDV=${it.lineGross ?? '?'}`)
+              .join('\n');
+            const asked =
+              `Σ товаров ${trimNum(sumNow)} − скидки ${trimNum(discNet)} ≠ нетто документа ${trimNum(doc.totalSum)}. ` +
+              `Разница ${trimNum(doc.totalSum - (sumNow - discNet))}. Перечитай каждую строку по фото и верни её настоящие ` +
+              `qty (Kol.), price (Cena po pakovanju), lineSum (Iznos bez PDV) и lineGross (Iznos s PDV-om). ` +
+              `Помни: строки POPUST не имеют количества, скидка — отдельная строка товара с минусом, а сумма товара = Kol. × цена.\n${table}`;
+            log('stage', `Сверка: расхождение с итогом ${trimNum(gap)} — запускаю повторное распознавание строк (${round + 1})`);
+            const fixed = await runAuditReader(prepared.files, asked, workDir, log);
+            const lines = Array.isArray(fixed?.lines) ? (fixed!.lines as Record<string, unknown>[]) : [];
+            // применяем пачкой: перепутанные соседние строки (сдвиг на POPUST) исправляются
+            // только вместе, по одной каждая ухудшает Σ
+            type Change = {
+              it: (typeof doc.items)[number];
+              q: number;
+              p: number;
+              ls: number;
+              gross: number | null;
+              rate: number | null;
+              unit: string | null;
+            };
+            const changes: Change[] = [];
+            for (const ln of lines) {
+              const nln = normName(String(ln.name ?? ''));
+              const it =
+                doc.items.find((x) => normName(x.name) === nln) ??
+                (nln ? doc.items.find((x) => normName(x.name).includes(nln) || nln.includes(normName(x.name))) : undefined);
+              if (!it) continue;
+              const q = typeof ln.qty === 'number' && ln.qty > 0 ? ln.qty : null;
+              const p = typeof ln.price === 'number' ? ln.price : null;
+              const ls = typeof ln.lineSum === 'number' && ln.lineSum > 0 ? ln.lineSum : null;
+              if (q == null || p == null || ls == null) continue;
+              if (Math.abs(q * p - ls) > Math.max(1, ls * 0.02)) continue;
+              // строка, в которую попали цифры POPUST, может отличаться от своей суммы в разы
+              const collided = discItems.some((d) => Math.abs((d.amount ?? 0) - (it.lineSum ?? 0)) <= 0.02);
+              const hi = Math.max(ls, it.lineSum ?? 0);
+              const lo = Math.min(ls, it.lineSum ?? 0);
+              if (!collided && lo > 0 && hi > lo * 10 + 1) continue;
+              if (q === it.qty && Math.abs(p - (it.price ?? 0)) < 0.005 && Math.abs(ls - (it.lineSum ?? 0)) < 0.005) continue;
+              changes.push({
+                it,
+                q,
+                p,
+                ls,
+                gross: typeof ln.lineGross === 'number' && ln.lineGross > 0 ? ln.lineGross : null,
+                rate: typeof ln.vatRate === 'number' && ln.vatRate >= 0 && ln.vatRate <= 30 ? ln.vatRate : null,
+                unit: typeof ln.unitCode === 'string' && ln.unitCode ? ln.unitCode : null,
+              });
             }
-            remaining -= diff;
-            const unit = typeof ln.unitCode === 'string' && ln.unitCode ? ln.unitCode : it.unitCode;
-            it.unitCode = unit;
-            corrections.push(`«${it.name}» — сверка с итогом исправила: ${q} × ${p}, сумма ${ls}`);
+            if (!changes.length) break;
+            const saved = changes.map((c) => ({
+              qty: c.it.qty,
+              price: c.it.price,
+              lineSum: c.it.lineSum,
+              lineGross: c.it.lineGross,
+              vatRate: c.it.vatRate,
+              unitCode: c.it.unitCode,
+              countAs: c.it.countAs,
+              packQty: c.it.packQty,
+              doubt: c.it.doubt,
+            }));
+            for (const c of changes) {
+              const qtyChanged = c.q !== c.it.qty;
+              c.it.qty = c.q;
+              c.it.price = c.p;
+              c.it.lineSum = c.ls;
+              c.it.lineGross = c.gross;
+              if (c.rate != null) c.it.vatRate = c.rate;
+              if (c.unit) c.it.unitCode = c.unit;
+              if (qtyChanged && c.it.countAs) {
+                c.it.countAs = null;
+                c.it.packQty = null;
+                c.it.doubt = 'количество исправлено при сверке — решите заново, в чём считать';
+              }
+            }
+            if (gapNow() < gap - 0.01) {
+              for (const c of changes) {
+                corrections.push(`«${c.it.name}» — сверка с итогом исправила: ${c.q} × ${c.p}, сумма ${c.ls}`);
+              }
+            } else {
+              changes.forEach((c, i) => Object.assign(c.it, saved[i]));
+              break;
+            }
           }
         }
       }
 
-      // ── сборка позиций: «Товаровед» + словарь + каталог + арифметика ─
+      // ── сборка позиций: «Каталог» + словарь + каталог + арифметика ─
       const items = [] as unknown[];
       const warnings: string[] = [];
       type ServiceLine = { kind: 'discount' | 'service'; name: string; amount: number | null };
       const serviceLines: ServiceLine[] = [];
-      const discItems = (doc.discounts?.items ?? []).filter(
-        // «R. % (rabat) 0,00» — пустая графа бланка, а не скидка: не показываем и не считаем
-        (d) => !(Math.abs(d.amount ?? 0) < 0.005 && Math.abs(d.percent ?? 0) < 0.005)
-      );
-      for (const d of discItems) {
-        if (d.includedInLineSum === true) continue;
-        if (d.amount == null || Math.abs(d.amount) < 0.005) continue; // «R.% 0,00» — не скидка, шум
-        serviceLines.push({ kind: 'discount', name: d.name, amount: d.amount });
-      }
-      const discountNames = new Set(discItems.filter((d) => d.includedInLineSum !== true).map((d) => normName(d.name)));
+      // скидка, уже вошедшая в сумму строки, второй раз в служебные строки не попадает
+      const discountNames = new Set(discItems.map((d) => normName(d.name)));
       const catSet = new Set(categories);
+
+      // Детерминированный контроль качества: сколько ложных подсказок и избыточных
+      // сомнений сняли после сопоставления по словарю и каталогу.
+      let droppedSuggestions = 0;
+      let clearedDoubts = 0;
 
       for (const it of doc.items) {
         if (!it.name) continue;
+        // товарная строка с минусом — это скидка/сторно, а не приход: в склад такое не пускаем
+        if ((it.lineSum != null && it.lineSum < -0.005) || (it.lineGross != null && it.lineGross < -0.005)) {
+          const amt = r2(Math.abs(it.lineSum ?? it.lineGross ?? 0));
+          if (amt >= 0.05) {
+            serviceLines.push({ kind: 'discount', name: it.name.trim(), amount: amt });
+            corrections.push(
+              `Строка «${it.name}» напечатана с минусом (−${trimNum(amt)}) — учёл её как скидку, а не товар; если это товар со скидкой, добавьте его вручную`
+            );
+          }
+          continue;
+        }
         const kind = classifyNonProduct(it.name);
         if (kind) {
           if (kind !== 'total') {
@@ -857,6 +1047,8 @@ importRouter.post(
           continue;
         }
 
+        // «Распознавание» иногда дублирует шифру в начале названия — в имени товара она лишняя
+        it.name = String(it.name).replace(/^\s*\d{8,15}\s+/, '').replace(/\s+/g, ' ').trim();
         const meaning = matchByMeaning(it.name, catalog.products, catalog.byNormName, catalog.byAlias);
         const lex = findLexEntry(it.name);
         let match: { productId: number; name: string; unitCode: string; via: 'name' | 'alias' | 'llm' | 'lexicon' } | null = null;
@@ -864,19 +1056,44 @@ importRouter.post(
           const p = meaning.match.product;
           match = { productId: p.id, name: p.name, unitCode: p.unitCode, via: meaning.match.via };
         } else if (!lex && it.productId != null && validIds.has(it.productId)) {
-          // словарь не знает строку — доверяем «Товароведу», он видел весь каталог
+          // словарь не знает строку — доверяем «Каталогу», он видел весь каталог
           const p = catalog.products.find((x) => x.id === it.productId)!;
           match = { productId: p.id, name: p.name, unitCode: p.unitCode, via: 'llm' };
         }
 
+        // Уверенное совпадение по имени/псевдониму/словарю сильнее догадок модели:
+        // лишние варианты и сомнения по такой строке только мешают человеку.
+        // Словарная подсказка для новой позиции — тоже уверенное знание товара.
+        const lineIdentity = lexIdentity(it.name);
+        const confident = (!!match && match.via !== 'llm') || (!match && !!meaning.hint && !!lineIdentity);
+
         const candidates = await trgmCandidates(normName(it.name));
-        for (const id of it.candidates) {
-          if (candidates.length >= 4) break;
-          if (id === match?.productId || candidates.some((c) => c.productId === id)) continue;
-          const p = catalog.products.find((x) => x.id === id);
-          if (p) candidates.push({ productId: p.id, name: p.name, sim: 0 });
+        if (confident) {
+          droppedSuggestions += it.candidates.filter((id) => id !== match?.productId).length;
+        } else {
+          for (const id of it.candidates) {
+            if (candidates.length >= 4) break;
+            if (id === match?.productId || candidates.some((c) => c.productId === id)) continue;
+            const p = catalog.products.find((x) => x.id === id);
+            if (p) candidates.push({ productId: p.id, name: p.name, sim: 0 });
+          }
         }
-        const filtered = candidates.filter((c) => c.productId !== match?.productId);
+        const filtered = candidates
+          .filter((c) => c.productId !== match?.productId)
+          // соседний товар из словаря (чеснок для «crni luk») — не подсказка, а шум
+          .filter((c) => {
+            if (!lineIdentity) return true;
+            const candidateIdentity = lexIdentity(c.name);
+            if (candidateIdentity && candidateIdentity !== lineIdentity) {
+              droppedSuggestions++;
+              return false;
+            }
+            return true;
+          })
+          .slice(0, 4);
+
+        const llmDoubt = confident ? null : it.doubt ?? null;
+        if (confident && it.doubt) clearedDoubts++;
 
         const du = it.unitCode ? DOC_UNITS[normName(it.unitCode)] : undefined;
         const conv = baseLine(
@@ -890,12 +1107,12 @@ importRouter.post(
             packQty: it.packQty ?? null,
             packUnit: it.packUnit ?? null,
             baseUnit: it.baseUnit ?? null,
-            doubt: it.doubt ?? null,
+            doubt: llmDoubt,
           },
           { units: unitByCode, printed: du, productUnitCode: match?.unitCode ?? null, productConv: match ? convByProduct.get(match.productId) ?? null : null }
         );
         const itemNotes = conv.notes.map((n) => stripLineName(n, it.name));
-        const doubtText = (conv.doubt ?? '').replace(/^(?:GPT|Склад|Товаровед):\s*/i, '').trim();
+        const doubtText = (conv.doubt ?? '').replace(/^(?:GPT|ИИ|Склад|Товаровед|Каталог|Распознавание|Сверка):\s*/i, '').trim();
         if (it.qty == null && !conv.forecast) itemNotes.push('количество не прочитано — укажите вручную');
         if (it.unitCode && !du) itemNotes.push(`единица «${it.unitCode}» не распознана — укажите базовую (г/мл/шт) и проверьте количество`);
         if (it.qty != null && it.price != null && it.lineSum != null && it.lineSum > 0) {
@@ -913,11 +1130,13 @@ importRouter.post(
 
         items.push({
           rawName: it.name,
+          supplierCode: it.supplierCode ?? null,
           qty: conv.qty,
           unitId: conv.unitId,
           docUnitPrinted: it.unitCode ?? null,
           docQtyPrinted: it.qty ?? null,
           docPricePrinted: it.price ?? null,
+          docLineGross: it.lineGross ?? null,
           qtyForecast: conv.forecast,
           doubt: conv.doubt,
           warnings: itemNotes.filter((n) => n && n !== doubtText),
@@ -927,46 +1146,410 @@ importRouter.post(
           vatSuspect: false,
           lineSum: it.lineSum,
           lineSumPrinted: it.lineSum != null && it.lineSum > 0,
+          rowDiscount: null,
           match,
           candidates: filtered,
           newHint: match ? null : hint,
         });
       }
 
-      // ── «Счетовод»: НДС, итоги, предупреждения ────────────────────────
-      type OutItem = { rawName: string; lineSum: number | null; vatRate: number | null; warnings?: string[] };
+      // ── привязка скидок к строкам: показываем в карточке товара и вычитаем из нетто ──
+      interface RowDiscount {
+        name: string;
+        amount: number;
+        amountGross: number | null;
+        percent: number | null;
+        vatRate: number | null;
+        reason: string | null;
+      }
+      interface OutRow {
+        rawName: string;
+        supplierCode: string | null;
+        lineSum: number | null;
+        price: number | null;
+        qty: number | null;
+        rowDiscount: RowDiscount | null;
+        docUnitPrinted?: string | null;
+        docQtyPrinted?: number | null;
+        docPricePrinted?: number | null;
+        docLineGross?: number | null;
+        lineSumPrinted?: boolean;
+        vatRate?: number | null;
+        warnings?: string[];
+      }
+      const outRows = items as OutRow[];
+      // ── «Сверка»: в сумму строки иногда попадает ЦЕНА упаковки вместо «Iznos bez PDV»
+      // (строка с Kol.>1, где напечатанная сумма равна цене). Признак точный: Kol. × цена,
+      // умноженное на ставку, даёт напечатанную сумму с PDV. Тогда нетто = Kol. × цена.
+      {
+        let fixedNet = 0;
+        for (const r of outRows) {
+          const q = r.docQtyPrinted ?? null;
+          const p = r.docPricePrinted ?? null;
+          const net = r.lineSum ?? null;
+          const gross = r.docLineGross ?? null;
+          if (q == null || q < 2 || p == null || p <= 0.01 || net == null || net <= 0) continue;
+          if (Math.abs(net - p) > Math.max(0.02, p * 0.002)) continue;
+          const full = r2(q * p);
+          if (gross == null) continue;
+          const rate = Math.abs(full * 1.1 - gross) <= 0.05 ? 10 : Math.abs(full * 1.2 - gross) <= 0.05 ? 20 : null;
+          if (rate == null) continue;
+          r.lineSum = full;
+          r.vatRate = rate;
+          fixedNet++;
+        }
+        if (fixedNet) {
+          corrections.push(
+            `В ${fixedNet} строках вместо суммы стояла цена упаковки — восстановил нетто как Кол. × цена (сверено по напечатанной сумме с PDV)`
+          );
+        }
+      }
+      // ── METRO: Iznos bez PDV = Kol. × Cena po pakovanju. Колонка «Kol.» при мелком шрифте
+      // съезжает или теряется, поэтому сверяем количество делением напечатанных сумм.
+      {
+        let fixedQty = 0;
+        for (const r of outRows) {
+          if ((r.docUnitPrinted ?? '').toUpperCase() !== 'KO') continue;
+          const price = r.docPricePrinted ?? null;
+          const net = r.lineSum ?? null;
+          const cur = r.docQtyPrinted ?? null;
+          if (price == null || price <= 0 || net == null || net <= 0) continue;
+          const k = Math.round(net / price);
+          if (k < 1 || k > 500 || Math.abs(k * price - net) > 0.02) continue;
+          if (cur != null && Math.abs(cur - k) < 0.001) continue;
+          const packBase = cur != null && cur > 0 ? (r.qty ?? 0) / cur : 1;
+          r.qty = Math.round(packBase * k * 1000) / 1000;
+          r.docQtyPrinted = k;
+          fixedQty++;
+        }
+        if (fixedQty) {
+          corrections.push(`Количество в строках сверил по напечатанным суммам (нетто ÷ цена): исправил ${fixedQty} строк`);
+        }
+        // KG: напечатанная сумма = вес × цена за кг; вес возвращаем из деления
+        let fixedKg = 0;
+        for (const r of outRows) {
+          if ((r.docUnitPrinted ?? '').toUpperCase() !== 'KG') continue;
+          const price = r.docPricePrinted ?? null;
+          const net = r.lineSum ?? null;
+          const cur = r.docQtyPrinted ?? null;
+          if (price == null || price <= 0 || net == null || net <= 0) continue;
+          const w = net / price;
+          if (w <= 0 || w >= 1000 || Math.abs(w * price - net) > 0.02) continue;
+          if (cur != null && Math.abs(cur - w) < 0.0005) continue;
+          const basePerUnit = cur != null && cur > 0 ? (r.qty ?? 0) / cur : 1;
+          r.qty = Math.round(basePerUnit * w * 1000) / 1000;
+          r.docQtyPrinted = Math.round(w * 1000) / 1000;
+          fixedKg++;
+        }
+        if (fixedKg) {
+          corrections.push(`Вес весовых строк сверил по напечатанным суммам (нетто ÷ цена за кг): исправил ${fixedKg} строк`);
+        }
+      }
+      // нетто строк «как напечатано» — до вычитания скидок (нужно для сверки суммы скидок с итогом)
+      const sumPrintedNets = r2(outRows.reduce((s, r) => s + (r.lineSum ?? 0), 0));
+      // ── «Сверка»: Σ напечатанных строк = нетто документа + все скидки ──
+      // Недобор, кратный цене упаковки, означает потерянный «Kol.»: восстанавливаем количество,
+      // а не подгоняем суммы. Работает до привязки скидок, когда нетто строк ещё «как напечатано».
+      {
+        const allKnown = discItems.every((d) => d.amount != null);
+        const target = doc.totalSum != null && allKnown ? r2(doc.totalSum + discNet) : null;
+        const rows = outRows.filter(
+          (r) =>
+            r.lineSum != null &&
+            r.lineSum > 0 &&
+            (r.docPricePrinted ?? 0) > 0.01 &&
+            (r.docQtyPrinted ?? 0) > 0 &&
+            Math.abs((r.docQtyPrinted ?? 0) * (r.docPricePrinted ?? 0) - r.lineSum) <=
+              Math.max(0.05, r.lineSum * 0.005)
+        );
+        const addQty = (r: OutRow, k: number): void => {
+          const p = r.docPricePrinted ?? 0;
+          const packBase = (r.qty ?? 0) / (r.docQtyPrinted ?? 1);
+          r.docQtyPrinted = r2((r.docQtyPrinted ?? 0) + k);
+          r.qty = Math.round(((r.qty ?? 0) + k * packBase) * 1000) / 1000;
+          r.lineSum = r2((r.lineSum ?? 0) + k * p);
+          // сумма с PDV меньше новой нетто — цифра была вычислена от старой строки, а не прочитана
+          if (r.docLineGross != null && r.docLineGross < (r.lineSum ?? 0) - 0.01) {
+            r.docLineGross = null;
+            r.vatRate = null;
+          }
+        };
+        for (let step = 0; step < 4 && target != null; step++) {
+          const sumNow = outRows.reduce((s, r) => s + (r.lineSum ?? 0), 0);
+          const deficit = r2(target - sumNow);
+          if (deficit < 0.5) break;
+          const singles = rows
+            .map((r) => ({ r, k: Math.round(deficit / (r.docPricePrinted ?? 1)) }))
+            .filter(({ r, k }) => k >= 1 && k <= 30 && Math.abs(k * (r.docPricePrinted ?? 0) - deficit) <= 0.03);
+          let hit: { r: OutRow; k: number }[] | null = null;
+          if (singles.length === 1) hit = singles;
+          else if (!singles.length) {
+            search: for (let i = 0; i < rows.length; i++) {
+              const pi = rows[i].docPricePrinted ?? 0;
+              for (let k1 = 1; k1 <= 15; k1++) {
+                const rest = r2(deficit - k1 * pi);
+                if (rest < 0.5) continue;
+                for (let j = i + 1; j < rows.length; j++) {
+                  const pj = rows[j].docPricePrinted ?? 1;
+                  const k2 = Math.round(rest / pj);
+                  if (k2 >= 1 && k2 <= 15 && Math.abs(k2 * pj - rest) <= 0.03) {
+                    hit = [
+                      { r: rows[i], k: k1 },
+                      { r: rows[j], k: k2 },
+                    ];
+                    break search;
+                  }
+                }
+              }
+            }
+          }
+          if (!hit) break;
+          for (const h of hit) addQty(h.r, h.k);
+          corrections.push(
+            `Недобор нетто ${trimNum(deficit)} закрылся целым числом упаковок — восстановил количество: ${hit
+              .map((h) => `«${h.r.rawName}» +${h.k}`)
+              .join(', ')} (суммы строк пересчитаны)`
+          );
+        }
+      }
+      const outDiscounts: {
+        name: string;
+        productName: string | null;
+        discountKind: string;
+        amount: number | null;
+        amountGross: number | null;
+        percent: number | null;
+        vatRate: number | null;
+        includedInLineSum: boolean | null;
+        doubt: string | null;
+      }[] = [];
+      const outTargets: (OutRow | undefined)[] = [];
+      let discAttached = 0;
+      const attachDiscount = (idx: number, target: OutRow, amount: number): void => {
+        const printed = target.lineSum ?? 0;
+        const d = outDiscounts[idx];
+        // ставку берём у строки товара: она уже сверена с её напечатанными нетто/с PDV
+        const rate = target.vatRate ?? d.vatRate ?? null;
+        // сумма с PDV: печатная, если сходится с amount × (1 + ставка), иначе вычисляем по ставке строки
+        const printedGross = d.amountGross;
+        const grossOk = printedGross != null && rate != null && Math.abs(printedGross - amount * (1 + rate / 100)) <= 0.05;
+        const amountGross = grossOk ? printedGross : rate != null ? r2(amount * (1 + rate / 100)) : printedGross;
+        const percent = r2((amount / printed) * 100);
+        target.rowDiscount = {
+          name: d.name,
+          amount,
+          amountGross,
+          percent,
+          vatRate: rate,
+          reason: /kupi\s+vise|plati\s+manje/i.test(d.name) ? 'акция Kupi više, plati manje' : null,
+        };
+        target.lineSum = r2(printed - amount);
+        if ((target.qty ?? 0) > 0 && target.price != null) {
+          target.price = Math.round(target.price * (1 - amount / printed) * 1e10) / 1e10;
+        }
+        outDiscounts[idx] = { ...d, amount, amountGross, percent, vatRate: rate, includedInLineSum: true, doubt: null };
+        outTargets[idx] = target;
+        discAttached++;
+      };
+
+      for (const d of discItems) {
+        const code = (d.supplierCode ?? '').replace(/[^0-9]/g, '');
+        const nameKey = normName(d.productName ?? '');
+        // 1) та же шифра, что у товара; 2) точное название; 3) однозначное вхождение названия
+        let row: OutRow | OutRow[] | undefined =
+          (code ? outRows.find((r) => (r.supplierCode ?? '').replace(/[^0-9]/g, '') === code) : undefined) ??
+          (nameKey ? outRows.find((r) => normName(r.rawName) === nameKey) : undefined) ??
+          (nameKey
+            ? outRows.filter((r) => {
+                const rn = normName(r.rawName);
+                return rn.includes(nameKey) || nameKey.includes(rn);
+              })
+            : []);
+        if (Array.isArray(row) && row.length !== 1) row = undefined;
+        const target = Array.isArray(row) ? row[0] : row;
+        let amount = d.amount != null ? r2(d.amount) : null;
+        const amountGross0 = d.amountGross != null ? r2(d.amountGross) : null;
+        const lineSum = target?.lineSum ?? null;
+        // в POPUST-строку попали цифры соседнего товара? (сумма совпала с нетто другого товара)
+        const amt: number | null = amount;
+        const borrowed =
+          amt != null &&
+          amt > 0 &&
+          outRows.some(
+            (r) =>
+              r !== target &&
+              r.lineSum != null &&
+              Math.abs(r.lineSum - amt) <= 0.02 &&
+              (amountGross0 == null || (r.docLineGross != null && Math.abs(r.docLineGross - amountGross0) <= 0.03))
+          );
+        let doubt: string | null = null;
+        if (!target) doubt = 'скидка не привязана к строке — вычтите вручную';
+        else if (borrowed) {
+          doubt = 'в POPUST-строку попали цифры соседнего товара — сумму восстановлю по итогам документа';
+          amount = null;
+        } else if (amount == null) doubt = 'сумма скидки не прочитана — восстановлю по итогам документа';
+        else if (amount < 0.05) {
+          doubt = 'сумма скидки не прочитана — восстановлю по итогам документа';
+          amount = null;
+        } else if (lineSum == null) {
+          doubt = 'нетто строки не прочитано — сумму скидки сверю по итогам документа';
+          amount = null;
+        } else if (amount >= lineSum) {
+          // скидка больше нетто своей строки — почти всегда недобор количества в строке,
+          // а не ошибка скидки: печатную сумму оставляем, строку человек сверит по фото
+          doubt = `скидка ${trimNum(amount)} больше нетто своей строки ${trimNum(lineSum)} — вероятно, в строке не прочитано количество; сумму скидки оставил как напечатана`;
+        }
+        const idx = outDiscounts.length;
+        // сумма с PDV — по ставке строки: печатная цифра скидки часто попадает с соседней строки
+        const rateForD = target?.vatRate ?? d.vatRate ?? null;
+        const grossForD = amount != null && rateForD != null ? r2(amount * (1 + rateForD / 100)) : amountGross0;
+        outDiscounts.push({
+          name: d.name,
+          productName: target?.rawName ?? d.productName ?? null,
+          discountKind: d.kind ?? 'unknown',
+          amount,
+          amountGross: grossForD,
+          percent: d.percent ?? null,
+          vatRate: rateForD,
+          includedInLineSum: false,
+          doubt,
+        });
+        outTargets.push(target);
+        if (target && amount != null && amount < (target.lineSum ?? Number.POSITIVE_INFINITY)) attachDiscount(idx, target, amount);
+        else if (doubt) warnings.push(`Скидка «${d.name}»: ${doubt}`);
+      }
+
+      // ── скидка не прочитана/перепутана: восстанавливаем сумму из напечатанных итогов ──
+      // нетто = Σ строк − скидки => недостающая скидка = Σ строк − уже привязанные − итог
+      const attachedSum = r2(
+        outDiscounts.reduce((s, d) => (d.includedInLineSum ? s + Math.abs(d.amount ?? 0) : s), 0)
+      );
+      const needDisc = doc.totalSum != null ? r2(sumPrintedNets - attachedSum - doc.totalSum) : 0;
+      const openIdx = outDiscounts.map((d, i) => (!d.includedInLineSum && d.amount == null ? i : -1)).filter((i) => i >= 0);
+      if (openIdx.length === 1 && needDisc > 0.01) {
+        const i = openIdx[0];
+        const target = outTargets[i];
+        const printed = target?.lineSum ?? null;
+        if (target && printed != null && needDisc < printed) {
+          outDiscounts[i].amount = needDisc;
+          outDiscounts[i].doubt = null;
+          attachDiscount(i, target, needDisc);
+          corrections.push(
+            `Сумму скидки «${outDiscounts[i].name}» восстановил из итогов документа: Σ строк ${trimNum(sumPrintedNets)} − нетто ${trimNum(doc.totalSum ?? 0)} − прочие скидки = ${trimNum(needDisc)}`
+          );
+        }
+      } else if (openIdx.length > 1 && needDisc > 0.01) {
+        warnings.push(
+          `Не прочитаны суммы ${openIdx.length} скидок, а по итогам их недостаёт на ${trimNum(needDisc)} — разделите вручную по фото`
+        );
+      }
+      if (doc.totalSum != null && outDiscounts.length) {
+        const expectDisc = r2(sumPrintedNets - doc.totalSum);
+        const attachedNow = r2(
+          outDiscounts.reduce((s, d) => (d.includedInLineSum ? s + Math.abs(d.amount ?? 0) : s), 0)
+        );
+        if (expectDisc > 0.01 && Math.abs(attachedNow - expectDisc) > 1) {
+          warnings.push(
+            `Σ скидок ${trimNum(attachedNow)} ≠ сумме скидок по итогам ${trimNum(expectDisc)} — проверьте суммы скидок по фото`
+          );
+        }
+      }
+      if (discAttached) {
+        corrections.push(`Скидки разнесены по строкам товаров: ${discAttached} шт — цена и нетто этих строк уже со скидкой`);
+      }
+      {
+        const dNet = r2(outDiscounts.reduce((s, d) => s + Math.abs(d.amount ?? 0), 0));
+        const dGr = r2(outDiscounts.reduce((s, d) => s + Math.abs(d.amountGross ?? 0), 0));
+        if (outDiscounts.length) {
+          corrections.push(
+            `Скидки: ${outDiscounts.length} · всего ${trimNum(dNet)} без PDV${dGr ? ` (${trimNum(dGr)} с PDV)` : ''}`
+          );
+        }
+      }
+
+      // ── «Сверка»: НДС, итоги, предупреждения ────────────────────────
+      type OutItem = {
+        rawName: string;
+        lineSum: number | null;
+        vatRate: number | null;
+        warnings?: string[];
+        qty?: number | null;
+        price?: number | null;
+        docQtyPrinted?: number | null;
+        docPricePrinted?: number | null;
+        docLineGross?: number | null;
+        rowDiscount?: { amount: number } | null;
+      };
       const outItems = items as OutItem[];
       const lineVat = (sum: number, rate: number): number => Math.round(((sum * rate) / 100) * 100) / 100;
 
       // ставка PDV не напечатана в строках — выводим арифметикой по итогу НДС
       if (doc.totalVat != null && doc.totalVat > 0) {
-        const open = outItems.filter((x) => x.vatRate == null);
+        const open = outItems.filter((x) => x.vatRate == null && (x.lineSum ?? 0) > 0.001);
         if (open.length) {
           const known = outItems.reduce((s, x) => (x.vatRate == null ? s : s + lineVat(x.lineSum ?? 0, x.vatRate)), 0);
-          const rest = doc.totalVat - known;
-          const rate = [0, 5, 10, 20].find((r) => Math.abs(open.reduce((s, x) => s + lineVat(x.lineSum ?? 0, r), 0) - rest) <= 1.5);
-          if (rate != null) {
-            for (const x of open) x.vatRate = rate;
-            corrections.push(rate > 0 ? `Ставка PDV не напечатана — вывел ${rate}% по итогу НДС документа` : 'Строки без PDV: итог НДС уже закрыт другими строками');
+          const rest = r2(doc.totalVat - known);
+          let solved: number[] | null = null;
+          // «Сверка»: подбираем ставку КАЖДОЙ открытой строке (10/20, при нужде 0), чтобы Σ PDV
+          // сошлась с напечатанным итогом, — одной общей ставкой это часто не решается
+          if (open.length <= 10) {
+            for (const grid of [[10, 20], [0, 10, 20]] as const) {
+              for (let mask = 0; mask < grid.length ** open.length && !solved; mask++) {
+                let m = mask;
+                const rates: number[] = [];
+                for (let i = 0; i < open.length; i++) {
+                  rates.push(grid[m % grid.length]);
+                  m = Math.floor(m / grid.length);
+                }
+                const total = open.reduce((s, x, i) => s + lineVat(x.lineSum ?? 0, rates[i]), 0);
+                if (Math.abs(total - rest) <= 0.05) solved = rates;
+              }
+              if (solved) break;
+            }
+          }
+          if (solved) {
+            open.forEach((x, i) => (x.vatRate = solved![i]));
+            const uniq = Array.from(new Set(open.map((x) => x.vatRate))).sort((a, b) => (a ?? 0) - (b ?? 0));
+            const mix = uniq.length === 1 ? `ставку ${uniq[0]}%` : `ставки ${uniq.join('/')}% по строкам`;
+            corrections.push(`Ставка PDV не напечатана — вывел ${mix} так, чтобы Σ PDV сошлась с итогом документа`);
+            // скидки этих строк пересчитываем с PDV теперь, когда ставка известна
+            outDiscounts.forEach((d, idx) => {
+              const t = outTargets[idx];
+              if (d.includedInLineSum !== true || d.amountGross != null) return;
+              const rate = t?.vatRate ?? d.vatRate;
+              if (rate == null || t?.rowDiscount == null) return;
+              const amountGross = r2(Math.abs(d.amount ?? 0) * (1 + rate / 100));
+              outDiscounts[idx] = { ...d, vatRate: rate, amountGross };
+              t.rowDiscount = { ...t.rowDiscount, vatRate: rate, amountGross };
+            });
+          } else {
+            const rate = [0, 5, 10, 20].find((r) => Math.abs(open.reduce((s, x) => s + lineVat(x.lineSum ?? 0, r), 0) - rest) <= 1.5);
+            if (rate != null) {
+              for (const x of open) x.vatRate = rate;
+              corrections.push(rate > 0 ? `Ставка PDV не напечатана — вывел ${rate}% по итогу НДС документа` : 'Строки без PDV: итог НДС уже закрыт другими строками');
+            }
           }
         }
       }
 
       const sumLines = outItems.reduce((s, x) => s + (x.lineSum ?? 0), 0);
+      // непривязанные скидки ещё не сидят в суммах строк — они законно уменьшают нетто
+      const separateDisc = r2(
+        outDiscounts.reduce((s, d) => (d.includedInLineSum === true ? s : s + Math.abs(d.amount ?? 0)), 0)
+      );
       if (doc.totalSum != null && doc.totalSum > 0 && sumLines > 0) {
-        const dNet = doc.totalSum - sumLines;
-        const discAmt = doc.discounts?.total ?? discItems.reduce((s, d) => s + (d.amount ?? 0), 0);
-        const explainedByDisc = discAmt > 0 && Math.abs(dNet - discAmt) <= Math.max(2, doc.totalSum * 0.01);
+        const netForCompare = r2(sumLines - separateDisc);
+        const dNet = r2(doc.totalSum - netForCompare);
         const svcAbs = serviceLines.reduce((s, x) => s + Math.abs(x.amount ?? 0), 0);
         const explainedBySvc = svcAbs > 0 && Math.abs(Math.abs(dNet) - svcAbs) <= Math.max(2, doc.totalSum * 0.02);
-        if (!explainedByDisc && !explainedBySvc && Math.abs(dNet) > Math.max(2, doc.totalSum * 0.02)) {
+        if (!explainedBySvc && Math.abs(dNet) > Math.max(2, doc.totalSum * 0.02)) {
           const maxLine = Math.max(0, ...outItems.map((x) => x.lineSum ?? 0));
           if (dNet > 0 && dNet > maxLine * 10 + 10) {
             warnings.push(
               `Σ распознанных строк ${trimNum(sumLines)} меньше нетто документа ${trimNum(doc.totalSum)} на ${trimNum(dNet)} — не все позиции попали в разбор. Добавьте недостающие вручную: итог подгонкой не дорисовываем`
             );
           } else {
-            warnings.push(`Σ строк ${trimNum(sumLines)} ≠ нетто документа ${trimNum(doc.totalSum)} (Δ ${trimNum(dNet)}) — сверьте позиции с фото (агенты уже перечитывали спорные строки)`);
+            warnings.push(`Σ строк ${trimNum(netForCompare)} ≠ нетто документа ${trimNum(doc.totalSum)} (Δ ${trimNum(dNet)}) — сверьте позиции с фото (агенты уже перечитывали спорные строки)`);
           }
         }
       }
@@ -979,7 +1562,7 @@ importRouter.post(
       if (list.length > 1) {
         warnings.unshift(`Разобрал ${list.length} файла как одну накладную — сверьте строки на стыках листов`);
       }
-      if (!items.length) warnings.push('«Чтец» и «Товаровед» не нашли ни одной товарной строки — проверьте читаемость фото');
+      if (!items.length) warnings.push('«Распознавание» и «Каталог» не нашли ни одной товарной строки — проверьте читаемость фото');
       {
         const matched = (items as { match: unknown }[]).filter((x) => !!x.match).length;
         const warnCount = warnings.length + (items as { warnings?: string[] }[]).reduce((s, x) => s + (x.warnings?.length ?? 0), 0);
@@ -988,11 +1571,25 @@ importRouter.post(
           `Сопоставление: ${matched} из ${items.length} строк уже есть в каталоге${warnCount ? ` · предупреждений: ${warnCount}` : ''}`
         );
       }
+      // ── «Контроль»: детерминированная проверка сопоставлений ─────────────
+      // Словарь и каталог уже отсеяли чужие товары; здесь фиксируем итог для журнала.
+      const controlNotes = [
+        droppedSuggestions ? `лишних подсказок: ${droppedSuggestions}` : '',
+        clearedDoubts ? `избыточных сомнений: ${clearedDoubts}` : '',
+      ].filter(Boolean);
+      log(
+        'stage',
+        `Агент «Контроль»: проверено ${doc.items.length} ${pluralRu(doc.items.length, 'строка', 'строки', 'строк')}` +
+          (controlNotes.length ? ` · ${controlNotes.join(' · ')}` : '')
+      );
+      if (controlNotes.length) {
+        corrections.push(`Контроль сопоставления: ${controlNotes.join(' · ')} — уверенные совпадения оставлены без лишних вариантов`);
+      }
       {
         const warnCount = warnings.length + (items as { warnings?: string[] }[]).reduce((s, x) => s + (x.warnings?.length ?? 0), 0);
         log(
           'result',
-          `Готово за ${((Date.now() - startedAt) / 1000).toFixed(1)} с: ${items.length} ${items.length === 1 ? 'позиция' : 'позиций'}${warnCount ? `, требуют внимания: ${warnCount}` : ''}`
+          `Готово за ${((Date.now() - startedAt) / 1000).toFixed(1)} с: ${items.length} ${pluralRu(items.length, 'позиция', 'позиции', 'позиций')}${warnCount ? `, требуют внимания: ${warnCount}` : ''}`
         );
       }
 
@@ -1000,7 +1597,7 @@ importRouter.post(
         storedFile,
         fileName,
         extraFiles: extraStored,
-        model: 'Qoder CLI · агенты',
+        model: 'ИИ · агенты',
         doc: {
           number: doc.number,
           supplier: doc.supplier,
@@ -1016,8 +1613,9 @@ importRouter.post(
         corrections,
         serviceLines,
         discounts: {
-          total: doc.discounts?.total ?? null,
-          items: discItems,
+          total: (() => { const t = r2(outDiscounts.reduce((s, d) => s + Math.abs(d.amount ?? 0), 0)); return t || null; })(),
+          totalGross: (() => { const t = r2(outDiscounts.reduce((s, d) => s + Math.abs(d.amountGross ?? 0), 0)); return t || null; })(),
+          items: outDiscounts,
           doubt: null,
         },
         ...(body.debug === true ? { transcript, timings } : {}),

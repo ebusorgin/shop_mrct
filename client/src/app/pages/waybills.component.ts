@@ -31,8 +31,8 @@ interface ImpDraft {
   docUnitPrinted: string | null; // как напечатано в документе («kg») — для сверки
   docQtyPrinted: number | null;  // напечатанное количество (50)
   docPricePrinted: number | null; // напечатанная цена за напечатанную единицу — редактируется
-  qtyForecast: boolean;      // qty пересчитан по решению GPT (упаковки -> г/мл)
-  doubt: string | null;      // вопрос GPT по строке — подсветить человеку
+  qtyForecast: boolean;      // qty пересчитан по решению ИИ (упаковки -> г/мл)
+  doubt: string | null;      // вопрос ИИ по строке — подсветить человеку
   warnings: string[];        // замечания именно по этой строке — показываются в карточке
   price: number | null;       // цена за базовую единицу — производная, только чтение
   vatRate: number | null;     // ставка PDV, % (5/10/20) или null
@@ -40,15 +40,43 @@ interface ImpDraft {
   vatInferred: boolean;       // ставку не напечатали — вывели по итогам документа
   lineSum: number | null;     // деньги строки — якорь всех пересчётов, редактируются
   lineSumPrinted: boolean;    // сумма напечатана в документе (иначе это Кол × Цена)
+  /** Скидка на товар из отдельной строки POPUST/акции — уже вычтена из lineSum и цены. */
+  discount: { name: string; amount: number; amountGross: number | null; percent: number | null; vatRate: number | null; reason: string | null } | null;
   edited: boolean;            // человек сам ввёл деньги строки — печатная сверка больше не указатель
   mode: 'match' | 'create';
   productId: number | null;
+  /** Выбранная в карточке категория для фильтра списка товаров ('' — все категории). */
+  pickCat: string;
   via: string | null;         // name | alias | llm
-  candidates: { productId: number; name: string }[];
+  candidates: { productId: number; name: string; sim?: number }[];
   newName: string;
   newCategory: string;
   newUnitId: number | null;   // базовая складская единица для новой позиции
+  /** Снимок сразу после разбора — кнопка «вернуть как было» в карточке. */
+  orig: ImpOrig;
 }
+
+/** Значения строки на момент разбора: что вернуть, если правки завели не туда. */
+interface ImpOrig {
+  qty: number | null;
+  unitId: number | null;
+  docPricePrinted: number | null;
+  price: number | null;
+  vatRate: number | null;
+  vatSuspect: boolean;
+  vatInferred: boolean;
+  lineSum: number | null;
+  edited: boolean;
+  mode: 'match' | 'create';
+  productId: number | null;
+  pickCat: string;
+  newName: string;
+  newCategory: string;
+  newUnitId: number | null;
+}
+
+/** Состояние строки для статуса и фильтра: что мешает провести её на склад. */
+type ImpLineState = 'fix' | 'check' | 'new' | 'ready';
 
 @Component({
   selector: 'app-waybills',
@@ -65,23 +93,23 @@ interface ImpDraft {
     .drop-hint{font-size:12px;color:var(--muted);min-height:16px}
     .drop.busy .drop-btn{animation:pulse 1.2s ease-in-out infinite}
     @keyframes pulse{50%{opacity:.55}}
-    /* вкладки умного прихода: GPT или Qoder CLI */
+    /* оформление блока умного прихода */
     .smart-tabs{display:inline-flex;gap:4px;margin:10px 0 12px;padding:3px;background:#eef2f7;border-radius:10px}
     .smart-tabs button{border:0;background:transparent;border-radius:8px;padding:7px 14px;font-size:13px;font-weight:600;color:var(--muted);cursor:pointer}
     .smart-tabs button.on{background:#fff;color:var(--text);box-shadow:0 1px 3px rgba(15,23,42,.14)}
 
-    /* живой лог сервера: этапы GPT/CLI и рассуждения модели */
+    /* живой лог сервера: этапы распознавания */
     .ai-log{margin:10px 0 12px;border:1px solid #dbe3ee;border-radius:10px;background:#0f172a;overflow:hidden}
     .ai-log-head{display:flex;align-items:center;gap:8px;padding:7px 10px;background:#16213a;color:#cbd5e1;font-size:12px}
     .ai-log-head b{color:#e2e8f0;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0}
     .ai-log-head .btn{padding:2px 8px;font-size:11px}
-    .ai-log-body{max-height:230px;overflow:auto;padding:8px 10px;font-family:ui-monospace,Consolas,monospace;font-size:12px;line-height:1.45;color:#cbd5e1}
+    .ai-log-body{background:#f8fafc;border:1px solid var(--border);border-radius:10px;color:#334155;max-height:230px;overflow:auto;padding:8px 10px;font-family:ui-monospace,Consolas,monospace;font-size:12px;line-height:1.45}
     .ai-line{white-space:pre-wrap;word-break:break-word;margin:2px 0}
     .ai-line .t{color:#64748b;margin-right:7px;font-variant-numeric:tabular-nums}
-    .ai-line.k-thinking{color:#a5b4fc;font-style:italic}
-    .ai-line.k-tool{color:#7dd3fc}
-    .ai-line.k-result{color:#86efac}
-    .ai-line.k-error{color:#fca5a5}
+    .ai-line.k-thinking{color:#6d7be0;font-style:italic}
+    .ai-line.k-tool{color:#0b7dbb}
+    .ai-line.k-result{color:#17834f}
+    .ai-line.k-error{color:#b4232a}
     .live-dot{width:8px;height:8px;border-radius:50%;background:#64748b;flex:0 0 auto}
     .live-dot.on{background:#22c55e;animation:live 1.4s ease-in-out infinite}
     @keyframes live{50%{opacity:.35}}
@@ -91,7 +119,7 @@ interface ImpDraft {
     .imp-file{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--muted)}
     .thumb{width:44px;height:44px;object-fit:cover;border-radius:8px;border:1px solid var(--border);cursor:zoom-in;display:block}
     .pdf-link{font-size:12px;color:var(--accent);cursor:pointer;text-decoration:underline}
-    /* печатная транскрипция GPT: показывает, что именно модель увидела на фото */
+    /* печатная транскрипция ИИ: показывает, что именно модель увидела на фото */
     .transcript{white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,Consolas,monospace;font-size:11px;line-height:1.45;background:#f8fafc;border:1px solid var(--border);border-radius:8px;padding:10px 12px;max-height:280px;overflow:auto;margin:8px 0 0}
     /* пакет фото одного листа: миниатюры с удалением и добавкой */
     .imp-files{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px}
@@ -114,41 +142,9 @@ interface ImpDraft {
     .imp-msg ul{margin:6px 0 0;padding-left:18px}
     .imp-msg li{margin:2px 0}
     .imp-note{background:var(--accent-soft);color:#1e4a8a;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px}
-    .imp-head,.imp-card{grid-template-columns:minmax(180px,1.25fr) 150px 104px 96px 132px minmax(220px,1.5fr) 34px;gap:10px;align-items:center}
-    .imp-head{display:grid;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);padding:10px 10px 6px;border-bottom:2px solid var(--border)}
-    .imp-head .r{text-align:right}
-    .imp-card{display:grid;padding:10px;border:1px solid var(--border);border-radius:10px;background:#fff;margin-top:8px;box-shadow:var(--shadow)}
-    .imp-card:hover{background:#fbfcfe}
-    .imp-card.warn-card{border-color:#e3c56b;background:#fffdf4}
-    /* замечания строки — в самой карточке, чтобы было видно, к какой позиции они относятся */
-    .c-notes{grid-column:1/-1;display:grid;gap:3px;margin-top:2px}
-    .c-note{font-size:12px;line-height:1.4;color:#8a5a00;background:#fff7e2;border:1px solid #f0d9a6;border-radius:6px;padding:4px 8px}
-    .c-name{display:flex;flex-direction:column;gap:4px;min-width:0}
-    .c-name .badge{align-self:flex-start}
-    /* название из документа правится прямо в карточке: по нему сервер запоминает псевдоним */
-    .doc-name{font-weight:700;width:100%;min-width:0}
-    .doc-sum{font-size:12px;color:var(--muted)}
-    .doc-sum.bad{color:var(--amber);font-weight:600}
-    /* подписи полей: на десктопе их заменяет шапка .imp-head, на узких экранах — видны в карточке */
-    .fl{display:none;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted)}
-    .c-qty{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,66px);gap:6px;min-width:0}
-    .c-qty .fl{grid-column:1/-1;margin-bottom:2px}
-    .c-qty input{width:100%;min-width:0}
-    .c-qty select{width:100%;min-width:0}
-    .qty-doc{grid-column:1/-1;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
-    .c-price{min-width:0}.c-price .fl{margin-bottom:2px}.c-price input{width:100%;min-width:0}
-    .c-price .qty-doc{display:block;margin-top:3px}
     /* мини-поля: это цифры из накладной, их правят прямо в карточке — поэтому плотнее обычных */
     .mini{width:74px;min-width:0;padding:3px 6px}
-    .c-vat{display:flex;flex-direction:column;gap:3px;min-width:0}.c-vat .fl{margin-bottom:1px}
-    .vat-in{display:flex;align-items:center;gap:4px}
-    .vat-in input{width:64px;min-width:0}
-    .vat-pct{font-size:12px;color:var(--muted)}
-    .c-sum{display:flex;flex-direction:column;align-items:flex-end;line-height:1.35;font-variant-numeric:tabular-nums}
-    .c-sum .gross-out{color:var(--muted);font-size:12px}
-    .c-prod{display:flex;flex-direction:column;gap:6px;min-width:0}
-    .c-prod .fl{margin-bottom:1px}
-    .prod-sel{width:100%;max-width:360px}
+    .prod-sel{width:100%;min-width:0}
     /* auto-fit: в узкой колонке «позиция склада» поля сами переносятся, на широком экране — в одну строку */
     .create-box{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:6px}
     .create-box input,.create-box select{width:100%;min-width:0}
@@ -157,10 +153,89 @@ interface ImpDraft {
     .cb-cat-wrap{display:flex;align-items:center;gap:6px;min-width:0}
     .cb-cat-wrap select{flex:1 1 auto;width:auto;min-width:0}
     .cb-cat-badge{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:7px;border:1px solid rgba(15,23,42,.08);font-size:15px;line-height:1}
-    .alias-hint{font-size:12px;color:var(--muted)}
-    .seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;width:fit-content;max-width:100%}
-    .seg button{border:0;background:#fff;padding:5px 10px;font-size:12px;font-weight:600;color:var(--muted);cursor:pointer}
-    .seg button.on{background:var(--accent);color:#fff}
+
+    /* ===== карточки распознанных строк: читаемая карточка вместо плотной сетки ===== */
+    /* панель фильтров над списком */
+    .rc-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:14px 0 4px;padding:0 2px}
+    .rc-bar-info{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;min-width:0}
+    .rc-bar-info b{font-size:14px}
+    .rc-bar-info .muted{font-size:11.5px}
+    .rc-filters{display:inline-flex;gap:4px;margin-left:auto;padding:3px;background:#eef2f7;border-radius:10px}
+    .rc-filters button{border:0;background:transparent;border-radius:8px;padding:5px 10px;font:inherit;font-size:12px;font-weight:600;color:var(--muted);cursor:pointer;white-space:nowrap}
+    .rc-filters button .n{display:inline-block;margin-left:3px;font-variant-numeric:tabular-nums;opacity:.85}
+    .rc-filters button.on{background:#fff;color:var(--text);box-shadow:0 1px 3px rgba(15,23,42,.14)}
+    .rc-filters button.on.hot{color:#8a5a00}
+    .rc-empty-filter{margin-top:10px;border:1px dashed var(--border);border-radius:10px;padding:18px;text-align:center;color:var(--muted);font-size:13px;background:#fbfcfe}
+
+    /* сама карточка: цветная полоса слева показывает состояние */
+    .rc{margin-top:10px;border:1px solid var(--border);border-left:4px solid #c3d5e6;border-radius:12px;background:#fff;box-shadow:var(--shadow);overflow:hidden}
+    .rc-fix,.rc-check{border-left-color:#e0a800}
+    .rc-new{border-left-color:var(--accent)}
+    .rc-ready{border-left-color:#22a35a}
+
+    .rc-head{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;gap:12px;align-items:start;padding:12px 14px 10px;background:linear-gradient(180deg,#fbfdff,#fff);border-bottom:1px solid #eef3f8}
+    .rc-idx{width:26px;height:26px;border-radius:8px;background:#eef4fb;color:#3b5a78;font-size:12px;font-weight:800;display:flex;align-items:center;justify-content:center;margin-top:2px}
+    .rc-title{display:flex;flex-direction:column;gap:6px;min-width:0}
+    .rc-name{width:100%;min-width:0;font-size:15px;font-weight:700;padding:2px 4px;border-color:transparent;background:transparent;border-radius:6px}
+    .rc-name:hover{border-color:var(--border);background:#fff}
+    .rc-name:focus{border-color:var(--accent);background:#fff;box-shadow:0 0 0 3px var(--accent-soft)}
+    .rc-chips{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+    .rc-state{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:2px 9px;font-size:11px;font-weight:700;white-space:nowrap}
+    .rc-state i{width:7px;height:7px;border-radius:50%;background:currentColor;flex:0 0 auto}
+    .rc-state.st-ready{background:#e9f8ef;color:#17834f}
+    .rc-state.st-fix,.rc-state.st-check{background:#fff4d6;color:#8a5a00}
+    .rc-state.st-new{background:#e7f2fd;color:#0b6aa8}
+    .rc-tag{display:inline-block;padding:1px 8px;border-radius:999px;background:#f1f5f9;color:#475569;font-size:11px;font-weight:600;white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+    .rc-tag.amber{background:var(--amber-soft);color:var(--amber)}
+    .rc-tag.green{background:var(--green-soft);color:var(--green)}
+    .rc-money{text-align:right;font-variant-numeric:tabular-nums;min-width:128px}
+    .rc-money-l{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.35px;color:var(--muted)}
+    .rc-money b{display:block;font-size:18px;line-height:1.2;margin-top:1px}
+    .rc-money small{display:block;font-size:11px;color:var(--muted);margin-top:2px;white-space:nowrap}
+    .rc-x{width:30px;height:30px;flex:0 0 auto;border:1px solid var(--border);border-radius:8px;background:#fff;color:#94a3b8;font:inherit;font-size:13px;cursor:pointer;padding:0}
+    .rc-x:hover{border-color:var(--red);background:var(--red-soft);color:var(--red)}
+
+    /* тело: слева цифры (2×2), справа привязка к складу */
+    .rc-body{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr)}
+    .rc-nums{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px 12px;padding:12px 14px;border-right:1px solid #eef3f8;align-content:start}
+    .rc-field{display:flex;flex-direction:column;gap:3px;min-width:0}
+    .rc-label{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.35px;color:var(--muted)}
+    .rc-label em{font-style:normal;font-size:11px;font-weight:500;text-transform:none;letter-spacing:0;color:#94a3b8}
+    .rc-inline{display:flex;align-items:stretch;gap:6px;min-width:0}
+    .rc-inline input{flex:1 1 auto;min-width:0;font-weight:600;font-variant-numeric:tabular-nums}
+    .rc-inline select{flex:0 0 76px;min-width:0}
+    .rc-cur{flex:0 0 auto;display:inline-flex;align-items:center;padding:0 4px;font-size:12px;color:var(--muted);white-space:nowrap}
+    .rc-hint{font-size:11.5px;line-height:1.35;color:var(--muted)}
+    .rc-hint.bad{color:var(--amber);font-weight:600}
+
+    .rc-match{display:flex;flex-direction:column;gap:8px;padding:12px 14px;min-width:0}
+    .rc-match-top{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+    /* категория и товар — два отдельных поля, а не склейка «категория · товар» */
+    .rc-pick{display:grid;grid-template-columns:minmax(0,200px) minmax(0,1fr);gap:8px}
+    .rc-pick-field{display:flex;flex-direction:column;gap:3px;min-width:0}
+    .rc-pick-label{font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.3px;color:#94a3b8}
+    .rc-pick select{width:100%;min-width:0}
+    .rc-seg{display:inline-flex;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+    .rc-seg button{border:0;background:#fff;padding:5px 10px;font:inherit;font-size:12px;font-weight:600;color:var(--muted);cursor:pointer;white-space:nowrap}
+    .rc-seg button + button{border-left:1px solid var(--border)}
+    .rc-seg button.on{background:var(--accent);color:#fff}
+    .rc-sugg{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+    .rc-sugg-l{font-size:11.5px;color:var(--muted)}
+    .rc-sugg-btn{display:inline-flex;align-items:center;gap:6px;max-width:100%;border:1px dashed #b9cde2;border-radius:999px;background:#f8fbff;color:#25465f;padding:4px 10px;font:inherit;font-size:12px;font-weight:600;text-align:left;cursor:pointer}
+    .rc-sugg-btn:hover{border-color:var(--accent);background:var(--accent-soft)}
+    .rc-sugg-btn.on{border-style:solid;border-color:#7cc79c;background:var(--green-soft);color:#146c43}
+    .rc-sugg-btn small{font-weight:500;opacity:.7;flex:0 0 auto}
+
+    /* замечания строки — отдельной зоной под полями, а не вперемешку с названием */
+    .rc-notes{display:grid;gap:5px;padding:0 14px 10px}
+    .rc-note{font-size:12px;line-height:1.45;color:#8a5a00;background:#fff8e6;border:1px solid #f0d9a6;border-radius:8px;padding:6px 10px}
+    .rc-foot{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 14px;background:#fafcff;border-top:1px solid #eef3f8}
+    .rc-why{flex:1 1 240px;min-width:0;font-size:12px;color:var(--muted)}
+    .rc-why.why-fix,.rc-why.why-check{color:#8a5a00;font-weight:600}
+    .rc-why.why-ready{color:#146c43}
+    .rc-reset{border:0;background:none;color:var(--muted);font:inherit;font-size:12px;cursor:pointer;padding:4px 2px;text-decoration:underline;text-underline-offset:2px}
+    .rc-reset:hover{color:var(--text)}
+    .rc-reset:disabled{opacity:.4;cursor:default;text-decoration:none}
     .imp-foot{display:flex;align-items:flex-end;gap:14px;margin-top:14px;flex-wrap:wrap}
     /* не-товарные строки (скидки/служебные) — считаются отдельно и на склад не приходруются */
     .imp-svc{margin-top:12px;border:1px dashed var(--border);border-radius:10px;padding:8px 12px;background:#fbfcfe;font-size:13px}
@@ -187,9 +262,7 @@ interface ImpDraft {
     /* ===== ручной приход: строка позиции ===== */
     .man-row{display:grid;grid-template-columns:minmax(0,2fr) 90px 70px 100px 34px;gap:8px;align-items:center;margin-bottom:8px}
     .man-row select,.man-row input{width:100%;min-width:0}
-    .c-del{justify-self:end}
     .m-del{justify-self:end}
-    .del-name{display:none}
 
     /* ===== журнал и просмотр накладной ===== */
     .wb-row{cursor:pointer}
@@ -213,27 +286,14 @@ interface ImpDraft {
       .m-prod{grid-area:prod}.m-qty{grid-area:qty}.m-unit{grid-area:unit}.m-price{grid-area:price}
       .m-del{grid-area:del;justify-self:end}
     }
-    @media (max-width:1240px){
-      .imp-head{display:none}
-      .fl{display:block}
-      .imp-card{grid-template-columns:minmax(0,1fr) minmax(0,1fr) 34px;grid-template-areas:"name name x" "qty price x" "vat sum x" "prod prod prod";align-items:start}
-      .c-name{grid-area:name}.c-qty{grid-area:qty}.c-price{grid-area:price}.c-vat{grid-area:vat}.c-sum{grid-area:sum}.c-prod{grid-area:prod}.c-del{grid-area:x;justify-self:end;align-self:start}
-      .c-sum{align-items:flex-start}
-      .prod-sel{max-width:none}
-    }
     @media (max-width:640px){
       .wb-head h3{flex:1 1 100%;font-size:15px}
       .wb-head .spacer{display:none}
-      .imp-card{grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-areas:"name name" "qty price" "vat sum" "prod prod" "x x";gap:12px 10px;padding:12px}
-      .c-del{justify-self:stretch;min-height:44px}
-      .del-name{display:inline}
       .imp-foot .spacer{display:none}
       /* поля «номер/дата/поставщик» уже двухколоночные в @container (max-width:560px) — на телефоне они и так узкие */
       /* на телефоне поля новой позиции друг под другом: в две колонки они превращались в узкие щели */
       .create-box{grid-template-columns:minmax(0,1fr)}
       .create-box .cb-name,.create-box .cb-unit{grid-column:1/-1}
-      .seg{width:100%}.seg button{flex:1;padding:11px 8px;font-size:13px}
-      .vat-in{width:100%}.vat-in input{flex:1;width:auto}
       /* итоги + кнопка всегда на виду: прилипают к низу экрана */
       .imp-foot{position:sticky;bottom:0;z-index:5;flex-direction:column;align-items:stretch;gap:10px;
         margin:12px -16px -16px;padding:10px 12px;background:var(--panel);border-top:1px solid var(--border)}
@@ -250,7 +310,116 @@ interface ImpDraft {
       .wb-sums .doc-line{grid-column:1/-1;text-align:right}
       .drop{padding:12px}
       .drop-btn{width:100%;justify-content:center}
-    }`,
+    }
+    /* ===== умный приход 2.0 ===== */
+    .sm-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
+    .sm-title{display:flex;gap:12px;align-items:flex-start;min-width:0}
+    .sm-ico{flex:0 0 auto;width:40px;height:40px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:20px;background:linear-gradient(135deg,#e8f0ff,#f5ecff);border:1px solid #dbe6fb}
+    .sm-head h3{margin:0;font-size:18px;line-height:1.25}
+    .sm-head p{margin:3px 0 0;font-size:12px;color:var(--muted);line-height:1.45;max-width:640px}
+    .sm-state{flex:0 0 auto;display:inline-flex;align-items:center;gap:7px;border-radius:999px;padding:5px 12px;font-size:12px;font-weight:700}
+    .sm-state.on{background:#eef4ff;color:#1e4a8a}
+    .sm-state.ok{background:#e9f8ef;color:#18794e}
+    .sm-state.na{background:#f1f5f9;color:#475569}
+    .sm-steps{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 8px}
+    .sm-step{flex:1 1 150px;display:flex;gap:9px;align-items:center;border:1px solid var(--border);border-radius:10px;padding:8px 10px;background:#fbfcfe;min-width:0}
+    .sm-step b{display:block;font-size:12.5px;line-height:1.2}
+    .sm-step small{display:block;font-size:11px;color:var(--muted)}
+    .sm-step-dot{flex:0 0 auto;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;background:#e2e8f0;color:#64748b}
+    .sm-step.on{background:#eef4ff;border-color:#bcd3f7}
+    .sm-step.on .sm-step-dot{background:var(--accent);color:#fff;animation:pulse 1.2s ease-in-out infinite}
+    .sm-step.done .sm-step-dot{background:#22c55e;color:#fff}
+    .sm-last{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin:-2px 0 10px}
+    .sm-shot{display:grid;grid-template-columns:1.2fr 1fr;gap:10px;margin:4px 0 8px}
+    .sm-shot-main,.sm-shot-side{position:relative;display:flex;align-items:center;gap:12px;border-radius:12px;padding:14px 16px;cursor:pointer;min-width:0;transition:border-color .15s,box-shadow .15s}
+    .sm-shot-main{border:1.5px dashed var(--accent);background:linear-gradient(135deg,#f2f7ff,#faf5ff)}
+    .sm-shot-side{border:1.5px dashed var(--border);background:#fbfcfe}
+    .sm-shot-main:hover,.sm-shot-side:hover{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+    .sm-shot input[type='file']{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;font-size:0}
+    .sm-shot-ico{flex:0 0 auto;width:42px;height:42px;border-radius:12px;background:#fff;border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:20px}
+    .sm-shot b{display:block;font-size:14.5px;line-height:1.25}
+    .sm-shot small{display:block;font-size:11.5px;color:var(--muted);margin-top:2px}
+    .sm-shot-hint{font-size:12px;color:var(--muted);margin:2px 0 12px}
+    .sm-pend{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:10px 0 12px}
+    .sm-logbar{display:flex;justify-content:flex-end;margin:2px 0 6px}
+    .sm-log-toggle{border:0;background:none;color:var(--muted);font-size:12px;cursor:pointer;padding:4px 2px}
+    .sm-log-toggle:hover{color:var(--text)}
+    .sm-passport{border:1px solid var(--border);border-radius:12px;padding:12px 14px;background:linear-gradient(180deg,#fbfdff,#fff);margin:4px 0 12px}
+    .sm-passport-top{display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:space-between}
+    .sm-doc{display:flex;align-items:center;gap:10px;min-width:0}
+    .sm-doc-ico{flex:0 0 auto;width:36px;height:36px;border-radius:10px;background:#fff;border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:18px}
+    .sm-doc b{display:block;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:420px}
+    .sm-doc small{display:block;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:420px}
+    .sm-passport-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+    .sm-passport-tools .btn{position:relative;overflow:hidden}
+    .sm-ai{font-size:12px;color:var(--muted);max-width:280px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .hidden-file{position:absolute;inset:0;opacity:0;font-size:0;cursor:pointer}
+    .sm-fields{display:grid;grid-template-columns:minmax(0,1fr) 170px minmax(0,1.6fr);gap:10px;margin:10px 0 0}
+    .sm-check{display:flex;align-items:center;gap:8px;flex-wrap:wrap;border-radius:10px;padding:8px 10px;margin-top:10px;font-size:12px}
+    .sm-check.ok{background:#eaf8f0;color:#146c43}
+    .sm-check.bad{background:#fff7e2;color:#8a5a00}
+    .sm-check.na{background:#f1f5f9;color:#475569}
+    .sm-empty{display:flex;flex-direction:column;align-items:center;text-align:center;gap:8px;padding:26px 18px;border:1px dashed var(--border);border-radius:12px;background:#fbfcfe;margin-top:10px}
+    .sm-empty-ico{font-size:34px}
+    .sm-empty b{font-size:16px}
+    .sm-empty p{margin:0;max-width:540px;color:#8a5a00;background:#fff7e2;border:1px solid #f0d9a6;border-radius:8px;padding:8px 12px;font-size:13px}
+    .sm-empty-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
+    .sm-empty-file{font-size:12px}
+
+    .sm-check-ico{width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;background:#fff;flex:0 0 auto}
+    .sm-check-title{font-weight:700;margin-right:2px}
+    .sm-chip{background:#fff;border:1px solid rgba(15,23,42,.12);border-radius:999px;padding:3px 10px;font-variant-numeric:tabular-nums;white-space:nowrap}
+    .sm-chip.ok{border-color:#8fd6ab}
+    .sm-chip:not(.ok){border-color:#e6b95c;background:#fffbef}
+    .sm-chip i{font-style:normal;font-weight:700;margin-left:4px}
+    .sm-count{background:#eef2f7;border-radius:999px;padding:1px 9px;font-size:12px;font-weight:700;color:#475569}
+    .sm-notes{border-radius:10px;padding:9px 12px;margin:8px 0;font-size:13px}
+    .sm-notes summary{cursor:pointer;font-weight:600;outline:none}
+    .sm-notes.bad{background:#fff7e2;border:1px solid #f0d9a6;color:#8a5a00}
+    .sm-notes.ok{background:var(--accent-soft);color:#1e4a8a}
+    .sm-notes ul{margin:6px 0 0;padding-left:18px}
+    .sm-notes li{margin:2px 0;line-height:1.4}
+    .sm-docnums{grid-column:1/-1;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:2px}
+    .sm-docnums .mini{width:100%;max-width:none}
+    .sm-result-sum{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;font-size:13px}
+    .sm-result-sum b{font-variant-numeric:tabular-nums}
+    @media (max-width:640px){
+      .sm-docnums{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+      .sm-docnums .f:last-child{grid-column:1/-1}
+      .imp-foot{padding:10px 12px}
+      .sm-result-sum{width:100%;justify-content:center}
+    }
+    @media (max-width:1100px){
+      .sm-shot{grid-template-columns:1fr}
+      .sm-fields{grid-template-columns:minmax(0,1fr) 160px}
+      .rc-body{grid-template-columns:minmax(0,1fr)}
+      .rc-nums{border-right:0;border-bottom:1px solid #eef3f8}
+      .prod-sel{max-width:none}
+    }
+    /* карточки строк на телефоне: крупные поля в один столбец, итог и крестик всегда в шапке */
+    @media (max-width:640px){
+      .rc-head{grid-template-columns:auto minmax(0,1fr) auto;grid-template-areas:"idx money x" "title title title";gap:8px 10px;padding:10px 12px}
+      .rc-idx{grid-area:idx}
+      .rc-money{grid-area:money;justify-self:end;min-width:0}
+      .rc-money b{font-size:16px}
+      .rc-x{grid-area:x;width:36px;height:36px}
+      .rc-title{grid-area:title}
+      .rc-name{font-size:14.5px}
+      .rc-nums{grid-template-columns:minmax(0,1fr);padding:10px 12px;gap:10px}
+      .rc-inline select{flex-basis:86px}
+      .rc-match{padding:10px 12px}
+      .rc-pick{grid-template-columns:minmax(0,1fr)}
+      .rc-notes{padding:0 12px 10px}
+      .rc-foot{padding:8px 12px}
+      .rc-why{flex-basis:100%}
+      .rc-reset{min-height:36px}
+      .rc-seg{width:100%}
+      .rc-seg button{flex:1;padding:9px 8px;font-size:12.5px}
+      .rc-filters{width:100%;margin-left:0}
+      .rc-filters button{flex:1}
+      .rc-bar-info .muted{display:none}
+    }
+`,
   ],
   template: `
     <h1 class="page-title">📥 Входящие накладные</h1>
@@ -386,109 +555,142 @@ interface ImpDraft {
 
     <!-- ===== умный импорт из файла ===== -->
     <div class="panel" id="smart" style="margin-top:16px">
-      <h3>🤖 Умный приход: файл накладной → {{ smartTab() === 'cli' ? 'Qoder CLI' : 'GPT' }} → склад</h3>
-      <div class="smart-tabs" role="tablist" aria-label="Способ распознавания накладной">
-        <button type="button" role="tab" [class.on]="smartTab() === 'gpt'" [attr.aria-selected]="smartTab() === 'gpt'"
-                [disabled]="impBusy()" (click)="switchSmartTab('gpt')">🤖 GPT</button>
-        <button type="button" role="tab" [class.on]="smartTab() === 'cli'" [attr.aria-selected]="smartTab() === 'cli'"
-                [disabled]="impBusy()" (click)="switchSmartTab('cli')">💻 Qoder CLI</button>
-      </div>
-      <p class="muted" style="font-size:12px;margin:-4px 0 10px">
-        @if (smartTab() === 'cli') {
-          Qoder CLI читает файл на сервере и возвращает те же позиции в форму ниже.
-        } @else {
-          GPT читает фото или PDF и заполняет форму ниже.
-        }
-      </p>
-      @if (logs.lines().length || impBusy()) {
-        <div class="ai-log">
-          <div class="ai-log-head">
-            <span class="live-dot" [class.on]="impBusy()"></span>
-            <b>{{ impBusy() ? (lastLog() || 'Сервер работает…') : 'Лог распознавания' }}</b>
-            <button type="button" class="btn sm" (click)="logOpen.set(!logOpen())">
-              {{ logOpen() ? 'свернуть' : 'показать' }}
-            </button>
+      <div class="sm-head">
+        <div class="sm-title">
+          <span class="sm-ico">🧾</span>
+          <div>
+            <h3>Умный приход</h3>
+            <p>Сфотографируйте накладную — ИИ прочитает позиции, PDV и скидки и сверит итоги с документом</p>
           </div>
-          @if (logOpen()) {
-            <div class="ai-log-body" #logBox>
-              @for (l of logs.lines(); track $index) {
-                <div [class]="'ai-line k-' + l.kind"><span class="t">{{ l.time }}</span>{{ l.text }}</div>
-              } @empty {
-                <div class="ai-line">Жду события сервера…</div>
-              }
+        </div>
+        @if (impBusy()) {
+          <span class="sm-state on"><i class="live-dot on"></i>ИИ работает</span>
+        } @else if (parsed()) {
+          <span class="sm-state" [class.ok]="impItems().length" [class.na]="!impItems().length">{{ impItems().length ? '✓ разобрано' : '— это не накладная' }}</span>
+        }
+      </div>
+
+      @if (impBusy()) {
+        <div class="sm-steps" aria-label="Этапы распознавания">
+          @for (st of smartSteps; track st.n) {
+            <div class="sm-step" [class.on]="st.n === impAct()" [class.done]="st.n < impAct()">
+              <span class="sm-step-dot">{{ st.n < impAct() ? '✓' : st.n }}</span>
+              <div><b>{{ st.title }}</b><small>{{ st.hint }}</small></div>
             </div>
           }
         </div>
+        <div class="sm-last" title="Текущий этап">{{ lastLog() || 'Готовлю файл…' }}</div>
       }
-      <label class="drop" [class.busy]="impBusy()">
-        <input type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif,application/pdf" (change)="onImpFile($event)" />
-        <span class="drop-btn">
-          {{ impBusy()
-            ? (smartTab() === 'cli' ? 'Qoder CLI читает документ…' : 'Читаем документ…')
-            : (smartTab() === 'cli' ? '💻 Файл накладной для Qoder CLI' : '📷 Фото или PDF накладной — можно несколько') }}
-        </span>
-        <span class="drop-hint">{{ busyHint() }}</span>
-      </label>
+
+      @if (!parsed() && !impBusy()) {
+        <div class="sm-shot">
+          <label class="sm-shot-main">
+            <input type="file" accept="image/*" capture="environment" (change)="onImpFile($event)" />
+            <span class="sm-shot-ico">📷</span>
+            <span><b>Снять накладную</b><small>камера телефона · лист целиком, без наклона</small></span>
+          </label>
+          <label class="sm-shot-side">
+            <input type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif,application/pdf" (change)="onImpFile($event)" />
+            <span class="sm-shot-ico">📎</span>
+            <span><b>Выбрать файлы</b><small>JPG · PNG · PDF до 15 МБ · до 8 листов</small></span>
+          </label>
+        </div>
+        <div class="sm-shot-hint">{{ busyHint() }}</div>
+      }
+
       @if (impErr()) { <div class="err">{{ impErr() }}</div> }
 
-      @if (!parsed() && pendFiles().length) {
-        <div class="imp-files">
+      @if (!parsed() && pendFiles().length && !impBusy()) {
+        <div class="sm-pend">
           @for (f of pendFiles(); track f.uid) {
             <span class="pend">
               <img class="thumb" [src]="f.dataUrl" [alt]="f.name" title="Кликните, чтобы открыть во весь экран" (click)="openGallery($index)" />
               <button class="pm" type="button" title="Убрать фото" (click)="removePend($index)">✕</button>
             </span>
           }
-          <label class="add-more" title="Добавить ещё фото того же документа">
+          <label class="add-more" title="Добавить ещё лист">
             ＋<input type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif,application/pdf" (change)="addMoreFiles($event)" />
           </label>
-          <button class="btn primary" [disabled]="impBusy()" (click)="parseFiles()">
-            {{ smartTab() === 'cli' ? 'Разобрать через Qoder CLI' : 'Разобрать как одну накладную' }}
-          </button>
-          <span class="muted files-hint">
-            {{ smartTab() === 'cli'
-              ? 'Qoder CLI прочитает листы как один документ'
-              : 'GPT склеит листы в один документ и уберёт повторы дублей' }}
-          </span>
+          <button class="btn primary" [disabled]="impBusy()" (click)="parseFiles()">Распознать накладную</button>
+          <span class="muted files-hint">{{ sheetsWord(pendFiles().length) }} одним документом</span>
         </div>
       }
 
-      @if (parsed(); as p) {
-        <hr class="hr" />
-
-        <div class="meta-grid">
-          <label class="f">Номер<input [(ngModel)]="impNumber" /></label>
-          <label class="f">Дата<input type="date" [(ngModel)]="impDate" /></label>
-          <label class="f f-full">Поставщик<input [(ngModel)]="impSupplier" /></label>
+      @if (logs.lines().length) {
+        <div class="sm-logbar">
+          <button type="button" class="sm-log-toggle" (click)="logOpen.set(!logOpen())">
+            {{ logOpen() ? '▾' : '▸' }} ход распознавания ({{ logs.lines().length }})
+          </button>
         </div>
-        @if (impGallery().length) {
-          <div class="imp-file">
-            @if (isPdf(curUrl())) {
-              <a class="pdf-link" [href]="curUrl()" target="_blank" rel="noopener">📄 открыть PDF накладной</a>
-            } @else {
-              <img class="thumb" [src]="curUrl()" alt="Фото накладной" title="Кликните, чтобы открыть во весь экран" (click)="openGallery(curLb() ?? 0)" />
-            }
-            <span>
-              📎 {{ p.fileName }}
-              @if (p.extraFiles?.length) {
-                · доп. {{ sheetsWord(p.extraFiles!.length) }}
-              }
-              · модель {{ p.model }}
-            </span>
-            @if (p.model !== 'Qoder CLI') {
-              <button
-                type="button"
-                class="btn sm"
-                [disabled]="impBusy()"
-                title="Перечитать фото заново и показать, что именно распознала модель — когда цифра в строке не сходится с документом"
-                (click)="reparseWithTranscript()"
-              >🔍 сверить с фото</button>
+        @if (logOpen()) {
+          <div class="ai-log-body" #logBox>
+            @for (l of logs.lines(); track $index) {
+              <div [class]="'ai-line k-' + l.kind"><span class="t">{{ l.time }}</span>{{ l.text }}</div>
             }
           </div>
-          @if (p.transcript; as tr) {
-            <pre class="transcript">{{ tr }}</pre>
-          }
         }
+      }
+
+      @if (parsed(); as p) {
+                @if (!impItems().length) {
+          <div class="sm-empty">
+            <span class="sm-empty-ico">🕵️</span>
+            <b>Похоже, это не накладная</b>
+            <p>{{ impWarns()[0] || 'ИИ не нашёл ни одной товарной строки — проверьте, что снят весь лист.' }}</p>
+            <div class="sm-empty-actions">
+              <button type="button" class="btn primary" (click)="resetSmart()">Снять другой документ</button>
+              <button type="button" class="btn" [disabled]="impBusy()" (click)="reparseWithTranscript()">🔍 перечитать фото</button>
+            </div>
+            @if (p.fileName) { <span class="muted sm-empty-file">📎 {{ p.fileName }}</span> }
+          </div>
+        } @else {
+<div class="sm-passport">
+          <div class="sm-passport-top">
+            <div class="sm-doc">
+              <span class="sm-doc-ico">🧾</span>
+              <div>
+                <b>{{ impNumber || 'Накладная без номера' }}</b>
+                <small>{{ impSupplier || 'поставщик не распознан' }}@if (impDate) { · {{ impDate }} }</small>
+              </div>
+            </div>
+            <div class="sm-passport-tools">
+              @if (curUrl()) {
+                @if (isPdf(curUrl())) {
+                  <span class="badge clickable" (click)="openPdf(curUrl())">📄 PDF</span>
+                } @else {
+                  <img class="thumb" [src]="curUrl()" alt="Фото накладной" title="Кликните, чтобы открыть во весь экран" (click)="openGallery(curLb() ?? 0)" />
+                }
+              }
+              <span class="sm-ai" [title]="p.fileName">🤖 ИИ · {{ p.fileName }}@if (p.extraFiles?.length) { · {{ sheetsWord(p.extraFiles!.length) }} }</span>
+              <button type="button" class="btn sm" [disabled]="impBusy()"
+                      title="Перечитать фото и показать, что именно увидел ИИ — когда цифра в строке не сходится"
+                      (click)="reparseWithTranscript()">🔍 сверить с фото</button>
+              <label class="btn sm" title="Добавить ещё лист к этой накладной и перечитать документ">
+                ＋ лист
+                <input class="hidden-file" type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif,application/pdf" (change)="addPagesAndReparse($event)" />
+              </label>
+              <button type="button" class="btn sm" [disabled]="impBusy()" title="Убрать разбор и сфотографировать другой документ" (click)="resetSmart()">✕ другой</button>
+            </div>
+          </div>
+          <div class="sm-fields">
+            <label class="f">Номер<input [(ngModel)]="impNumber" /></label>
+            <label class="f">Дата<input type="date" [(ngModel)]="impDate" /></label>
+            <label class="f f-full">Поставщик<input [(ngModel)]="impSupplier" /></label>
+            <div class="sm-docnums">
+              <label class="f">нетто в документе<input class="mini" type="number" step="any" [(ngModel)]="impDocNet" aria-label="Нетто в документе" /></label>
+              <label class="f">PDV в документе<input class="mini" type="number" step="any" [(ngModel)]="impDocVat" aria-label="PDV в документе" /></label>
+              <label class="f">к оплате в документе<input class="mini" type="number" step="any" [(ngModel)]="impDocGross" aria-label="К оплате в документе" /></label>
+            </div>
+          </div>
+          <div class="sm-check" [class.ok]="docHasTotals() && docSumsOk()" [class.bad]="docHasTotals() && !docSumsOk()" [class.na]="!docHasTotals()">
+            <span class="sm-check-ico">{{ !docHasTotals() ? '—' : docSumsOk() ? '✓' : 'Δ' }}</span>
+            <b class="sm-check-title">{{ !docHasTotals() ? 'Итоги в документе не напечатаны' : docSumsOk() ? 'Итоги сходятся с документом' : 'Итоги расходятся с документом' }}</b>
+            <span class="sm-chip" [class.ok]="totOk(impTotal(), docNet())" title="Нетто: по строкам против напечатанного">нетто <b>{{ moneyOrDash(docNet()) }}</b>@if (!totOk(impTotal(), docNet())) { <i>≠ {{ fmtMoney(impTotal()) }}</i> }</span>
+            <span class="sm-chip" [class.ok]="totOk(impVat(), docVat())" title="PDV: по ставкам против напечатанного">PDV <b>{{ moneyOrDash(docVat()) }}</b>@if (!totOk(impVat(), docVat())) { <i>≠ {{ fmtMoney(impVat()) }}</i> }</span>
+            <span class="sm-chip" [class.ok]="totOk(impGross(), docGross())" title="К оплате против напечатанного">к оплате <b>{{ moneyOrDash(docGross()) }}</b>@if (!totOk(impGross(), docGross())) { <i>≠ {{ fmtMoney(impGross()) }}</i> }</span>
+          </div>
+        </div>
+
         @if (impGallery().length > 1) {
           <div class="imp-files">
             @for (g of impGallery(); track $index) {
@@ -500,151 +702,219 @@ interface ImpDraft {
             }
           </div>
         }
-
+        @if (p.transcript; as tr) {
+          <pre class="transcript">{{ tr }}</pre>
+        }
         @if (impWarns().length) {
-          <div class="err imp-msg">
-            <b>⚠ Требует внимания:</b>
+          <details class="sm-notes bad" open>
+            <summary>⚠ Требует внимания · {{ impWarns().length }}</summary>
             <ul class="imp-msg-list">@for (w of impWarns(); track $index) { <li>{{ w }}</li> }</ul>
-          </div>
+          </details>
         }
         @if (impFixes().length) {
-          <div class="imp-note imp-msg">
-            <b>🧐 Что распознавание уточнило само:</b>
+          <details class="sm-notes ok">
+            <summary>🧐 Что ИИ уточнил сам · {{ impFixes().length }}</summary>
             <ul class="imp-msg-list">@for (w of impFixes(); track $index) { <li>{{ w }}</li> }</ul>
-          </div>
+          </details>
         }
 
-        <div class="imp-head">
-          <span>Позиция в документе</span><span>Кол-во · ед.</span>
-          <span title="Цена ровно как напечатана в накладной — за ту единицу, что в документе (kg, kom, vez…). Её и правим, если OCR ошибся. Ниже показывается производная себестоимость за базовую единицу склада (₽/г, ₽/мл, ₽/шт), она идёт на склад">Цена из документа</span>
-          <span>PDV</span>
-          <span class="r">Нетто → к оплате</span><span>Позиция склада</span><span></span>
+        <div class="rc-bar">
+          <div class="rc-bar-info">
+            <b>Позиции из документа</b>
+            <span class="sm-count">{{ impItems().length }}</span>
+            <span class="muted">Правьте числа прямо в карточке — итоги и сверка пересчитываются сразу</span>
+          </div>
+          <div class="rc-filters" role="group" aria-label="Фильтр строк">
+            <button type="button" [class.on]="impFilter() === 'all'" (click)="impFilter.set('all')">
+              Все <span class="n">{{ impItems().length }}</span>
+            </button>
+            <button type="button" class="hot" [class.on]="impFilter() === 'todo'" (click)="impFilter.set('todo')">
+              Внимание <span class="n">{{ impAttentionCount() }}</span>
+            </button>
+            <button type="button" [class.on]="impFilter() === 'ok'" (click)="impFilter.set('ok')">
+              Готовы <span class="n">{{ impReadyCount() }}</span>
+            </button>
+          </div>
         </div>
 
-        @for (it of impItems(); track $index) {
-          <div class="imp-card" [class.warn-card]="it.vatSuspect || it.vatInferred || it.qtyForecast || it.doubt || it.warnings.length || lineMismatch(it)">
-            <div class="c-name">
-              <input class="doc-name" [(ngModel)]="it.rawName" title="Название товара, как напечатано в накладной — можно поправить, псевдоним запомнится по нему" aria-label="Название из документа" />
-              @if (it.via; as v) {
-                <span class="badge green">{{ viaLabel(v) }}</span>
-              } @else {
-                <span class="badge amber">нет в складе — решите ниже</span>
-              }
-              @if (it.qtyForecast) {
-                <span class="badge amber" title="GPT решила, что позицию класть на склад содержимым (упаковки -> г/мл): количество и цена пересчитаны, сумма строки не изменилась">⚠ пересчёт по фасовке</span>
-              }
-              @if (it.doubt; as d) {
-                <span class="badge amber" title="GPT не уверена в строке — сверьте с фото">⚠ вопрос GPT</span>
-                <span class="qty-doc">{{ d }}</span>
-              }
-              <span class="doc-sum" [class.bad]="lineMismatch(it)" title="Сумма строки без PDV — деньги этой позиции. Правится вместе с ценой: меняете сумму — пересчитается цена, меняете цену — пересчитается сумма">
-                {{ it.lineSumPrinted ? 'в доке:' : 'сумма строки:' }} <input class="mini" type="number" step="any" [(ngModel)]="it.lineSum" (ngModelChange)="onSumEdit(it)" aria-label="Сумма строки в документе" /> ₽
-              </span>
-            </div>
-
-            <div class="c-qty">
-              <span class="fl">Кол-во · баз. ед.</span>
-              <input type="number" [(ngModel)]="it.qty" (ngModelChange)="recalcPrice(it)" title="Количество в базовых единицах (г/мл/шт)" aria-label="Количество" />
-              <select [(ngModel)]="it.unitId" title="Базовая складская единица (г/мл/шт)" aria-label="Единица">
-                <option [ngValue]="null">—</option>
-                @for (u of units(); track u.id) { <option [ngValue]="u.id">{{ u.code }}</option> }
-              </select>
-              @if (qtyHint(it)) { <span class="qty-doc">{{ qtyHint(it) }}</span> }
-            </div>
-
-            <div class="c-price">
-              <span class="fl">Цена из документа</span>
-              @if (it.docPricePrinted != null) {
-                <input type="number" step="any" [(ngModel)]="it.docPricePrinted" (ngModelChange)="onDocPriceEdit(it)" [title]="priceTitle" aria-label="Цена как в документа" />
-                <span class="qty-doc">за {{ it.docUnitPrinted || unitCodeOf(it.unitId) || 'ед.' }} из дока · на склад {{ baseCostReadout(it) }}</span>
-              } @else {
-                <input type="number" step="any" [(ngModel)]="it.price" (ngModelChange)="onPriceEdit(it)" [title]="priceTitle" placeholder="цена/баз." aria-label="Цена без PDV" />
-                @if (priceHint(it)) { <span class="qty-doc">{{ priceHint(it) }}</span> }
-              }
-            </div>
-
-            <div class="c-vat">
-              <span class="fl">PDV</span>
-              <div class="vat-in">
-                <input type="number" min="0" max="100" step="0.5" [(ngModel)]="it.vatRate" (ngModelChange)="onVatChange(it)" placeholder="0" title="Ставка PDV из колонки «ПДВ», %; пусто или 0 — без НДС" aria-label="Ставка PDV" />
-                <span class="vat-pct">%</span>
-              </div>
-              @if (it.vatSuspect) {
-                <span class="badge amber" title="Итог PDV в документе дает одна из помеченных строк — сверьте ставку по фото">⚠ PDV?</span>
-              }
-              @if (it.vatInferred) {
-                <span class="badge amber" title="Ставку PDV в документе не напечатали — её вывели по итогам документа, проверьте по фото">⚠ PDV выведен</span>
-              }
-            </div>
-
-            <div class="c-sum">
-              <span class="fl">Нетто → к оплате</span>
-              <b>{{ trim(c((it.qty ?? 0) * (it.price ?? 0))) }} ₽</b>
-              @if (it.vatRate) {
-                <span class="vat-note">+{{ trim(c((it.qty ?? 0) * (it.price ?? 0) * it.vatRate / 100)) }}</span>
-                <span class="gross-out">→ {{ trim(c((it.qty ?? 0) * (it.price ?? 0) * (1 + it.vatRate / 100))) }} ₽</span>
-              }
-            </div>
-
-            <div class="c-prod">
-              <span class="fl">Позиция склада</span>
-              <div class="seg">
-                <button [class.on]="it.mode==='match'" (click)="it.mode='match'">существующая</button>
-                <button [class.on]="it.mode==='create'" (click)="it.mode='create'">создать новую</button>
-              </div>
-              @if (it.mode === 'match') {
-                <select class="prod-sel" [(ngModel)]="it.productId">
-                  <option [ngValue]="null">— выбрать позицию —</option>
-                  @if (it.candidates.length) {
-                    <optgroup label="похожие">
-                      @for (cnd of it.candidates; track cnd.productId) {
-                        <option [ngValue]="cnd.productId">{{ cnd.name }}</option>
-                      }
-                    </optgroup>
+        @for (row of visibleImpRows(); track row.idx) {
+          @let it = row.it;
+          @let stt = lineState(it);
+          <article class="rc" [class.rc-fix]="stt.key === 'fix'" [class.rc-check]="stt.key === 'check'" [class.rc-new]="stt.key === 'new'" [class.rc-ready]="stt.key === 'ready'">
+            <header class="rc-head">
+              <span class="rc-idx">{{ row.idx + 1 }}</span>
+              <div class="rc-title">
+                <input class="rc-name" [(ngModel)]="it.rawName" title="Название товара, как напечатано в накладной — можно поправить, псевдоним запомнится по нему" aria-label="Название из документа" />
+                <div class="rc-chips">
+                  <span class="rc-state" [class]="'st-' + stt.key"><i></i>{{ stt.label }}</span>
+                  @if (it.mode === 'match' && it.via) { <span class="rc-tag">{{ viaLabel(it.via) }}</span> }
+                  @if (it.qtyForecast) {
+                    <span class="rc-tag amber" title="ИИ решил, что позицию класть на склад содержимым (упаковки -> г/мл): количество и цена пересчитаны, сумма строки не изменилась">пересчёт по фасовке</span>
                   }
-                  <optgroup label="все позиции">
-                    @for (pr of products(); track pr.id) {
-                      <option [ngValue]="pr.id">{{ pr.category }} · {{ pr.name }}</option>
-                    }
-                  </optgroup>
-                </select>
-                @if (it.productId && willAlias(it)) {
-                  <span class="alias-hint">🔖 «{{ it.rawName }}» запомнится как псевдоним</span>
-                }
-              } @else {
-                <div class="create-box">
-                  <input class="cb-name" [(ngModel)]="it.newName" placeholder="Название на склад" aria-label="Название на склад" />
-                  <div class="cb-cat-wrap">
-                    <select class="cb-cat" [(ngModel)]="it.newCategory" title="Категория из справочника (настраивается в Настройках: иконка и цвет)" aria-label="Категория">
-                      <option value="прочее">— категория «прочее» —</option>
-                      @for (c of categories(); track c.id) {
-                        <option [value]="c.name">{{ c.icon ? c.icon + ' ' : '' }}{{ c.name }}</option>
-                      }
-                      @if (it.newCategory && !catOf(it.newCategory)) {
-                        <option [value]="it.newCategory">{{ it.newCategory }} — нет в справочнике</option>
-                      }
-                    </select>
-                    @if (catOf(it.newCategory); as cat) {
-                      <span class="cb-cat-badge" [style.background]="cat.color || '#eef2f7'"
-                            [title]="'Категория: ' + cat.name + (cat.color ? ' · цвет ' + cat.color : '')">{{ cat.icon || '·' }}</span>
-                    }
-                  </div>
-                  <select class="cb-unit" [(ngModel)]="it.newUnitId" aria-label="Складская единица">
-                    @for (u of baseUnits(); track u.id) { <option [ngValue]="u.id">хранить в {{ u.code }}</option> }
-                  </select>
+                  @if (it.discount; as dsc) {
+                    <span class="rc-tag green" [title]="'Скидка по документу: ' + dsc.name + (dsc.reason ? ' · ' + dsc.reason : '')">🏷 скидка −{{ trim(c(dsc.amount)) }}{{ dsc.percent != null ? ' · ' + trim(dsc.percent) + '%' : '' }}</span>
+                  }
                 </div>
-              }
+              </div>
+              <div class="rc-money" title="Итог строки: нетто + PDV">
+                <span class="rc-money-l">к оплате</span>
+                <b>{{ trim(c((it.qty ?? 0) * (it.price ?? 0) * (1 + (it.vatRate ?? 0) / 100))) }} ₽</b>
+                <small>нетто {{ trim(c((it.qty ?? 0) * (it.price ?? 0))) }}@if (it.vatRate) { · PDV {{ trim(c((it.qty ?? 0) * (it.price ?? 0) * it.vatRate / 100)) }} } @else { · без PDV }</small>
+              </div>
+              <button class="rc-x" type="button" title="Убрать строку" (click)="removeImp(row.idx)">✕</button>
+            </header>
+
+            <div class="rc-body">
+              <div class="rc-nums">
+                <label class="rc-field">
+                  <span class="rc-label">Количество <em>на склад</em></span>
+                  <span class="rc-inline">
+                    <input type="number" [(ngModel)]="it.qty" (ngModelChange)="recalcPrice(it)" title="Количество в базовых единицах (г/мл/шт)" aria-label="Количество" />
+                    <select [(ngModel)]="it.unitId" (ngModelChange)="onDraftChange()" title="Базовая складская единица (г/мл/шт)" aria-label="Единица">
+                      <option [ngValue]="null">—</option>
+                      @for (u of units(); track u.id) { <option [ngValue]="u.id">{{ u.code }}</option> }
+                    </select>
+                  </span>
+                  <small class="rc-hint">{{ qtyHint(it) || 'Базовые единицы: г / мл / шт' }}</small>
+                </label>
+
+                <label class="rc-field">
+                  <span class="rc-label">Цена <em>как в документе</em></span>
+                  @if (it.docPricePrinted != null) {
+                    <span class="rc-inline">
+                      <input type="number" step="any" [(ngModel)]="it.docPricePrinted" (ngModelChange)="onDocPriceEdit(it)" [title]="priceTitle" aria-label="Цена как в документе" />
+                      <span class="rc-cur">₽/{{ it.docUnitPrinted || unitCodeOf(it.unitId) || 'ед.' }}</span>
+                    </span>
+                    <small class="rc-hint">на склад {{ baseCostReadout(it) }}</small>
+                  } @else {
+                    <span class="rc-inline">
+                      <input type="number" step="any" [(ngModel)]="it.price" (ngModelChange)="onPriceEdit(it)" [title]="priceTitle" placeholder="цена/баз." aria-label="Цена без PDV" />
+                      <span class="rc-cur">₽/{{ unitCodeOf(it.unitId) || 'ед.' }}</span>
+                    </span>
+                    <small class="rc-hint">{{ priceHint(it) || 'В документе цена не напечатана — введите цену за базовую единицу' }}</small>
+                  }
+                </label>
+
+                <label class="rc-field">
+                  <span class="rc-label">Сумма без PDV <em>главная цифра</em></span>
+                  <span class="rc-inline">
+                    <input type="number" step="any" [(ngModel)]="it.lineSum" (ngModelChange)="onSumEdit(it)" aria-label="Сумма строки в документе" title="Сумма строки без PDV — деньги этой позиции. Правится вместе с ценой: меняете сумму — пересчитается цена, меняете цену — пересчитается сумма" />
+                    <span class="rc-cur">₽</span>
+                  </span>
+                  <small class="rc-hint" [class.bad]="lineMismatch(it)">
+                    @if (lineMismatch(it)) { не сходится с документом — сверьте с фото }
+                    @else if (it.lineSumPrinted) { как напечатано{{ it.discount ? ', скидка уже вычтена' : '' }} }
+                    @else { собрано из Кол × Цена }
+                  </small>
+                </label>
+
+                <label class="rc-field">
+                  <span class="rc-label">PDV <em>ставка из документа</em></span>
+                  <span class="rc-inline">
+                    <input type="number" min="0" max="100" step="0.5" [(ngModel)]="it.vatRate" (ngModelChange)="onVatChange(it)" placeholder="0" title="Ставка PDV из колонки «ПДВ», %; пусто или 0 — без НДС" aria-label="Ставка PDV" />
+                    <span class="rc-cur">%</span>
+                  </span>
+                  <small class="rc-hint">
+                    @if (it.vatSuspect) { ⚠ прочитан неуверенно — сверьте с фото }
+                    @else if (it.vatInferred) { ⚠ выведен по итогам — проверьте ставку }
+                    @else if (it.vatRate) { +{{ trim(c((it.qty ?? 0) * (it.price ?? 0) * it.vatRate / 100)) }} ₽ к нетто }
+                    @else { без налога }
+                  </small>
+                </label>
+              </div>
+
+              <div class="rc-match">
+                <div class="rc-match-top">
+                  <span class="rc-label">Позиция склада</span>
+                  <div class="rc-seg">
+                    <button type="button" [class.on]="it.mode === 'match'" (click)="setMode(it, 'match')">существующая</button>
+                    <button type="button" [class.on]="it.mode === 'create'" (click)="setMode(it, 'create')">создать новую</button>
+                  </div>
+                </div>
+                @if (it.mode === 'match') {
+                  @if (it.candidates.length) {
+                    <div class="rc-sugg">
+                      <span class="rc-sugg-l">Похожие:</span>
+                      @for (cnd of it.candidates; track cnd.productId) {
+                        <button type="button" class="rc-sugg-btn" [class.on]="it.productId === cnd.productId" [title]="'Привязать к «' + cnd.name + '»'" (click)="pickCandidate(it, cnd.productId)">
+                          {{ cnd.name }}@if (simPct(cnd.sim)) { <small>{{ simPct(cnd.sim) }}</small> }
+                        </button>
+                      }
+                    </div>
+                  }
+                  <div class="rc-pick">
+                    <label class="rc-pick-field">
+                      <span class="rc-pick-label">Категория</span>
+                      <select [(ngModel)]="it.pickCat" (ngModelChange)="setPickCat(it, $event)" aria-label="Категория товара">
+                        <option value="">все категории</option>
+                        @for (c of productCategories(); track c.name) {
+                          <option [value]="c.name">{{ c.name }}</option>
+                        }
+                      </select>
+                    </label>
+                    <label class="rc-pick-field">
+                      <span class="rc-pick-label">Товар</span>
+                      <select class="prod-sel" [(ngModel)]="it.productId" (ngModelChange)="onProductPicked(it, $event)" aria-label="Товар склада">
+                        <option [ngValue]="null">— выбрать товар —</option>
+                        @for (pr of pickProducts(it); track pr.id) {
+                          <option [ngValue]="pr.id">{{ pr.name }}</option>
+                        }
+                      </select>
+                    </label>
+                  </div>
+                  @if (it.productId) {
+                    @if (willAlias(it)) {
+                      <small class="rc-hint">🔖 «{{ it.rawName }}» запомнится как псевдоним — в следующий раз ИИ узнает товар сам</small>
+                    } @else {
+                      <small class="rc-hint">✓ Товар привязан — сумма уйдёт в себестоимость склада</small>
+                    }
+                  } @else {
+                    <small class="rc-hint bad">Выберите товар{{ it.candidates.length ? ' или нажмите подсказку выше' : ' из списка' }} — либо создайте новую позицию</small>
+                  }
+                } @else {
+                  <div class="create-box">
+                    <input class="cb-name" [(ngModel)]="it.newName" (ngModelChange)="onDraftChange()" placeholder="Название на склад" aria-label="Название на склад" />
+                    <div class="cb-cat-wrap">
+                      <select class="cb-cat" [(ngModel)]="it.newCategory" (ngModelChange)="onDraftChange()" title="Категория из справочника (настраивается в Настройках: иконка и цвет)" aria-label="Категория">
+                        <option value="прочее">— категория «прочее» —</option>
+                        @for (c of categories(); track c.id) {
+                          <option [value]="c.name">{{ c.icon ? c.icon + ' ' : '' }}{{ c.name }}</option>
+                        }
+                        @if (it.newCategory && !catOf(it.newCategory)) {
+                          <option [value]="it.newCategory">{{ it.newCategory }} — нет в справочнике</option>
+                        }
+                      </select>
+                      @if (catOf(it.newCategory); as cat) {
+                        <span class="cb-cat-badge" [style.background]="cat.color || '#eef2f7'"
+                              [title]="'Категория: ' + cat.name + (cat.color ? ' · цвет ' + cat.color : '')">{{ cat.icon || '·' }}</span>
+                      }
+                    </div>
+                    <select class="cb-unit" [(ngModel)]="it.newUnitId" (ngModelChange)="onDraftChange()" aria-label="Складская единица">
+                      @for (u of baseUnits(); track u.id) { <option [ngValue]="u.id">хранить в {{ u.code }}</option> }
+                    </select>
+                  </div>
+                  <small class="rc-hint">Новый товар появится в номенклатуре и сразу ляжет на склад. Категорию и единицу можно поправить позже.</small>
+                }
+              </div>
             </div>
 
-            <button class="btn sm danger c-del" title="Убрать строку" (click)="removeImp($index)">✕<span class="del-name"> Убрать строку</span></button>
-
-            @if (it.warnings.length) {
-              <div class="c-notes" aria-label="Замечания по строке">
-                @for (w of it.warnings; track $index) {
-                  <div class="c-note">⚠ {{ w }}</div>
-                }
+            @if (it.warnings.length || it.doubt) {
+              <div class="rc-notes" aria-label="Замечания по строке">
+                @if (it.doubt) { <div class="rc-note">🤖 {{ it.doubt }}</div> }
+                @for (w of it.warnings; track $index) { <div class="rc-note">⚠ {{ w }}</div> }
               </div>
             }
+
+            <footer class="rc-foot">
+              <span class="rc-why" [class]="'why-' + stt.key">{{ stt.hint }}</span>
+              <button class="rc-reset" type="button" [disabled]="!lineChanged(it)" (click)="resetLine(it)" title="Вернуть количество, цену, PDV и привязку к товару в состояние после распознавания">↺ вернуть как было</button>
+            </footer>
+          </article>
+        } @empty {
+          <div class="rc-empty-filter">
+            @if (impFilter() === 'todo') { Все строки заполнены — проверить нечего. }
+            @else if (impFilter() === 'ok') { Пока нет готовых строк — начните с «Внимание». }
+            @else { В документе не осталось строк. }
           </div>
         }
 
@@ -692,19 +962,13 @@ interface ImpDraft {
         }
 
         <div class="imp-foot">
-          <div class="imp-totals">
-            <div class="tt">
-              <span class="muted">нетто (без PDV)</span><b>{{ fmtMoney(impTotal()) }}</b>
-              <i [class.diff]="!totOk(impTotal(), docNet())" title="Нетто, как напечатано в документе — можно поправить">в доке: <input class="mini" type="number" step="any" [(ngModel)]="impDocNet" aria-label="Нетто в документе" /> ₽</i>
-            </div>
-            <div class="tt">
-              <span class="muted">PDV</span><b class="vat-note">{{ fmtMoney(impVat()) }}</b>
-              <i [class.diff]="!totOk(impVat(), docVat())" title="Итог PDV, как напечатано в документе — можно поправить">в доке: <input class="mini" type="number" step="any" [(ngModel)]="impDocVat" aria-label="PDV в документе" /> ₽</i>
-            </div>
-            <div class="tt grossline">
-              <span><b>к оплате</b></span><b>{{ fmtMoney(impGross()) }}</b>
-              <i [class.diff]="!totOk(impGross(), docGross())" title="Сумма к оплате, как напечатана в документе — можно поправить">в доке: <input class="mini" type="number" step="any" [(ngModel)]="impDocGross" aria-label="К оплате в документе" /> ₽</i>
-            </div>
+          <div class="sm-result-sum" title="Что уйдёт на склад: нетто + PDV">
+            <span class="muted">на склад</span>
+            <b>{{ fmtMoney(impTotal()) }}</b>
+            @if (impVat() > 0) {
+              <span class="muted">+ PDV</span><b class="vat-note">{{ fmtMoney(impVat()) }}</b>
+              <span class="muted">=</span><b>{{ fmtMoney(impGross()) }}</b>
+            }
           </div>
           <div class="spacer"></div>
           <div class="confirm-wrap">
@@ -716,6 +980,7 @@ interface ImpDraft {
             }
           </div>
         </div>
+        }
       }
     </div>
 
@@ -740,7 +1005,7 @@ export class WaybillsComponent implements OnInit {
   private destroyRef = inject(DestroyRef);
   /** effect() в ngOnInit вне инжект-контекста — передаём инжектор явно */
   private injector = inject(Injector);
-  /** Живой лог сервера (WebSocket): что делает GPT/CLI и как рассуждает модель. */
+  /** Живой лог сервера (WebSocket): этапы распознавания. */
   logs = inject(LogService);
   logOpen = signal(true);
   lastLog = computed(() => {
@@ -808,6 +1073,7 @@ export class WaybillsComponent implements OnInit {
 
   ngOnInit(): void {
     this.reload();
+    this.destroyRef.onDestroy(() => clearTimeout(this.autoTimer));
     // живой канал логов держим открытым заранее — первые события разбора не потеряются
     this.logs.connect();
     this.api.products$().subscribe((p) => this.products.set(p));
@@ -902,8 +1168,21 @@ export class WaybillsComponent implements OnInit {
 
   // ==================== умный импорт из файла ====================
 
-  /** Какая вкладка распознаёт документ: GPT или Qoder CLI. */
-  smartTab = signal<'gpt' | 'cli'>('gpt');
+  /** Этапы конвейера — показываются на экране, пока идёт распознавание. */
+  readonly smartSteps = [
+    { n: 1, title: 'Распознавание', hint: 'фото → строки документа' },
+    { n: 2, title: 'Каталог', hint: 'товары, фасовки, категории' },
+    { n: 3, title: 'Сверка', hint: 'суммы, PDV и итоги' },
+    { n: 4, title: 'Контроль', hint: 'проверка спорных строк' },
+  ];
+  /** Активный этап по последним событиям сервера (1…4). */
+  impAct = computed(() => {
+    const tail = this.logs.lines().slice(-8).map((l) => l.text).join(' ');
+    if (/Агент «Контроль»/.test(tail)) return 4;
+    if (/Сверка|Счетовод/.test(tail)) return 3;
+    if (/Каталог|Товаровед/.test(tail)) return 2;
+    return 1;
+  });
   parsed = signal<ImportParseResult | null>(null);
   impItems = signal<ImpDraft[]>([]);
   impBusy = signal(false);
@@ -912,7 +1191,7 @@ export class WaybillsComponent implements OnInit {
   impNumber = '';
   impSupplier = '';
   impDate = today();
-  /** Напечатанные итоги документа: взяты из накладной, значит тоже правятся руками — GPT могла ошибиться в цифре. */
+  /** Напечатанные итоги документа: взяты из накладной, значит тоже правятся руками — ИИ мог ошибиться в цифре. */
   impDocNet: number | null = null;
   impDocVat: number | null = null;
   impDocGross: number | null = null;
@@ -993,11 +1272,11 @@ export class WaybillsComponent implements OnInit {
     return n > 1 ? `фото · ${this.sheetsWord(n)}` : 'фото накладной';
   }
 
-  /** Переключение вкладки: прежний разбор и выбранные файлы не смешиваем с новым способом. */
-  switchSmartTab(tab: 'gpt' | 'cli'): void {
-    if (tab === this.smartTab() || this.impBusy()) return;
-    this.smartTab.set(tab);
+  /** Убрать разбор и сфотографировать другой документ. */
+  resetSmart(): void {
+    if (this.impBusy()) return;
     this.parsed.set(null);
+    this.impFilter.set('all');
     this.impItems.set([]);
     this.pendFiles.set([]);
     this.extrasPreview.set([]);
@@ -1015,21 +1294,12 @@ export class WaybillsComponent implements OnInit {
     this.logs.clear();
   }
 
-  /** Подсказка под кнопкой выбора файла: что загружаем сейчас и какие файлы подходят. */
+  /** Подсказка под загрузкой: что подходит и что происходит сейчас. */
   busyHint(): string {
-    if (this.impBusy()) {
-      return this.smartTab() === 'cli'
-        ? 'Qoder CLI распознаёт документ — обычно 20–90 сек, пакет листов дольше, не закрывайте страницу'
-        : 'Распознавание занимает 10–60 сек — не закрывайте страницу';
-    }
+    if (this.impBusy()) return 'ИИ распознаёт документ — обычно 20–90 секунд, пакет листов дольше, не закрывайте страницу';
     const n = this.pendFiles().length;
-    if (!this.parsed() && n) return `листов в пакете: ${n} — можно добавить ещё или разбирать`;
-    return (
-      this.impFileName() ||
-      (this.smartTab() === 'cli'
-        ? 'JPG / PNG / WEBP / GIF / PDF до 15 МБ каждое. Qoder CLI читает файл на сервере — личный кабинет CLI должен быть авторизован'
-        : 'JPG / PNG / WEBP / GIF / PDF до 15 МБ каждое. Накладную можно сфотографировать кусками или несколько раз — система соберёт из фото одну накладную')
-    );
+    if (!this.parsed() && n) return `${this.sheetsWord(n)} в пакете — можно добавить ещё или распознавать`;
+    return this.impFileName() || 'JPG / PNG / WEBP / GIF / PDF до 15 МБ · несколько листов склеиваются в одну накладную';
   }
 
   baseUnits = computed(() => this.units().filter((u) => u.baseFactor === 1));
@@ -1052,7 +1322,7 @@ export class WaybillsComponent implements OnInit {
 
   /** Скидки и служебные начисления — считаются отдельно и на склад не приходятся. */
   serviceLines = computed(() => this.parsed()?.serviceLines ?? []);
-  /** Блок скидок из разбора (GPT выделяет их отдельной росписью). */
+  /** Блок скидок из разбора (ИИ выделяет их отдельной росписью). */
   discBlock = computed(() => this.parsed()?.discounts ?? null);
   /** Роспись скидок: блок разбора + запасной путь (скидки, собранные из строк на сервере). */
   discounts = computed<ImportDiscount[]>(() => {
@@ -1078,10 +1348,14 @@ export class WaybillsComponent implements OnInit {
   servicesOnly = computed(() => this.serviceLines().filter((s) => s.kind === 'service'));
   /** Σ скидок по модулю (на сколько документ дешевле товаров). */
   discountTotal = computed(() => this.discountsSeparate().reduce((s, x) => s + Math.abs(x.amount ?? 0), 0));
-  /** Есть ли среди отдельных скидок хотя бы одна с прочитанной суммой — показывать строку «Скидок всего». */
-  hasDiscWithAmount = computed(() => this.discountsSeparate().some((d) => d.amount != null));
-  /** Кнопка «вычесть скидки из строк» имеет смысл, когда есть отдельная скидка с суммой. */
-  canApplyDisc = computed(() => this.hasDiscWithAmount());
+  /** Есть ли скидки с прочитанной суммой — показывать строку «Скидок всего» (уже учтённые тоже считаем). */
+  hasDiscWithAmount = computed(
+    () =>
+      this.discountsSeparate().some((d) => d.amount != null) ||
+      this.discountsIncluded().some((d) => Math.abs(d.amount ?? 0) > 0)
+  );
+  /** Кнопка «вычесть скидки из строк» нужна только для ещё не учтённых скидок. */
+  canApplyDisc = computed(() => this.discountsSeparate().some((d) => (d.amount ?? 0) > 0));
   /** Заметки от «учесть скидки в строках» — в тот же список «разбор уточнил сам». */
   discNotes = signal<string[]>([]);
   /** Подтверждённая документом сумма скидок; null — документ её не даёт. */
@@ -1115,13 +1389,35 @@ export class WaybillsComponent implements OnInit {
   lineMismatch(it: ImpDraft): boolean {
     if (it.edited || it.lineSum == null) return false;
     const doc = this.docLineMoney(it);
-    return doc != null && Math.abs(it.lineSum - doc) > Math.max(1, it.lineSum * 0.01);
+    if (doc == null) return false;
+    // скидка из отдельной строки POPUST уже вычтена из lineSum — сверяем с «печать минус скидка»
+    const expected = it.discount ? doc - it.discount.amount : doc;
+    return Math.abs(it.lineSum - expected) > Math.max(1, it.lineSum * 0.01);
   }
 
   /** Мой расчёт сходится с напечатанным в документе (±2%, но не меньше 1 din)? */
+  /** Сверка с напечатанным итогом: допуск только на округление, не проценты — иначе сотня рублей «сходится». */
   totOk(mine: number, printed: number | null): boolean {
     if (printed == null) return true;
-    return Math.abs(mine - printed) <= Math.max(1, printed * 0.02);
+    return Math.abs(mine - printed) <= Math.max(2, printed * 0.0005);
+  }
+
+  /** Все три напечатанных итога сходятся с тем, что посчитано по строкам. */
+  docSumsOk(): boolean {
+    return (
+      this.totOk(this.impTotal(), this.docNet()) &&
+      this.totOk(this.impVat(), this.docVat()) &&
+      this.totOk(this.impGross(), this.docGross())
+    );
+  }
+
+  /** В документе вообще напечатаны итоги — иначе «сходится» показывать нечего. */
+  docHasTotals(): boolean {
+    return this.docNet() != null || this.docVat() != null || this.docGross() != null;
+  }
+
+  moneyOrDash(v: number | null): string {
+    return v == null ? '—' : this.fmtMoney(v);
   }
 
   /**
@@ -1180,9 +1476,18 @@ export class WaybillsComponent implements OnInit {
       this.pendFiles.set(list);
       this.impBusy.set(false);
       if (!list.length) this.impErr.set('Не удалось прочитать файлы');
-      else if (list.length === 1) this.parseFiles(); // один файл — разбор сразу, как раньше
-      else this.impFileName.set('');
+      else this.scheduleAutoParse();
     });
+  }
+
+  /** Один тап: файл выбран — через секунду уже идёт распознавание (успейте добавить ещё лист). */
+  private autoTimer?: ReturnType<typeof setTimeout>;
+  private scheduleAutoParse(): void {
+    clearTimeout(this.autoTimer);
+    this.autoTimer = setTimeout(() => {
+      this.autoTimer = undefined;
+      if (!this.impBusy() && !this.parsed() && this.pendFiles().length) this.parseFiles();
+    }, 1200);
   }
 
   /** Добавить ещё фото к уже выбранному пакету (второй лист, переснимка). */
@@ -1196,11 +1501,28 @@ export class WaybillsComponent implements OnInit {
     void this.readFiles(files).then((add) => {
       this.pendFiles.update((arr) => [...arr, ...add].slice(0, 8));
       this.impBusy.set(false);
+      this.scheduleAutoParse();
     });
   }
 
   removePend(i: number): void {
+    clearTimeout(this.autoTimer);
     this.pendFiles.update((arr) => arr.filter((_, idx) => idx !== i));
+    if (this.pendFiles().length) this.scheduleAutoParse();
+  }
+
+  /** «＋ лист» в уже разобранном документе: добавить страницу и перечитать всё заново. */
+  addPagesAndReparse(ev: Event): void {
+    const input = ev.target as HTMLInputElement;
+    const files = Array.from(input.files ?? []);
+    input.value = '';
+    if (!files.length || this.impBusy()) return;
+    this.impErr.set('');
+    void this.readFiles(files).then((add) => {
+      if (!add.length) return;
+      this.pendFiles.update((arr) => [...arr, ...add].slice(0, 8));
+      this.parseFiles();
+    });
   }
 
   /** FileReader по каждому файлу; pdf/gif без type от браузера — угадываем по расширению. */
@@ -1231,8 +1553,9 @@ export class WaybillsComponent implements OnInit {
     ).then((rs) => rs.filter((x): x is { uid: string; name: string; mime: string; dataUrl: string } => !!x && !!x.dataUrl));
   }
 
-  /** Собрать из выбранных фото ОДну накладную: один вызов GPT на весь пакет. */
+  /** Собрать из выбранных фото ОДну накладную: один вызов ИИ на весь пакет. */
   parseFiles(): void {
+    clearTimeout(this.autoTimer);
     const list = this.pendFiles();
     if (!list.length || this.impBusy()) return;
     this.impErr.set('');
@@ -1249,16 +1572,14 @@ export class WaybillsComponent implements OnInit {
       typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
         ? crypto.randomUUID()
         : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    this.logOpen.set(true);
+    this.logOpen.set(false);
     this.logs.watch(jobId);
     const payload = {
       jobId,
       files: list.map((f) => ({ fileName: f.name, mime: f.mime, base64: f.dataUrl.split(',')[1] ?? '' })),
+      ...(debug ? { debug: true } : {}),
     };
-    const request$ =
-      this.smartTab() === 'cli' && !debug
-        ? this.api.importParseCli$(payload)
-        : this.api.importParse$({ ...payload, ...(debug ? { debug: true } : {}) });
+    const request$ = this.api.importParseCli$(payload);
     request$.subscribe({
         next: (r) => {
           this.impBusy.set(false);
@@ -1272,6 +1593,7 @@ export class WaybillsComponent implements OnInit {
           this.impDocNet = r.doc.totalSum ?? null;
           this.impDocVat = r.doc.totalVat ?? null;
           this.impDocGross = r.doc.totalGross ?? null;
+          this.impFilter.set('all'); // новый документ — показываем все строки, а не фильтр прошлого
           this.impItems.set(r.items.map((it) => this.toDraft(it)));
         },
         error: (e) => {
@@ -1306,7 +1628,9 @@ export class WaybillsComponent implements OnInit {
         ? Math.round(it.docQtyPrinted * it.docPricePrinted * 100) / 100
         : null;
     const lineSum = printed ? it.lineSum : synthesized;
-    return {
+    const pickedId = it.match?.productId ?? it.candidates[0]?.productId ?? null;
+    const pickedCategory = pickedId != null ? this.products().find((p) => p.id === pickedId)?.category ?? '' : '';
+    const draft: ImpDraft = {
       rawName: it.rawName,
       qty: it.qty,
       unitId,
@@ -1322,15 +1646,36 @@ export class WaybillsComponent implements OnInit {
       vatInferred: !!it.vatInferred,
       lineSum,
       lineSumPrinted: printed,
+      discount: it.rowDiscount ?? null,
       edited: false,
       mode: it.match ? 'match' : 'create',
-      productId: it.match?.productId ?? it.candidates[0]?.productId ?? null,
+      productId: pickedId,
+      pickCat: pickedCategory,
       via: it.match?.via ?? null,
       candidates: it.candidates,
       newName: it.newHint?.name ?? it.rawName,
       newCategory: it.newHint?.category ?? 'прочее',
       newUnitId: unitId ?? this.baseUnits()[0]?.id ?? null,
+      orig: null as unknown as ImpOrig,
     };
+    draft.orig = {
+      qty: draft.qty,
+      unitId: draft.unitId,
+      docPricePrinted: draft.docPricePrinted,
+      price: draft.price,
+      vatRate: draft.vatRate,
+      vatSuspect: draft.vatSuspect,
+      vatInferred: draft.vatInferred,
+      lineSum: draft.lineSum,
+      edited: draft.edited,
+      mode: draft.mode,
+      productId: draft.productId,
+      pickCat: draft.pickCat,
+      newName: draft.newName,
+      newCategory: draft.newCategory,
+      newUnitId: draft.newUnitId,
+    };
+    return draft;
   }
 
   unitCodeOf(unitId: number | null): string {
@@ -1387,6 +1732,12 @@ export class WaybillsComponent implements OnInit {
     const money = this.money(it);
     const q = it.qty ?? 0;
     if (money != null && q > 0) it.price = Math.round((money / q) * 1e10) / 1e10;
+    this.touchItems();
+  }
+
+  /** Сигнал impItems не знает о правках полей на месте — будим его, чтобы итоги и сверка пересчитались сразу. */
+  private touchItems(): void {
+    this.impItems.update((arr) => arr.slice());
   }
 
   /** Человек ввёл сумму строки сам — печатная сверка больше не его вина. */
@@ -1400,6 +1751,7 @@ export class WaybillsComponent implements OnInit {
     it.edited = true;
     const q = it.qty ?? 0;
     if (q > 0 && it.price != null) it.lineSum = Math.round(q * it.price * 100) / 100;
+    this.touchItems();
   }
 
   /**
@@ -1408,8 +1760,9 @@ export class WaybillsComponent implements OnInit {
    */
   onDocPriceEdit(it: ImpDraft): void {
     it.edited = true;
+    const disc = it.discount?.amount ?? 0;
     if (it.docPricePrinted != null && it.docQtyPrinted != null && it.docQtyPrinted > 0) {
-      it.lineSum = Math.round(it.docQtyPrinted * it.docPricePrinted * 100) / 100;
+      it.lineSum = Math.max(0, Math.round((it.docQtyPrinted * it.docPricePrinted - disc) * 100) / 100);
     } else if (it.docPricePrinted != null && (it.qty ?? 0) > 0) {
       // печатного количества нет — считаем цену за ту же единицу, что и базовая
       it.price = it.docPricePrinted;
@@ -1422,6 +1775,7 @@ export class WaybillsComponent implements OnInit {
   onVatChange(it: ImpDraft): void {
     it.vatSuspect = false;
     it.vatInferred = false;
+    this.touchItems();
   }
 
   private unitIdByCode(code: string | null): number | null {
@@ -1430,7 +1784,7 @@ export class WaybillsComponent implements OnInit {
   }
 
   viaLabel(via: string): string {
-    return via === 'alias' ? '🔖 найдено по псевдониму' : via === 'name' ? 'найдено по названию' : via === 'llm' ? 'найдено GPT' : '';
+    return via === 'alias' ? '🔖 найдено по псевдониму' : via === 'name' ? 'найдено по названию' : via === 'llm' ? 'подобрано по смыслу' : '';
   }
 
   /** Запомнит ли сервер псевдоним: написание в документе отличается от складского названия. */
@@ -1443,6 +1797,185 @@ export class WaybillsComponent implements OnInit {
 
   removeImp(i: number): void {
     this.impItems.update((arr) => arr.filter((_, idx) => idx !== i));
+  }
+
+  // ==================== карточки строк: статусы, фильтр, быстрые действия ====================
+
+  /** Фильтр списка: всё / только проблемные / только готовые. */
+  impFilter = signal<'all' | 'todo' | 'ok'>('all');
+
+  /** Чего не хватает для проведения строки — короткими словами, для статуса и подсказки. */
+  lineMissing(it: ImpDraft): string[] {
+    const out: string[] = [];
+    if ((it.qty ?? 0) <= 0) out.push('количество');
+    if (it.unitId == null) out.push('единица склада');
+    if (it.mode === 'match') {
+      if (it.productId == null) out.push('товар склада');
+    } else if (!it.newName.trim() || it.newUnitId == null) {
+      out.push('название и единица нового товара');
+    }
+    return out;
+  }
+
+  /** Почему строку стоит проверить по фото — даже если она формально заполнена. */
+  lineFlags(it: ImpDraft): string[] {
+    const f: string[] = [];
+    if (it.vatSuspect) f.push('PDV прочитан неуверенно');
+    if (it.vatInferred) f.push('PDV выведен по итогам документа');
+    if (it.qtyForecast) f.push('количество пересчитано по фасовке');
+    if (this.lineMismatch(it)) f.push('сумма строки не сходится с Кол × Цена');
+    if (it.doubt) f.push('у ИИ есть вопрос по строке');
+    return f;
+  }
+
+  /** Итоговый статус строки: дополнить → проверить → новая → готово. */
+  lineState(it: ImpDraft): { key: ImpLineState; label: string; hint: string } {
+    const missing = this.lineMissing(it);
+    if (missing.length) {
+      return { key: 'fix', label: 'нужно дополнить', hint: `Дополните: ${missing.join(', ')}` };
+    }
+    const flags = this.lineFlags(it);
+    if (flags.length) {
+      return { key: 'check', label: 'проверить', hint: `Сверьте с фото: ${flags.join(' · ')}` };
+    }
+    if (it.mode === 'create') {
+      const unit = this.unitCodeOf(it.newUnitId) || 'ед.';
+      return {
+        key: 'new',
+        label: 'новая позиция',
+        hint: `Создастся товар «${it.newName}»${it.newCategory ? ' · ' + it.newCategory : ''} · хранить в ${unit}`,
+      };
+    }
+    const product = this.products().find((p) => p.id === it.productId);
+    return {
+      key: 'ready',
+      label: 'готово',
+      hint: `На склад: «${product?.name ?? '—'}» · ${fmtQty(it.qty ?? 0, this.unitCodeOf(it.unitId))} · ${this.baseCostReadout(it)}`,
+    };
+  }
+
+  /** Строка требует действия или проверки — именно её показывает фильтр «Внимание». */
+  lineAttention(it: ImpDraft): boolean {
+    const key = this.lineState(it).key;
+    return key === 'fix' || key === 'check';
+  }
+
+  impAttentionCount = computed(() => this.impItems().filter((i) => this.lineAttention(i)).length);
+  impReadyCount = computed(() => this.impItems().length - this.impAttentionCount());
+
+  /** Видимые строки с исходным индексом — удаление и нумерация остаются верными при фильтре. */
+  visibleImpRows = computed(() => {
+    const f = this.impFilter();
+    return this.impItems()
+      .map((it, idx) => ({ it, idx }))
+      .filter(({ it }) => f === 'all' || (f === 'todo' ? this.lineAttention(it) : !this.lineAttention(it)));
+  });
+
+  /** Переключатель «существующая / создать новую»: будим сигнал, чтобы статус и фильтр пересчитались. */
+  setMode(it: ImpDraft, mode: 'match' | 'create'): void {
+    it.mode = mode;
+    this.touchItems();
+  }
+
+  /** Один клик по подсказке «похожие» — сразу привязывает товар и запоминает псевдоним при подтверждении. */
+  pickCandidate(it: ImpDraft, productId: number): void {
+    it.mode = 'match';
+    it.productId = productId;
+    const p = this.products().find((x) => x.id === productId);
+    if (p) it.pickCat = p.category;
+    this.touchItems();
+  }
+
+  /** Категории товаров склада с количеством позиций — отдельное поле в карточке. */
+  productCategories = computed(() => {
+    const map = new Map<string, number>();
+    for (const p of this.products()) map.set(p.category, (map.get(p.category) ?? 0) + 1);
+    return [...map.entries()]
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+  });
+
+  /** Товары выбранной категории; уже выбранный товар не теряется при смене фильтра. */
+  pickProducts(it: ImpDraft): Product[] {
+    const all = this.products();
+    const selected = it.productId != null ? all.find((p) => p.id === it.productId) ?? null : null;
+    const list = it.pickCat ? all.filter((p) => p.category === it.pickCat) : all;
+    return selected && !list.some((p) => p.id === selected.id) ? [selected, ...list] : list;
+  }
+
+  /** Категория фильтрует список товаров; выбранный товар из другой категории снимается. */
+  setPickCat(it: ImpDraft, category: string): void {
+    it.pickCat = category;
+    if (category) {
+      const current = this.products().find((p) => p.id === it.productId);
+      if (current && current.category !== category) it.productId = null;
+    }
+    this.touchItems();
+  }
+
+  /** Выбор товара: категория подтягивается за товаром, чтобы поля не расходились. */
+  onProductPicked(it: ImpDraft, productId: number | null): void {
+    it.productId = productId;
+    if (productId != null) {
+      const p = this.products().find((x) => x.id === productId);
+      if (p) it.pickCat = p.category;
+    }
+    this.touchItems();
+  }
+
+  /** Любая правка полей карточки: статус, счётчики и фильтр должны обновиться сразу. */
+  onDraftChange(): void {
+    this.touchItems();
+  }
+
+  /** Строку правили после разбора? Тогда «вернуть как было» активна. */
+  lineChanged(it: ImpDraft): boolean {
+    const o = it.orig;
+    return (
+      it.qty !== o.qty ||
+      it.unitId !== o.unitId ||
+      it.docPricePrinted !== o.docPricePrinted ||
+      it.price !== o.price ||
+      it.vatRate !== o.vatRate ||
+      it.vatSuspect !== o.vatSuspect ||
+      it.vatInferred !== o.vatInferred ||
+      it.lineSum !== o.lineSum ||
+      it.edited !== o.edited ||
+      it.mode !== o.mode ||
+      it.productId !== o.productId ||
+      it.pickCat !== o.pickCat ||
+      it.newName !== o.newName ||
+      it.newCategory !== o.newCategory ||
+      it.newUnitId !== o.newUnitId
+    );
+  }
+
+  /** Вернуть строку ровно в то состояние, которое дал разбор (до ручных правок). */
+  resetLine(it: ImpDraft): void {
+    const o = it.orig;
+    Object.assign(it, {
+      qty: o.qty,
+      unitId: o.unitId,
+      docPricePrinted: o.docPricePrinted,
+      price: o.price,
+      vatRate: o.vatRate,
+      vatSuspect: o.vatSuspect,
+      vatInferred: o.vatInferred,
+      lineSum: o.lineSum,
+      edited: o.edited,
+      mode: o.mode,
+      productId: o.productId,
+      pickCat: o.pickCat,
+      newName: o.newName,
+      newCategory: o.newCategory,
+      newUnitId: o.newUnitId,
+    });
+    this.touchItems();
+  }
+
+  /** Похожесть подсказки (pg_trgm 0…1) — в процентах, только если сервер её дал. */
+  simPct(sim: number | undefined): string {
+    return sim && sim > 0 ? `${Math.round(sim * 100)}%` : '';
   }
 
   /** Ключ для сопоставления «скидка → товар»: без регистра/цифр/фасовки (350G, 1KG, 2200G) и пунктуации. */
@@ -1564,6 +2097,7 @@ export class WaybillsComponent implements OnInit {
         this.extrasPreview.set([]);
         this.lastPackage = [];
         this.curLb.set(null);
+        this.logs.clear();
         this.detail.set(null);
         this.reload();
       },

@@ -129,9 +129,9 @@ import { TabItem, TabStripComponent } from '../shared/tab-strip.component';
             @if (s.legalName) { <div class="legal">{{ s.legalName }}</div> }
 
           <div class="profile">
-            <div class="pf"><span class="k">Адрес</span><span class="v">{{ s.address }}</span></div>
-            <div class="pf"><span class="k">PIB</span><span class="v mono">{{ s.pib }}</span></div>
-            <div class="pf"><span class="k">MB</span><span class="v mono">{{ s.mb }}</span></div>
+            @if (s.address) { <div class="pf"><span class="k">Адрес</span><span class="v">{{ s.address }}</span></div> }
+            @if (s.pib) { <div class="pf"><span class="k">PIB</span><span class="v mono">{{ s.pib }}</span></div> }
+            @if (s.mb) { <div class="pf"><span class="k">MB</span><span class="v mono">{{ s.mb }}</span></div> }
             @if (s.phone) { <div class="pf"><span class="k">Телефон</span><span class="v mono">{{ s.phone }}</span></div> }
             @if (s.fax) { <div class="pf"><span class="k">Факс</span><span class="v mono">{{ s.fax }}</span></div> }
             @if (s.email) { <div class="pf"><span class="k">E-mail</span><span class="v mono">{{ s.email }}</span></div> }
@@ -140,6 +140,9 @@ import { TabItem, TabStripComponent } from '../shared/tab-strip.component';
             }
             @if (s.gln) { <div class="pf"><span class="k">GLN</span><span class="v mono">{{ s.gln }}</span></div> }
             @if (s.contact) { <div class="pf"><span class="k">Контакт</span><span class="v">{{ s.contact }}</span></div> }
+            @if (!s.address && !s.pib && !s.mb && !s.accounts.length && !s.gln) {
+              <div class="pf"><span class="k">Реквизиты</span><span class="v muted">не распознаны из накладной</span></div>
+            }
           </div>
 
           @if (s.note) { <div class="note">{{ s.note }}</div> }

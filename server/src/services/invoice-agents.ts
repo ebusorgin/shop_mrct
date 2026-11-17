@@ -5,6 +5,7 @@ import { ApiError } from '../http';
 import { extractCliJson, runCliLogged } from './qoder-cli';
 import type { CatalogProduct } from './llm';
 import type { LogKind } from './ws-log';
+import { isPlaceholderSupplier } from './supplier-match';
 
 /**
  * «Агенты» умного прихода (вкладка Qoder CLI).
@@ -214,9 +215,13 @@ export function readerPrompt(fileNames: string[]): string {
     `ФОРМАТ: METRO | MONOLITH | OTPREMNICA | OTHER\n` +
     `НОМЕР: <номер документа>\n` +
     `ДАТА: <дата ровно как напечатана, например 26.4.2026; не преобразуй и не переставляй день/месяц>\n` +
-    `ПОСТАВЩИК: <продавец из шапки/логотипа бланка; «Primaoc», «Kupac», «Покупатель» и MIX MARKT — это ПОЛУЧАТЕЛЬ (наш склад), НЕ поставщик; «Prevoznik» — перевозчик, тоже не поставщик>\n` +
+    `ПОСТАВЩИК: <продавец: «Dobavljač»/«Prodavac»/«Lieferant»/«Продавец» из шапки, либо его логотип, GLN, PIB или банковский счёт в верхней части листа; «Primaoc», «Kupac», «Покупатель» — это ПОЛУЧАТЕЛЬ (наш склад), «Prevoznik»/«Prevozi» — перевозчик, они не поставщик. Если в поле «Dobavljač» явно написано «Mix Markt Gastro» — это продавец (наше производство), укажи его. Блоки не переставляй: напечатан только «Dobavljač» — он и есть поставщик, получатель пуст>\n` +
     `ПОКУПАТЕЛЬ: <получатель/прималац>\n` +
-    `PIB: <PIB продавца: 8-9 цифр; PIB из блока получателя (MIX MARKT) не бери; не уверен — пусто>\n` +
+    `PIB: <PIB продавца: 8-9 цифр; PIB из блока получателя (Primalac/Kupac) не бери; исключение — когда продавец сам Mix Markt Gastro; не уверен — пусто>\n` +
+    `МБ: <матични број продавца (MB/Matični broj): ровно 8 цифр из блока продавца; «Kundennummer», «Steuernummer», «USt-IdNr» — это НЕ МБ; не уверен — пусто>\n` +
+    `GLN: <GLN продавца: ровно 13 цифр; налоговые номера и ID документов сюда не пиши; не уверен — пусто>\n` +
+    `СЧЁТ: <банковский счёт/IBAN продавца, как напечатан; несколько — через ";"; налоговый номер счётом не считай; не уверен — пусто>\n` +
+    `АДРЕС: <адрес продавца из шапки; не уверен — пусто>\n` +
     `ВАЛЮТА: <RSD | EUR | ... ; если не напечатана — пусто>\n` +
     `СТРОКИ:\n` +
     `<название как напечатано> | <кол-во> | <единица> | <цена за единицу> | <PDV %> | <сумма без PDV> | <сумма с PDV> | <фасовка> | <шифра/артикул>\n` +
@@ -229,6 +234,8 @@ export function readerPrompt(fileNames: string[]): string {
     `КАК ЗАПОЛНЯТЬ КОЛОНКИ:\n` +
     `- Кол-во/цена/суммы — строго как напечатано. Десятичная запятая так и остаётся запятой; разделители тысяч сохраняй.\n` +
     `- Единица — как в колонке: kg, g, l, ml, kom, kos, pcs, ut, Pack, Dose, KO и т.п.\n` +
+    `- Поставщик: если название продавца не напечатано отдельной строкой, опознай его по логотипу, GLN, PIB или банковскому счёту в верхней части листа и напиши краткое имя (например WFC, METRO, MMM LASTA). Есть такие признаки — «?» не ставь. «Primalac» — это наш склад, его реквизиты продавцом не считай.\n` +
+    `- Реквизиты (МБ/GLN/СЧЁТ/АДРЕС) бери только из блока продавца, а не из «Primaoc/Kupac». Не выдумывай: нет на листе — пусто.\n` +
     `- «Фасовка» — размер ОДНОЙ закупочной упаковки, если он есть в документе: значение колонки «Kol.po pak.» (METRO), ` +
     `вес из названия (397g, 1,5KG, 5KG), формат «30/1», «180/1», «6/1», «1/1KG». Если не напечатано — "-".\n` +
     `- Если колонки нет — ставь "-". Пустую ячейку не заполняй догадкой: лучше "-", чем выдуманное число.\n` +
@@ -337,7 +344,8 @@ export function structurerPrompt(input: StructureInput): string {
   return (
     STRUCTURE_RULES +
     `Верни JSON ровно такой формы:\n` +
-    `{"number":string|null,"supplier":string|null,"date":"YYYY-MM-DD"|null,"supplierPib":string|null,"currency":string|null,` +
+    `{"number":string|null,"supplier":string|null,"date":"YYYY-MM-DD"|null,"supplierPib":string|null,` +
+    `"supplierAddress":string|null,"supplierMb":string|null,"supplierGln":string|null,"supplierAccounts":string[]|null,"currency":string|null,` +
     `"totalSum":number|null,"totalVat":number|null,"totalGross":number|null,` +
     `"docFormat":"metro|monolith|otpremnica|other",` +
     `"items":[{"name":"как напечатано","supplierCode":string|null,"productId":int|null,"candidates":[int],"qty":number|null,"unitCode":string|null,` +
@@ -401,8 +409,10 @@ export function structurerPrompt(input: StructureInput): string {
     `- date — YYYY-MM-DD. Европейская дата читается как ДД.ММ.ГГГГ и НЕ переставляется: «26.4.2026» -> 2026-04-26, ` +
     `«26.08.2026» -> 2026-08-26. Не путай месяц 4 (апрель) и 8 (август), день и месяц не меняй местами; ` +
     `не угадывай дату по сегодняшнему числу. supplierPib — только цифры (8-9). supplier — продавец из шапки. ` +
-    `Если транскрипция называет поставщиком MIX MARKT (или просто переписала блок «Primaoc/Kupac») — ` +
-    `это наш склад-получатель, а не продавец: supplier=null, не подставляй его.\n` +
+    `«Primaoc»/«Kupac»/«Покупатель» — это наш склад-получатель: если поставщик взят из этого блока, supplier=null, не подставляй его. ` +
+    `Но «Dobavljač»/«Prodavac»/«Lieferant» — продавец, даже если там напечатано «Mix Markt Gastro» (наше производство): сохрани это название. ` +
+    `Если в ПОСТАВЩИК записаны только GLN/PIB/банковский счёт продавца без имени — верни их строкой как есть, получателя вместо них не подставляй. ` +
+    `supplierAddress/supplierMb/supplierGln/supplierAccounts — реквизиты продавца из транскрипции (адрес, МБ, GLN, банковские счета); реквизиты получателя не бери, чего нет — null/[].\n` +
     `- Если транскрипция говорит «НЕ НАКЛАДНАЯ» — верни items:[], в каждом итоге null и discounts {total:0,items:[]}.\n\n` +
     `ТРАНСКРИПЦИЯ НАКЛАДНОЙ:\n${input.transcript}`
   );
@@ -434,6 +444,11 @@ export interface AgentDoc {
   supplier: string | null;
   date: string | null;
   supplierPib: string | null;
+  /** Реквизиты продавца из шапки — для автосоздания карточки в справочнике. */
+  supplierAddress: string | null;
+  supplierMb: string | null;
+  supplierGln: string | null;
+  supplierAccounts: string[];
   currency: string | null;
   totalSum: number | null;
   totalVat: number | null;
@@ -471,9 +486,23 @@ export function cleanAgentDoc(raw: Record<string, unknown>): AgentDoc {
   const itemsRaw = Array.isArray(raw.items) ? (raw.items as Record<string, unknown>[]) : [];
   const doc: AgentDoc = {
     number: textOrNull(raw.number),
-    supplier: textOrNull(raw.supplier),
+    supplier: isPlaceholderSupplier(textOrNull(raw.supplier)) ? null : textOrNull(raw.supplier),
     date: /^\d{4}-\d{2}-\d{2}$/.test(String(raw.date ?? '')) ? String(raw.date) : null,
     supplierPib: textOrNull(raw.supplierPib)?.replace(/[^0-9]/g, '') || null,
+    supplierAddress: textOrNull(raw.supplierAddress)?.slice(0, 300) ?? null,
+    // MB — ровно 8 цифр, GLN — ровно 13: прочие номера из шапки (Kundennummer,
+    // Steuernummer, USt-IdNr) не должны попасть в карточку поставщика.
+    supplierMb: (() => {
+      const d = textOrNull(raw.supplierMb)?.replace(/[^0-9]/g, '') ?? '';
+      return /^\d{8}$/.test(d) ? d : null;
+    })(),
+    supplierGln: (() => {
+      const d = textOrNull(raw.supplierGln)?.replace(/[^0-9]/g, '') ?? '';
+      return /^\d{13}$/.test(d) ? d : null;
+    })(),
+    supplierAccounts: Array.isArray(raw.supplierAccounts)
+      ? (raw.supplierAccounts as unknown[]).map((x) => String(x ?? '').trim()).filter(Boolean).slice(0, 6)
+      : [],
     currency: textOrNull(raw.currency)?.toUpperCase().slice(0, 3) ?? null,
     totalSum: numOrNull(raw.totalSum),
     totalVat: numOrNull(raw.totalVat),

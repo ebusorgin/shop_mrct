@@ -8,7 +8,7 @@ import { ApiError, optNum, reqArr, reqNum, reqStr, wrap } from '../http';
 import { parseWaybillDoc, CatalogProduct } from '../services/llm';
 import { convertAcross, type ProdConv } from '../services/expansion';
 import { ingestWaybill } from './waybills';
-import { auditTx, type Actor } from '../services/audit';
+import { audit, auditTx, type Actor } from '../services/audit';
 import { logSink, type LogKind } from '../services/ws-log';
 import {
   detectRotationsAsync,
@@ -20,6 +20,7 @@ import {
   type AgentDoc,
 } from '../services/invoice-agents';
 import { classifyNewProduct, findLexEntry, lexIdentity, matchByMeaning } from '../services/product-lexicon';
+import { isPlaceholderSupplier, resolveOrCreateSupplier } from '../services/supplier-match';
 
 export const importRouter = Router();
 
@@ -463,6 +464,26 @@ importRouter.post(
       unitCodes: units.map((u) => u.code),
       onLog: (text) => log('stage', text),
     });
+    // Поставщик: модель могла оставить поле пустым, если продавец не напечатан отдельной
+    // строкой (WFC — только GLN/счёт в верхней части листа). Ищем в справочнике, а нового
+    // поставщика заводим с реквизитами из накладной — дальше он будет узнаваться сам.
+    const supplierHit = await resolveOrCreateSupplier(doc, transcript, { actorId: req.user?.id ?? null });
+    if (supplierHit) {
+      if (supplierHit.created) {
+        log('stage', `Новый поставщик: ${supplierHit.ref.name} — добавлен в справочник`);
+        corrections.push(`Поставщик добавлен в справочник: ${supplierHit.ref.name}`);
+        await audit(req.user, {
+          action: 'create',
+          entity: 'supplier',
+          entityId: supplierHit.ref.id,
+          title: `Поставщик · ${supplierHit.ref.name}`,
+          details: { source: 'scan', pib: doc.supplierPib },
+        });
+      } else {
+        log('stage', `Поставщик: ${supplierHit.ref.name} (по ${supplierHit.via})`);
+        corrections.push(`Поставщик определён по ${supplierHit.via}: ${supplierHit.ref.name}`);
+      }
+    }
     log('stage', `ИИ ответил: ${doc.items.length} строк · сопоставляю с каталогом…`);
     const products = catalog.products;
     const { byNormName, byAlias } = catalog;
@@ -919,6 +940,28 @@ importRouter.post(
               docFixes.push(`Дата из шапки: ${ht.date}`);
             }
             if (!doc.number && ht.number) doc.number = ht.number;
+          }
+        }
+      }
+      // Поставщик по справочнику: у части бланков название продавца не напечатано отдельной
+      // строкой (WFC — GLN/банковский счёт сверху), а «Primalac: MIX MARKT» — наш склад.
+      // Модель тут не нужна: ищем реквизиты в транскрипции, нового поставщика заводим сразу.
+      {
+        const supplierHit = await resolveOrCreateSupplier(doc, transcript, { actorId: req.user?.id ?? null });
+        if (supplierHit) {
+          if (supplierHit.created) {
+            log('stage', `Новый поставщик: ${supplierHit.ref.name} — добавлен в справочник`);
+            docFixes.push(`Поставщик добавлен в справочник: ${supplierHit.ref.name}`);
+            await audit(req.user, {
+              action: 'create',
+              entity: 'supplier',
+              entityId: supplierHit.ref.id,
+              title: `Поставщик · ${supplierHit.ref.name}`,
+              details: { source: 'scan', pib: doc.supplierPib },
+            });
+          } else {
+            log('stage', `Поставщик: ${supplierHit.ref.name} (по ${supplierHit.via})`);
+            docFixes.push(`Поставщик определён по ${supplierHit.via}: ${supplierHit.ref.name}`);
           }
         }
       }
@@ -1859,6 +1902,28 @@ export async function confirmImport(input: ConfirmImportInput, actor: Actor, run
   return runTx(async (client) => {
     const created: { id: number; name: string }[] = [];
     let aliasesSaved = 0;
+    // Приход не должен терять продавца: если его ещё нет в справочнике (например, разбор
+    // пришёл из старой вкладки без автосоздания), заводим минимальную карточку в той же транзакции.
+    let supplierName = isPlaceholderSupplier(supplier) ? '' : supplier;
+    if (supplierName) {
+      const ensured = await resolveOrCreateSupplier(
+        { supplier: supplierName, supplierPib },
+        '',
+        { client, actorId: actor?.id ?? null }
+      );
+      if (ensured) {
+        supplierName = ensured.ref.name;
+        if (ensured.created) {
+          await auditTx(client, actor, {
+            action: 'create',
+            entity: 'supplier',
+            entityId: ensured.ref.id,
+            title: `Поставщик · ${ensured.ref.name}`,
+            details: { source: 'waybill', pib: supplierPib },
+          });
+        }
+      }
+    }
     const items: { productId: number; qty: number; unitId: number; price: number | null; vatRate: number | null }[] = [];
 
     for (const raw of rawItems) {
@@ -1914,7 +1979,7 @@ export async function confirmImport(input: ConfirmImportInput, actor: Actor, run
       client,
       {
         number,
-        supplier,
+        supplier: supplierName,
         docDate,
         actor,
         fileName,

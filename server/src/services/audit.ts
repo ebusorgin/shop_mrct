@@ -36,6 +36,7 @@ export type AuditEntity =
   | 'batch'
   | 'store'
   | 'store_order'
+  | 'supplier'
   | 'user'
   | 'stock'
   | 'setting';

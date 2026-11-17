@@ -86,10 +86,18 @@
 /* Только экран: в печати страница уже A4, реквизиты должны стоять в две колонки. */
 @media screen and (max-width: 780px) {
   .sheet { width: 100%; min-height: 0; padding: 18px 14px; }
-  .parties { grid-template-columns: 1fr; gap: 6mm; }
+  /* Реквизиты остаются двумя колонками, как на бумажном бланке и в печати. */
+  .parties { grid-template-columns: 1fr 1fr; gap: 6mm; }
+  .pr { grid-template-columns: 26mm minmax(0, 1fr); }
   .doc-line .dv { flex: 1 1 auto; }
   .totals { width: 100%; }
   .signs { padding-top: 16mm; }
+}
+
+/* Только совсем узкий телефон: две колонки реквизитов уже нечитаемы. */
+@media screen and (max-width: 520px) {
+  .parties { grid-template-columns: 1fr; }
+  .pr { grid-template-columns: 31mm minmax(0, 1fr); }
 }
 
 @media print {

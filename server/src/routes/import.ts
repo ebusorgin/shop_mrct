@@ -1649,6 +1649,14 @@ importRouter.post(
           }
         }
       }
+      if (doc.totalSum != null && doc.totalVat != null && doc.totalGross != null) {
+        const diff = Math.abs(doc.totalSum + doc.totalVat - doc.totalGross);
+        if (diff > Math.max(2, Math.abs(doc.totalGross) * 0.002)) {
+          warnings.push(
+            `Нетто ${trimNum(doc.totalSum)} + PDV ${trimNum(doc.totalVat)} ≠ к оплате ${trimNum(doc.totalGross)} — итоги не сходятся, проверьте по фото`
+          );
+        }
+      }
       if (doc.totalVat != null && doc.totalVat > 0) {
         const calcVat = outItems.reduce((s, x) => s + lineVat(x.lineSum ?? 0, x.vatRate ?? 0), 0);
         if (Math.abs(calcVat - doc.totalVat) > 1.5) {

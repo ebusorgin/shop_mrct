@@ -6,6 +6,11 @@
     <span class="badge gray">{{ scopeLabel() }}</span>
     <span class="badge gray">{{ documents().length }} {{ plural(documents().length, 'документ', 'документа', 'документов') }}</span>
     @if (priceMode() === 'cost') { <span class="badge amber">Себестоимость</span> }
+    @if (!storeMode) {
+      <span class="drag-note no-print" [class.saving]="orderSaving()">
+        {{ orderSaving() ? 'Сохраняю порядок…' : (orderNote() || 'Перетащите строки за ⋮⋮ — порядок сохраняется автоматически') }}
+      </span>
+    }
   }
   <div class="spacer"></div>
   @if (!storeMode) {
@@ -113,10 +118,20 @@
           </tr>
         </thead>
         <tbody>
-          @for (line of doc.lines; track $index) {
-            <tr>
+          @for (line of doc.lines; track line.packagingId) {
+            <tr
+              [class.dragging]="dragFrom()?.orderId === doc.orderId && dragFrom()?.index === $index"
+              [class.drop-target]="dragOver()?.orderId === doc.orderId && dragOver()?.index === $index && dragFrom()?.index !== $index"
+              (dragover)="onLineDragOver(doc, $index, $event)"
+              (drop)="onLineDrop(doc, $index, $event)">
               <td class="num">{{ $index + 1 }}</td>
-              <td class="name">{{ line.name }}</td>
+              <td class="name">
+                @if (!storeMode) {
+                  <span class="drag-grip no-print" draggable="true" title="Перетащите строку, чтобы изменить порядок"
+                        (dragstart)="onLineDragStart(doc, $index, $event)" (dragend)="onLineDragEnd()">⋮⋮</span>
+                }
+                {{ line.name }}
+              </td>
               <td class="center">{{ line.unit }}</td>
               <td class="center">{{ qty(line) }}</td>
               <td class="money">{{ money(line.price) }}</td>

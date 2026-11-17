@@ -555,6 +555,10 @@ create unique index if not exists store_orders_doc_no_uniq
   on store_orders (doc_no) where doc_no is not null;
 create sequence if not exists store_order_doc_seq start with 843 minvalue 1;
 
+-- Ручной порядок строк в отчёте-отгрузке: массив id фасовок этого заказа.
+-- Пусто/null — обычный порядок каталога; меняется перетаскиванием в отчёте.
+alter table store_orders add column if not exists line_order int[];
+
 -- Одноразовый бэкфилл: заказы на сегодня и вперёд получают номер в стабильном
 -- порядке (дата доставки, точка, id), чтобы уже существующие отчёты не менялись.
 do $$

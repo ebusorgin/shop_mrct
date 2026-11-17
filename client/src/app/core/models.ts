@@ -323,6 +323,8 @@ export type PackagingInput = Omit<Packaging, 'id'> & { id?: number };
 
 /** Строка отчёта-отгрузки (Otpremnica): количество уже в кг / л / шт. */
 export interface ReportLine {
+  /** id фасовки — ключ для ручного порядка строк. */
+  packagingId: number;
   name: string;
   unit: 'kg' | 'l' | 'kom' | 'porcija';
   qty: number;
@@ -335,6 +337,8 @@ export interface ReportLine {
 
 /** Документ отчёта по заказу одного магазина за дату доставки. */
 export interface ReportDoc {
+  /** id заказа магазина — к нему привязан сохранённый порядок строк. */
+  orderId: number;
   number: string;
   deliveryDate: string;
   savedAt: string;

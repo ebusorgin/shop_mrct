@@ -60,6 +60,18 @@
 .doc-table .center, .doc-table .num { text-align: center; }
 .doc-table .money { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
+/* ручной порядок строк: ручка ⋮⋮, подсветка цели и состояние перетаскивания */
+.drag-note { font-size: 12px; color: var(--muted); }
+.drag-note.saving { color: var(--accent); font-weight: 600; }
+.drag-grip {
+  display: inline-block; margin-right: 4px; vertical-align: 1px;
+  color: #9aa9bb; font-size: 12px; letter-spacing: -1px; cursor: grab; user-select: none;
+}
+.doc-table tr:hover .drag-grip { color: var(--accent); }
+.drag-grip:active { cursor: grabbing; }
+.doc-table tr.dragging td { opacity: .4; }
+.doc-table tr.drop-target td { background: #eaf4ff; }
+
 .totals { width: 104mm; margin: 12mm 0 0 auto; border-collapse: collapse; font-size: 11px; }
 .totals th, .totals td { border: 1px solid #555; padding: 2.2mm 3mm; }
 .totals th { width: 72mm; text-align: left; font-weight: 400; }

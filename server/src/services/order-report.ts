@@ -17,6 +17,8 @@ const SUPPLIER = {
 };
 
 export interface ReportLine {
+  /** id фасовки — стабильный ключ строки для ручного порядка (в печать не выводится). */
+  packagingId: number;
   name: string;
   /** Единица количества в документе: кг/л/шт или порция — как задана база цены в фасовке. */
   unit: 'kg' | 'l' | 'kom' | 'porcija';
@@ -29,6 +31,8 @@ export interface ReportLine {
 }
 
 export interface ReportDoc {
+  /** id заказа магазина — по нему сохраняется ручной порядок строк. */
+  orderId: number;
   number: string;
   deliveryDate: string;
   /** Момент сохранения заказа — время в шапке документа. */
@@ -48,6 +52,7 @@ export type ReportPriceMode = 'sale' | 'cost';
 
 interface ReportRow {
   orderId: number;
+  packagingId: number;
   /** Сквозной номер отчёта из последовательности; null — старый заказ до введения нумерации. */
   docNo: string | null;
   deliveryDate: string;
@@ -106,6 +111,7 @@ export async function orderReport(
   const { rows } = await pool.query<ReportRow>(
     `select o.id as "orderId",
             o.doc_no as "docNo",
+            i.packaging_id as "packagingId",
             to_char(o.delivery_date, 'YYYY-MM-DD') as "deliveryDate",
             o.updated_at as "savedAt",
             s.id as "storeId", s.code as "storeCode", s.name as "storeName",
@@ -122,7 +128,9 @@ export async function orderReport(
        join units u on u.id = tc.portion_unit_id
       where o.delivery_date = $1::date
         and ($2::int is null or o.store_id = $2)
-      order by s.code, tc.name_sr nulls last, tc.name, pk.qty_base, i.qty`,
+      order by s.code,
+               coalesce(array_position(o.line_order, i.packaging_id), 2147483647),
+               tc.name_sr nulls last, tc.name, pk.qty_base, i.qty`,
     [deliveryDate, storeId]
   );
 
@@ -131,6 +139,7 @@ export async function orderReport(
     let doc = docs.get(r.orderId);
     if (!doc) {
       doc = {
+        orderId: r.orderId,
         // С сегодняшнего дня — сквозной номер 2026-843, 2026-844…;
         // у старых заказов без номера остаётся прежний вид год-id.
         number: `${r.deliveryDate.slice(0, 4)}-${r.docNo ?? r.orderId}`,
@@ -157,6 +166,7 @@ export async function orderReport(
     const net = round2(qty * price);
     const vat = round2((net * VAT_RATE) / 100);
     doc.lines.push({
+      packagingId: r.packagingId,
       name: r.cardNameSr || r.cardName,
       unit,
       qty,

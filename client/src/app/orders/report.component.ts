@@ -3,7 +3,7 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { ApiService } from '../core/api.service';
 import { httpErr } from '../core/format';
-import { OrderReport, ReportLine } from '../core/models';
+import { OrderReport, ReportDoc, ReportLine } from '../core/models';
 
 /** Сербское число: точка — тысячи, запятая — дробная часть (45.505,00). */
 function grouped(value: number, decimals: number): string {
@@ -50,6 +50,12 @@ export class OrderReportComponent implements OnInit {
   err = signal('');
   /** Офисный отчёт можно построить по себестоимости вместо продажной цены. */
   priceMode = signal<'sale' | 'cost'>('sale');
+
+  /** Перетаскивание строк: откуда тащим и над какой строкой сейчас курсор. */
+  dragFrom = signal<{ orderId: number; index: number } | null>(null);
+  dragOver = signal<{ orderId: number; index: number } | null>(null);
+  orderSaving = signal(false);
+  orderNote = signal('');
 
   documents = computed(() => this.report()?.documents ?? []);
 
@@ -102,6 +108,91 @@ export class OrderReportComponent implements OnInit {
 
   print(): void {
     window.print();
+  }
+
+  // ── ручной порядок строк ──────────────────────────────────────────────
+  /** Тянем строку за ручку ⋮⋮; изображение перетаскивания — вся строка. */
+  onLineDragStart(doc: ReportDoc, index: number, ev: DragEvent): void {
+    if (this.storeMode) {
+      ev.preventDefault();
+      return;
+    }
+    const dt = ev.dataTransfer;
+    if (dt) {
+      dt.effectAllowed = 'move';
+      dt.setData('text/plain', String(index));
+      const row = (ev.currentTarget as HTMLElement | null)?.closest('tr');
+      // setDragImage требует настоящей drag-сессии; в синтетических событиях молча пропускаем.
+      try {
+        if (row) dt.setDragImage(row, 24, 24);
+      } catch {
+        /* без миниатюры строки перетаскивание всё равно работает */
+      }
+    }
+    this.dragFrom.set({ orderId: doc.orderId, index });
+    this.dragOver.set(null);
+  }
+
+  onLineDragOver(doc: ReportDoc, index: number, ev: DragEvent): void {
+    if (this.storeMode) return;
+    const from = this.dragFrom();
+    if (!from || from.orderId !== doc.orderId) return;
+    ev.preventDefault();
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'move';
+    this.dragOver.set({ orderId: doc.orderId, index });
+  }
+
+  onLineDrop(doc: ReportDoc, index: number, ev: DragEvent): void {
+    if (this.storeMode) return;
+    ev.preventDefault();
+    const from = this.dragFrom();
+    this.dragFrom.set(null);
+    this.dragOver.set(null);
+    if (!from || from.orderId !== doc.orderId || from.index === index) return;
+    this.moveLine(doc, from.index, index);
+  }
+
+  onLineDragEnd(): void {
+    this.dragFrom.set(null);
+    this.dragOver.set(null);
+  }
+
+  /** Переставить строку в локальном документе и сохранить порядок в заказе. */
+  private moveLine(doc: ReportDoc, from: number, to: number): void {
+    const lines = [...doc.lines];
+    if (from < 0 || from >= lines.length || to < 0 || to >= lines.length) return;
+    const [moved] = lines.splice(from, 1);
+    lines.splice(to, 0, moved);
+    this.report.update((r) =>
+      r
+        ? {
+            ...r,
+            documents: r.documents.map((d) => (d.orderId === doc.orderId ? { ...d, lines } : d)),
+          }
+        : r
+    );
+    this.saveLineOrder(doc.orderId, lines);
+  }
+
+  /** Порядок хранится у заказа: обновление одной даты не меняет другие отчёты. */
+  private saveLineOrder(orderId: number, lines: ReportLine[]): void {
+    this.orderSaving.set(true);
+    this.orderNote.set('');
+    this.api
+      .reorderReportLines$(orderId, lines.map((line) => line.packagingId))
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: () => {
+          this.orderSaving.set(false);
+          this.orderNote.set('Порядок сохранён');
+        },
+        error: (e) => {
+          this.orderSaving.set(false);
+          this.orderNote.set(`Не удалось сохранить порядок: ${httpErr(e)}`);
+          // Серверный порядок — источник истины: возвращаем документ как есть.
+          this.load();
+        },
+      });
   }
 
   qty(line: ReportLine): string {

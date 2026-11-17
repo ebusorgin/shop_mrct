@@ -176,6 +176,11 @@ export class ApiService {
     if (priceMode === 'cost') params['price'] = 'cost';
     return this.http.get<M.OrderReport>(`${this.base}/orders/report`, { params });
   }
+  /** Сохранить ручной порядок строк отчёта-отгрузки (офис): id фасовок в новом порядке. */
+  reorderReportLines$(orderId: number, packagingIds: number[]): Observable<{ ok: boolean; packagingIds: number[] }> {
+    return this.http.put<{ ok: boolean; packagingIds: number[] }>(`${this.base}/orders/report/order`, { orderId, packagingIds });
+  }
+
   /** История заказов своего магазина (только магазин). */
   myOrderArchive$(): Observable<M.OrderArchive> {
     return this.http.get<M.OrderArchive>(`${this.base}/store/orders/archive`);

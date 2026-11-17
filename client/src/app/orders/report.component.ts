@@ -112,12 +112,10 @@ export class OrderReportComponent implements OnInit {
     return grouped(value, 2);
   }
 
-  /** «18.11.2026 14:05:09» — дата и время сохранения заказа в шапке документа. */
-  dateTime(iso: string): string {
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return '';
-    const p = (x: number) => String(x).padStart(2, '0');
-    return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  /** Дата в шапке документа — день доставки, без времени. */
+  docDate(iso: string): string {
+    const parts = iso.split('-');
+    return parts.length === 3 ? `${parts[2]}.${parts[1]}.${parts[0]}` : iso;
   }
 
   plural(n: number, one: string, few: string, many: string): string {

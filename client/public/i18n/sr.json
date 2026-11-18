@@ -14,7 +14,7 @@
     "groupOperations": "Operacije",
     "groupStock": "Skladište",
     "groupOther": "Još",
-    "constructor": "Konstruktor jela",
+    "constructor": "Mapa proizvodnje",
     "stock": "Skladište",
     "semis": "Poluprodukti",
     "cards": "Tehničke kartice",
@@ -185,7 +185,7 @@
     "category": "Kategorija"
   },
   "constructor": {
-    "title": "Konstruktor jela",
+    "title": "Mapa proizvodnje",
     "search": "Pretraga...",
     "save": "Sačuvaj recept",
     "ingredients": "Sastojci"

@@ -114,6 +114,25 @@ export class ApiService {
     });
   }
 
+  // ---- production map (единый граф производства) ----
+  productionMap$(): Observable<M.ProductionMap> {
+    return this.http.get<M.ProductionMap>(`${this.base}/production-map`);
+  }
+  saveProductionMap(body: unknown): Observable<{ ok: boolean }> {
+    return this.http.put<{ ok: boolean }>(`${this.base}/production-map`, body);
+  }
+  /** Выпуск партии по операции: списание сырья по составу с потерями. */
+  produceMapBatch$(opId: number, qty?: number): Observable<M.MapProduceResult> {
+    return this.http.post<M.MapProduceResult>(`${this.base}/production-map/ops/${opId}/produce`, { qty: qty ?? null });
+  }
+  /** Отгрузка готового: списание сырья «в обратную сторону». */
+  shipMapOutput$(nodeId: number, qty?: number): Observable<M.MapShipResult> {
+    return this.http.post<M.MapShipResult>(`${this.base}/production-map/nodes/${nodeId}/ship`, { qty: qty ?? null });
+  }
+  reverseMapBatch$(batchId: number): Observable<{ ok: boolean }> {
+    return this.http.post<{ ok: boolean }>(`${this.base}/production-map/batches/${batchId}/reverse`, {});
+  }
+
   // ---- dashboard ----
   /** Панель и список сроков годности (expiryLimit — сколько строк nearExpiry вернуть). */
   dashboard$(params: Record<string, string> = {}): Observable<M.Dashboard> {
@@ -170,15 +189,43 @@ export class ApiService {
     return this.http.get<M.OrderArchive>(`${this.base}/orders/archive`);
   }
   /** Отчёт-отгрузка за дату доставки; storeId не указан — все магазины. priceMode=cost — по себестоимости. */
-  orderReport$(date: string, storeId?: number, priceMode: 'sale' | 'cost' = 'sale'): Observable<M.OrderReport> {
+  orderReport$(
+    date: string,
+    storeId?: number,
+    priceMode: 'sale' | 'cost' = 'sale',
+    vatRate = 20
+  ): Observable<M.OrderReport> {
     const params: Record<string, string> = { date };
     if (storeId !== undefined) params['storeId'] = String(storeId);
     if (priceMode === 'cost') params['price'] = 'cost';
+    if (vatRate !== 20) params['vat'] = String(vatRate);
     return this.http.get<M.OrderReport>(`${this.base}/orders/report`, { params });
   }
   /** Сохранить ручной порядок строк отчёта-отгрузки (офис): id фасовок в новом порядке. */
   reorderReportLines$(orderId: number, packagingIds: number[]): Observable<{ ok: boolean; packagingIds: number[] }> {
     return this.http.put<{ ok: boolean; packagingIds: number[] }>(`${this.base}/orders/report/order`, { orderId, packagingIds });
+  }
+
+  // ---- ручное списание склада по доставке (офис) ----
+  /** Статус списаний на дату доставки. */
+  deliveryWriteoffStatus$(date: string): Observable<{ date: string; records: M.DeliveryWriteoffRecord[] }> {
+    return this.http.get<{ date: string; records: M.DeliveryWriteoffRecord[] }>(
+      `${this.base}/orders/delivery-writeoff/status`,
+      { params: { date } }
+    );
+  }
+  /** Предпросмотр: какое сырьё уйдёт со склада по заказам даты (storeId — только один магазин). */
+  deliveryWriteoffPreview$(date: string, storeId?: number | null): Observable<M.DeliveryWriteoffPreview> {
+    const params: Record<string, string> = { date };
+    if (storeId != null) params['storeId'] = String(storeId);
+    return this.http.get<M.DeliveryWriteoffPreview>(`${this.base}/orders/delivery-writeoff/preview`, { params });
+  }
+  /** Провести ручное списание склада по доставке. */
+  deliveryWriteoff$(date: string, storeId?: number | null): Observable<M.DeliveryWriteoffResult> {
+    return this.http.post<M.DeliveryWriteoffResult>(`${this.base}/orders/delivery-writeoff`, {
+      date,
+      storeId: storeId ?? null,
+    });
   }
 
   /** История заказов своего магазина (только магазин). */

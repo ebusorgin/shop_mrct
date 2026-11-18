@@ -144,7 +144,7 @@ import { fmtCost, fmtDateTime, fmtMoney, fmtQty, httpErr, trim } from '../core/f
               <tr>
                 <td class="nw mono" data-l="дата">{{ fmtWhen(m.created_at) }}</td>
                 <td>{{ m.productName }}</td>
-                <td class="num" data-l="изменение">{{ m.qty > 0 ? '+' : '' }}{{ fmtQty(m.qty, m.unitCode) }}</td>
+                <td class="num" data-l="изменение">{{ m.qty > 0 ? '+' : '' }}{{ fmtQty(m.qty, m.unitCode, true) }}</td>
                 <td data-l="тип">
                   @if (m.type === 'receipt') { <span class="badge green">приход</span> }
                   @if (m.type === 'writeoff') { <span class="badge red">расход</span> }

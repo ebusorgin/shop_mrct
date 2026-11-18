@@ -9,7 +9,12 @@ import { pool } from '../db';
 import { ApiError, wrap } from '../http';
 import { audit } from '../services/audit';
 import { orderArchive } from '../services/order-archive';
-import { orderReport } from '../services/order-report';
+import { orderReport, VAT_RATE } from '../services/order-report';
+import {
+  deliveryWriteoffPreview,
+  deliveryWriteoffStatus,
+  postDeliveryWriteoff,
+} from '../services/delivery-writeoff';
 
 export const ordersRouter = Router();
 
@@ -38,7 +43,14 @@ ordersRouter.get(
     if (rawPrice !== undefined && rawPrice !== 'sale' && rawPrice !== 'cost') {
       throw new ApiError(400, 'price: ожидается sale или cost');
     }
-    res.json(await orderReport(date, storeId, rawPrice === 'cost' ? 'cost' : 'sale'));
+    const rawVat = req.query.vat;
+    let vatRate = VAT_RATE;
+    if (rawVat !== undefined && rawVat !== '') {
+      const n = Number(rawVat);
+      if (!Number.isFinite(n) || n < 0 || n > 100) throw new ApiError(400, 'vat: ожидается число 0…100');
+      vatRate = n;
+    }
+    res.json(await orderReport(date, storeId, rawPrice === 'cost' ? 'cost' : 'sale', vatRate));
   })
 );
 
@@ -90,5 +102,52 @@ ordersRouter.put(
       details: { positions: final.length },
     });
     res.json({ ok: true, packagingIds: final });
+  })
+);
+
+// ---------- Ручное списание склада по доставке ----------
+// Пока только по кнопке (автоматику не включаем): офис открывает дату доставки,
+// видит предпросмотр сырья по техкартам и подтверждает списание.
+
+function writeoffDate(value: unknown): string {
+  const date = typeof value === 'string' ? value : '';
+  return date;
+}
+
+function writeoffStore(value: unknown): number | null {
+  if (value === undefined || value === null || value === '') return null;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n <= 0) throw new ApiError(400, 'storeId: требуется целое положительное число');
+  return n;
+}
+
+/** Списания на дату: бейдж «уже списано» в архиве. */
+ordersRouter.get(
+  '/delivery-writeoff/status',
+  wrap(async (req, res) => {
+    res.json(await deliveryWriteoffStatus(writeoffDate(req.query.date)));
+  })
+);
+
+/** Что уйдёт со склада по заказам даты: строки сырья и стоимость по средней. */
+ordersRouter.get(
+  '/delivery-writeoff/preview',
+  wrap(async (req, res) => {
+    res.json(await deliveryWriteoffPreview(writeoffDate(req.query.date), writeoffStore(req.query.storeId)));
+  })
+);
+
+/** Подтверждение: движения writeoff по средней себестоимости. Повтор на дату/магазин запрещён. */
+ordersRouter.post(
+  '/delivery-writeoff',
+  wrap(async (req, res) => {
+    const raw = (req.body ?? {}) as Record<string, unknown>;
+    const result = await postDeliveryWriteoff(
+      writeoffDate(raw.date),
+      writeoffStore(raw.storeId),
+      req.user,
+      typeof raw.note === 'string' ? raw.note.slice(0, 500) : ''
+    );
+    res.status(201).json(result);
   })
 );

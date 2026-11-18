@@ -3,8 +3,9 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { ApiService } from '../core/api.service';
-import { fmtDateTime, fmtQty, httpErr } from '../core/format';
-import { ArchiveOrder, ArchiveOrderItem, OrderArchive, UpcomingDelivery } from '../core/models';
+import { fmtDateTime, fmtQty, fmtReportQty, httpErr } from '../core/format';
+import { ArchiveOrder, ArchiveOrderItem, DeliveryWriteoffRecord, OrderArchive, UpcomingDelivery } from '../core/models';
+import { DeliveryWriteoffComponent } from './delivery-writeoff.component';
 import { packagingLabel } from '../core/packaging-label';
 import { LangService } from '../core/lang.service';
 
@@ -36,7 +37,7 @@ interface CalendarDay {
 @Component({
   selector: 'app-orders',
   standalone: true,
-  imports: [FormsModule, RouterLink],
+  imports: [FormsModule, RouterLink, DeliveryWriteoffComponent],
   templateUrl: './orders.component.html',
   styleUrl: './orders.component.css',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -50,6 +51,13 @@ export class OrdersComponent implements OnInit {
   /** true — история своего магазина, false — офисный архив всех магазинов. */
   readonly storeMode = this.route.snapshot.data['storeMode'] === true;
 
+  /** Дата из ссылки ?date=YYYY-MM-DD: архив открывается на ней, если она есть в доставках. */
+  private readonly linkedDate = (() => {
+    const raw = this.route.snapshot.queryParamMap.get('date') ?? '';
+    return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null;
+  })();
+  private linkedDateApplied = false;
+
   archive = signal<OrderArchive | null>(null);
   loading = signal(false);
   err = signal('');
@@ -62,6 +70,7 @@ export class OrdersComponent implements OnInit {
   readonly weekdays = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 
   fmtQty = fmtQty;
+  fmtReportQty = fmtReportQty;
   fmtDateTime = fmtDateTime;
 
   groups = computed<DateGroup[]>(() => {
@@ -199,12 +208,17 @@ export class OrdersComponent implements OnInit {
           this.archive.set(archive);
           this.loading.set(false);
           const current = this.selectedDate();
-          if (!current || !this.deliveryDates().has(current)) {
+          if (!this.linkedDateApplied && this.linkedDate && this.deliveryDates().has(this.linkedDate)) {
+            this.linkedDateApplied = true;
+            this.selectedDate.set(this.linkedDate);
+          } else if (!current || !this.deliveryDates().has(current)) {
             const nextOpen = archive.upcoming.find((item) => item.open) ?? archive.upcoming[0];
             this.selectedDate.set(archive.orders[0]?.deliveryDate ?? nextOpen?.date ?? null);
           }
+          this.linkedDateApplied = true;
           const selected = this.selectedDate();
           if (selected) this.viewMonth.set(selected.slice(0, 7));
+          this.loadWriteoffStatus(selected);
         },
         error: (e) => {
           this.loading.set(false);
@@ -216,6 +230,44 @@ export class OrdersComponent implements OnInit {
   selectDate(date: string): void {
     this.selectedDate.set(date);
     this.viewMonth.set(date.slice(0, 7));
+    this.loadWriteoffStatus(date);
+  }
+
+  // ---------- ручное списание склада по доставке ----------
+  woOpen = signal(false);
+  woRecords = signal<DeliveryWriteoffRecord[]>([]);
+
+  /** Статус списаний даты — бейдж в шапке даты (только офис). */
+  loadWriteoffStatus(date: string | null): void {
+    if (this.storeMode || !date) {
+      this.woRecords.set([]);
+      return;
+    }
+    this.api.deliveryWriteoffStatus$(date).subscribe({
+      next: (r) => this.woRecords.set(r.records ?? []),
+      error: () => this.woRecords.set([]),
+    });
+  }
+
+  onWriteoffWritten(): void {
+    this.loadWriteoffStatus(this.selectedDate());
+  }
+
+  /** Короткая подпись бейджа: когда и кем списано. */
+  woWhen(): string {
+    const r = this.woRecords()[0];
+    if (!r) return '';
+    const d = new Date(r.at);
+    const when = Number.isNaN(d.getTime())
+      ? r.at
+      : `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    return r.storeId == null ? `все магазины, ${when}` : `${r.storeName ?? 'магазин'}, ${when}`;
+  }
+
+  woTitle(): string {
+    return this.woRecords()
+      .map((r) => `${r.storeName || 'все магазины'} · ${r.login ?? ''} · ${r.positions} поз.`)
+      .join('\n');
   }
 
   /** Стрелки календаря: только месяцы, в которых были доставки. */
@@ -252,6 +304,17 @@ export class OrdersComponent implements OnInit {
     const cardName =
       (lang === 'en' && item.cardNameEn) || (lang === 'sr' && item.cardNameSr) || item.cardName;
     return packagingLabel(cardName, item.packagingName || fmtQty(item.qtyBase, item.unitCode));
+  }
+
+  /**
+   * Вторая строка количества — там, где основная строка уже показывает число:
+   * для порций это вес партии, для кг/л и штук — число упаковок в заказе.
+   */
+  itemSub(item: ArchiveOrderItem): string {
+    if (item.reportUnit === 'porcija') {
+      return fmtQty(item.qty * item.qtyBase, item.unitCode);
+    }
+    return `${item.qty} уп.`;
   }
 
   plural(n: number, one: string, few: string, many: string): string {

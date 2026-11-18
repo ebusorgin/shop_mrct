@@ -14,7 +14,7 @@
     "groupOperations": "Операции",
     "groupStock": "Склад",
     "groupOther": "Ещё",
-    "constructor": "Конструктор блюд",
+    "constructor": "Карта производства",
     "stock": "Склад",
     "semis": "Полуфабрикаты",
     "cards": "Техкарты",
@@ -185,7 +185,7 @@
     "category": "Категория"
   },
   "constructor": {
-    "title": "Конструктор блюд",
+    "title": "Карта производства",
     "search": "Поиск...",
     "save": "Сохранить карту",
     "ingredients": "Ингредиенты"

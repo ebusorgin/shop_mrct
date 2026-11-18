@@ -13,12 +13,11 @@
     }
   }
   <div class="spacer"></div>
-  @if (!storeMode) {
-    <label class="cost-toggle" title="Подставить в документ себестоимость фасовок из техкарт вместо продажной цены. Документ строится заново.">
-      <input type="checkbox" [checked]="priceMode() === 'cost'" [disabled]="loading()"
-             (change)="setPriceMode($any($event.target).checked ? 'cost' : 'sale')" />
-      по себестоимости
-    </label>
+  @if (!storeMode && date) {
+    <button type="button" class="btn" (click)="woOpen.set(true)" [disabled]="loading()"
+            title="Списать сырьё по техкартам этого отчёта — вручную, с предпросмотром остатков и подтверждением">
+      📦 Списать со склада
+    </button>
   }
   <button type="button" class="btn primary" (click)="print()" [disabled]="loading() || !documents().length">
     <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
@@ -29,6 +28,74 @@
     Печать / PDF
   </button>
 </div>
+
+@if (!storeMode) {
+  <details class="report-settings no-print">
+    <summary class="rs-head">
+      <span class="rs-ico">⚙️</span>
+      <b>Настройки отчёта</b>
+      <span class="muted">цены, налог, нумерация и сводка</span>
+    </summary>
+    <div class="rs-grid">
+      <div class="rs-field">
+        <span class="rs-label">Цены</span>
+        <div class="rs-seg">
+          <button type="button" [class.on]="priceMode() === 'sale'" [disabled]="loading()" (click)="setPriceMode('sale')">продажные</button>
+          <button type="button" [class.on]="priceMode() === 'cost'" [disabled]="loading()" (click)="setPriceMode('cost')">по себестоимости</button>
+        </div>
+        <small class="muted">Продажная цена фасовки или себестоимость из техкарты.</small>
+      </div>
+
+      <div class="rs-field">
+        <span class="rs-label">Ставка налога</span>
+        <div class="rs-line">
+          <input type="number" min="0" max="100" step="0.5" [(ngModel)]="vatInput" (keydown.enter)="applyVat(vatInput)" aria-label="Ставка налога, %" />
+          <span class="rs-suffix">%</span>
+          <button type="button" class="btn sm" [disabled]="loading()" (click)="applyVat(vatInput)">Применить</button>
+        </div>
+        <small class="muted">Для всех строк и итогов · сейчас {{ rateLabel(vatRate()) }} %</small>
+      </div>
+
+      <div class="rs-field">
+        <span class="rs-label">Номера на дату</span>
+        <span class="rs-range">
+          @if (firstIndex() != null && lastIndex() != null) {
+            {{ docYear }}-{{ firstIndex() }} … {{ docYear }}-{{ lastIndex() }}
+          } @else {
+            —
+          }
+        </span>
+        <small class="muted">Номер назначается автоматически при сохранении заказа.</small>
+      </div>
+    </div>
+    @if (settingsErr()) { <div class="rs-msg bad" role="alert">{{ settingsErr() }}</div> }
+
+    @if (!loading() && !err() && documents().length) {
+      <section class="report-summary" aria-label="Сводка по отчёту">
+        <div class="sum-tile weight">
+          <span class="sum-label">Общий вес</span>
+          <b>{{ weight(totalWeight()) }}</b>
+          <small>{{ documents().length }} {{ plural(documents().length, 'документ', 'документа', 'документов') }}</small>
+        </div>
+        <div class="sum-tile">
+          <span class="sum-label">Нетто без PDV</span>
+          <b>{{ money(totalNet()) }}</b>
+          <small>RSD</small>
+        </div>
+        <div class="sum-tile tax">
+          <span class="sum-label">PDV {{ rateLabel(docVatRate()) }} %</span>
+          <b>{{ money(totalVat()) }}</b>
+          <small>RSD</small>
+        </div>
+        <div class="sum-tile grand">
+          <span class="sum-label">К оплате</span>
+          <b>{{ money(totalGross()) }}</b>
+          <small>RSD</small>
+        </div>
+      </section>
+    }
+  </details>
+}
 
 @if (loading()) {
   <section class="panel no-print"><p class="muted state" role="status">Готовим отчёт…</p></section>
@@ -149,7 +216,7 @@
           <td>{{ money(doc.net) }}</td>
         </tr>
         <tr>
-          <th>Iznos PDV-a:</th>
+          <th>Iznos PDV-a ({{ rateLabel(doc.vatRate) }} %):</th>
           <td>{{ money(doc.vat) }}</td>
         </tr>
         <tr class="grand">
@@ -164,4 +231,13 @@
       </footer>
     </article>
   }
+}
+
+@if (woOpen() && date) {
+  <app-delivery-writeoff
+    [date]="date"
+    [storeId]="storeId ?? null"
+    [scopeLabel]="storeId === undefined ? 'все магазины' : 'один магазин'"
+    (closed)="woOpen.set(false)"
+  />
 }

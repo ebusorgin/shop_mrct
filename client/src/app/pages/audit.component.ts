@@ -260,6 +260,8 @@ export class AuditComponent implements OnInit {
     waybill: 'Накладная',
     semi: 'Полуфабрикат',
     tech_card: 'Техкарта',
+    dish: 'Изделие',
+    production_map: 'Карта производства',
     batch: 'Партия',
     store: 'Точка',
     store_order: 'Заказ магазина',

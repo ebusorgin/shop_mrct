@@ -71,14 +71,15 @@ function readCookie(req: Request, name: string): string | null {
   return null;
 }
 
-const cookieAttrs = `Path=/; HttpOnly; SameSite=Lax; Max-Age=${config.sessionDays * 24 * 60 * 60}`;
+const cookieSecure = (process.env.COOKIE_SECURE ?? 'false') === 'true' ? '; Secure' : '';
+const cookieAttrs = `Path=/; HttpOnly; SameSite=Lax; Max-Age=${config.sessionDays * 24 * 60 * 60}${cookieSecure}`;
 
 export function setSessionCookie(res: Response, token: string): void {
   res.append('Set-Cookie', `${SESSION_COOKIE}=${encodeURIComponent(token)}; ${cookieAttrs}`);
 }
 
 export function clearSessionCookie(res: Response): void {
-  res.append('Set-Cookie', `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
+  res.append('Set-Cookie', `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${cookieSecure}`);
 }
 
 // ---------- сессии ----------

@@ -33,6 +33,8 @@ export type AuditEntity =
   | 'waybill'
   | 'semi'
   | 'tech_card'
+  | 'dish'
+  | 'production_map'
   | 'batch'
   | 'store'
   | 'store_order'

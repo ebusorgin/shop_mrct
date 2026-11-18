@@ -19,20 +19,28 @@ import { ToastComponent } from './shared/toast.component';
           <span class="tb-logo"><span class="wm-mix">mix</span> <span class="wm-markt">markt</span></span>
         </header>
         @if (menu()) { <div class="scrim" (click)="menu.set(false)"></div> }
-        <nav class="sidebar" [class.open]="menu()">
-          <div class="logo"><span class="wm-mix">mix</span> <span class="wm-markt">markt</span><small>CRM учёта продукции</small></div>
+        <nav class="sidebar" [class.open]="menu()" [class.collapsed]="collapsed()">
+          <div class="side-head">
+            <div class="logo"><span class="wm-mix">mix</span> <span class="wm-markt">markt</span><small>CRM учёта продукции</small></div>
+            <button type="button" class="side-toggle" (click)="toggleSidebar()"
+                    [attr.aria-label]="collapsed() ? 'Развернуть меню' : 'Свернуть меню'"
+                    [title]="collapsed() ? 'Развернуть меню' : 'Свернуть меню'">
+              {{ collapsed() ? '»' : '«' }}
+            </button>
+          </div>
           <button type="button" class="side-close" aria-label="Закрыть меню" (click)="menu.set(false)">✕</button>
           @if (auth.isStoreUser()) {
             <!-- магазинный сотрудник видит только свою точку и заказ продукции -->
-            <a href="#" class="nav-link" [class.active]="isActive('store') && !isActive('store/orders') && !isActive('store/history')" (click)="go($event, 'store')">🏪 <span>{{ 'nav.myStore' | translate }}</span></a>
-            <a href="#" class="nav-link" [class.active]="isActive('store/orders')" (click)="go($event, 'store/orders')">🧾 <span>{{ 'nav.storeOrders' | translate }}</span></a>
-            <a href="#" class="nav-link" [class.active]="isActive('store/history')" (click)="go($event, 'store/history')">📜 <span>{{ 'nav.storeHistory' | translate }}</span></a>
+            <a href="#" class="nav-link" [class.active]="isActive('store') && !isActive('store/orders') && !isActive('store/history')" [title]="'nav.myStore' | translate" (click)="go($event, 'store')">🏪 <span>{{ 'nav.myStore' | translate }}</span></a>
+            <a href="#" class="nav-link" [class.active]="isActive('store/orders')" [title]="'nav.storeOrders' | translate" (click)="go($event, 'store/orders')">🧾 <span>{{ 'nav.storeOrders' | translate }}</span></a>
+            <a href="#" class="nav-link" [class.active]="isActive('store/history')" [title]="'nav.storeHistory' | translate" (click)="go($event, 'store/history')">📜 <span>{{ 'nav.storeHistory' | translate }}</span></a>
           } @else {
             @for (g of navGroups; track g.titleKey) {
               @if (g.titleKey) { <div class="side-group">{{ g.titleKey | translate }}</div> }
               @for (r of g.items; track r.labelKey) {
                 @if (!r.admin || auth.isAdmin()) {
                   <a href="#" class="nav-link" [class.active]="isActive(r.path, r.qp, r.also)"
+                     [title]="r.labelKey | translate"
                      (click)="go($event, r.path, r.qp)">{{ r.icon }} <span>{{ r.labelKey | translate }}</span></a>
                 }
               }
@@ -41,7 +49,7 @@ import { ToastComponent } from './shared/toast.component';
           <div class="side-foot">
             <div class="side-user">{{ u.fullName || u.login }}{{ u.storeName ? ' · ' + u.storeName : (u.isAdmin ? ' · админ' : '') }}</div>
             <div class="side-actions">
-              <button type="button" class="side-btn" (click)="logout()">{{ 'nav.logout' | translate }}</button>
+              <button type="button" class="side-btn" [title]="'nav.logout' | translate" (click)="logout()">{{ 'nav.logout' | translate }}</button>
             </div>
             <!-- Переключатель языка -->
             <div class="lang-switcher">
@@ -94,6 +102,27 @@ export class AppComponent {
   menu = signal(false);
   currentUrl = signal(this.router.url);
 
+  /** Свёрнутое левое меню: остаются только иконки, состояние помним в localStorage. */
+  collapsed = signal(this.readCollapsed());
+
+  private readCollapsed(): boolean {
+    try {
+      return localStorage.getItem('nav.collapsed') === '1';
+    } catch {
+      return false;
+    }
+  }
+
+  toggleSidebar(): void {
+    const next = !this.collapsed();
+    this.collapsed.set(next);
+    try {
+      localStorage.setItem('nav.collapsed', next ? '1' : '0');
+    } catch {
+      /* приватный режим — просто живём без запоминания */
+    }
+  }
+
   navGroups: { titleKey: string; items: { path: string; qp?: Record<string, string>; icon: string; labelKey: string; admin?: boolean; also?: string[] }[] }[] = [
     { titleKey: '', items: [{ path: '', icon: '📊', labelKey: 'nav.dashboard' }] },
     {
@@ -106,7 +135,7 @@ export class AppComponent {
         { path: 'stock', icon: '🏬', labelKey: 'nav.stock' },
         { path: 'semis', icon: '🔪', labelKey: 'nav.semis' },
         { path: 'cards', icon: '📐', labelKey: 'nav.cards' },
-        { path: 'constructor', icon: '🍲', labelKey: 'nav.constructor' },
+        { path: 'map', icon: '🍲', labelKey: 'nav.constructor' },
         { path: 'orders', icon: '🧾', labelKey: 'nav.orders' },
       ],
     },

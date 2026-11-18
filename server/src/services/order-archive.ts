@@ -6,11 +6,29 @@
  */
 import { pool } from '../db';
 import { deliveryWindows } from './order-window';
+import { reportQuantity, type Dimension, type PriceBasis, type ReportUnit } from './order-report';
 
 /** Будущая дата доставки: open — приём заказа ещё не закрыт. */
 export interface UpcomingDelivery {
   date: string;
   open: boolean;
+}
+
+/** Позиция заказа с количеством в единицах отчёта-отгрузки. */
+interface ArchiveItem {
+  packagingId: number;
+  qty: number;
+  qtyBase: number;
+  priceBasis: PriceBasis;
+  dimension: Dimension;
+  /** Количество и единица ровно как в строке Otpremnica: кг/л/шт/порц. */
+  reportQty: number;
+  reportUnit: ReportUnit;
+}
+
+interface ArchiveOrderRow {
+  items: ArchiveItem[];
+  [key: string]: unknown;
 }
 
 export interface OrderArchivePayload {
@@ -21,7 +39,7 @@ export interface OrderArchivePayload {
 
 export async function orderArchive(storeId: number | null): Promise<OrderArchivePayload> {
   const [{ rows: orders }, windows] = await Promise.all([
-    pool.query(
+    pool.query<ArchiveOrderRow>(
       `select o.id,
               to_char(o.delivery_date, 'YYYY-MM-DD') as "deliveryDate",
               o.store_id as "storeId", s.code as "storeCode", s.name as "storeName",
@@ -38,7 +56,9 @@ export async function orderArchive(storeId: number | null): Promise<OrderArchive
                          'cardNameSr', tc.name_sr,
                          'packagingName', pk.name,
                          'qtyBase', pk.qty_base::float8,
-                         'unitCode', u.code
+                         'unitCode', u.code,
+                         'priceBasis', pk.price_basis,
+                         'dimension', u.dimension
                        ) order by tc.name, pk.qty_base)
                        filter (where i.packaging_id is not null), '[]') as items
          from store_orders o
@@ -56,7 +76,14 @@ export async function orderArchive(storeId: number | null): Promise<OrderArchive
   ]);
   return {
     today: windows.today,
-    orders,
+    // Единицы показа — те же, что в документе: база цены фасовки.
+    orders: orders.map((order) => ({
+      ...order,
+      items: order.items.map((item) => {
+        const { unit, qty } = reportQuantity(item.qty, item.qtyBase, item.priceBasis, item.dimension);
+        return { ...item, reportQty: qty, reportUnit: unit };
+      }),
+    })),
     upcoming: windows.windows.map(({ date, open }) => ({ date, open })),
   };
 }

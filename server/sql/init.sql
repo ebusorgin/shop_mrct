@@ -11,6 +11,13 @@
 create extension if not exists pgcrypto;
 create extension if not exists pg_trgm;
 
+-- Реестр одноразовых изменений данных. Схема применяется при каждом старте,
+-- но бэкфиллы не должны повторяться и не должны зависеть от текущей даты.
+create table if not exists app_migrations (
+  name       text primary key,
+  applied_at timestamptz not null default now()
+);
+
 -- ---------- Очистка от удалённых модулей ----------
 
 drop table if exists schema_migrations;
@@ -455,7 +462,20 @@ create index if not exists sessions_user_idx             on sessions (user_id);
 create unique index if not exists tech_cards_plu_uniq    on tech_cards (plu) where plu is not null and plu <> '';
 create unique index if not exists users_login_lower_uidx on users (lower(login));
 create index if not exists users_store_idx               on users (store_id);
-create unique index if not exists waybills_number_active_uniq on waybills (btrim(number)) where status <> 'reversed';
+-- Уникальность номера действующей накладной. На живой БД с историческими дублями
+-- обычный create unique index уронил бы старт CRM, поэтому индекс создаётся
+-- в защищённом блоке: дубли остаются, в лог пишется предупреждение.
+do $$
+begin
+  if not exists (select 1 from pg_class where relname = 'waybills_number_active_uniq') then
+    begin
+      execute 'create unique index waybills_number_active_uniq
+                 on waybills (btrim(number)) where status <> ''reversed''';
+    exception when unique_violation then
+      raise warning 'waybills_number_active_uniq не создан: в накладных есть дубли номеров. Устраните дубли и перезапустите сервер.';
+    end;
+  end if;
+end $$;
 create index if not exists waybills_status_idx           on waybills (status);
 
 -- ---------- Справочные данные ----------
@@ -564,6 +584,10 @@ alter table store_orders add column if not exists line_order int[];
 do $$
 declare r record;
 begin
+  if exists (select 1 from app_migrations where name = 'backfill_doc_no_843') then
+    return;
+  end if;
+
   for r in
     select id
       from store_orders
@@ -572,6 +596,9 @@ begin
   loop
     update store_orders set doc_no = nextval('store_order_doc_seq') where id = r.id;
   end loop;
+
+  insert into app_migrations (name) values ('backfill_doc_no_843')
+  on conflict (name) do nothing;
 end $$;
 
 create table if not exists store_order_items (
@@ -580,6 +607,25 @@ create table if not exists store_order_items (
   qty          int not null check (qty > 0 and qty <= 999),
   primary key (order_id, packaging_id)
 );
+
+-- ---------- Списание склада по доставке (вручную, кнопкой) ----------
+-- Каждая запись — факт списания сырья по техкартам всех заказов даты доставки.
+-- store_id = null — списание по всем магазинам этой даты; иначе — по одному магазину.
+create table if not exists store_delivery_writeoffs (
+  id            bigserial primary key,
+  delivery_date date not null,
+  store_id      int references stores(id) on delete cascade,
+  cost_total    numeric not null default 0,
+  positions     int not null default 0,
+  note          text not null default '',
+  created_at    timestamptz not null default now(),
+  created_by    int,
+  created_login text
+);
+create unique index if not exists store_delivery_writeoffs_scope_uniq
+  on store_delivery_writeoffs (delivery_date, (coalesce(store_id, 0)));
+create index if not exists store_delivery_writeoffs_date_idx
+  on store_delivery_writeoffs (delivery_date desc);
 
 -- ---------- Поставщики и документы поставок
 -- Накладные оцифрованы с фотографий и хранятся как документы поставщиков.
@@ -806,3 +852,104 @@ update supplier_invoices i
  where i.supplier_id = s.id
    and i.number = v.number
    and i.source_file is distinct from v.file;
+
+-- ---------- Карта производства (единый глобальный граф) ----------
+-- Один общий стол: сырьё -> операции -> состояния -> блюда. Состояние и блюдо могут
+-- использоваться несколькими операциями; количество входа задаётся на связи, а не на узле.
+
+create table if not exists prod_nodes (
+  id          serial primary key,
+  kind        text not null check (kind in ('product','state','output')),
+  ref_id      int,
+  name        text not null default '',
+  unit_id     int not null,
+  x           numeric not null default 0,
+  y           numeric not null default 0,
+  position    int not null default 0,
+  portion_qty numeric not null default 0 check (portion_qty >= 0),
+  note        text not null default ''
+);
+create index if not exists prod_nodes_kind_idx on prod_nodes (kind);
+
+create table if not exists prod_ops (
+  id             serial primary key,
+  name           text not null default '',
+  yield_pct      numeric check (yield_pct is null or (yield_pct > 0 and yield_pct <= 100)),
+  labor_hours    numeric not null default 0 check (labor_hours >= 0),
+  output_node_id int not null,
+  note           text not null default '',
+  x              numeric not null default 0,
+  y              numeric not null default 0,
+  position       int not null default 0
+);
+create index if not exists prod_ops_output_idx on prod_ops (output_node_id);
+-- план выхода операции: сколько нужно получить; выход считается как сумма ингредиентов
+alter table prod_ops add column if not exists plan_qty numeric check (plan_qty is null or plan_qty >= 0);
+alter table prod_ops add column if not exists plan_unit_id int;
+
+create table if not exists prod_op_inputs (
+  id      serial primary key,
+  op_id   int not null,
+  node_id int not null,
+  qty     numeric not null check (qty > 0),
+  in_mass boolean not null default true,
+  loss_pct numeric check (loss_pct is null or (loss_pct >= 0 and loss_pct <= 100))
+);
+-- потери на конкретной связи: уварка, очистки и т. п. (в процентах от количества)
+alter table prod_op_inputs add column if not exists loss_pct numeric check (loss_pct is null or (loss_pct >= 0 and loss_pct <= 100));
+create index if not exists prod_op_inputs_op_idx on prod_op_inputs (op_id);
+create unique index if not exists prod_op_inputs_uniq on prod_op_inputs (op_id, node_id);
+
+-- карточка блюда в новой карте: названия на трёх языках, базовая цена и категория
+alter table prod_nodes add column if not exists name_en text not null default '';
+alter table prod_nodes add column if not exists name_sr text not null default '';
+alter table prod_nodes add column if not exists catalog_id int;
+alter table prod_nodes add column if not exists price numeric not null default 0;
+
+-- Фасовки блюда в новой карте: витрина/продажа и цена по каждой упаковке.
+create table if not exists prod_packagings (
+  id          serial primary key,
+  node_id     int not null,
+  name        text not null default '',
+  qty_base    numeric not null check (qty_base > 0),
+  min_order   int not null default 1 check (min_order > 0),
+  is_default  boolean not null default false,
+  price       numeric not null default 0,
+  price_basis text not null default 'unit' check (price_basis in ('unit','portion','piece')),
+  cost        numeric not null default 0,
+  available   boolean not null default true,
+  position    int not null default 0
+);
+create index if not exists prod_packagings_node_idx on prod_packagings (node_id);
+create unique index if not exists prod_packagings_default_uniq on prod_packagings (node_id) where is_default;
+
+-- ---------- Операционный контур карты производства: выпуск партий ----------
+create table if not exists map_batches (
+  id            serial primary key,
+  op_name       text not null default '',
+  output_name   text not null default '',
+  qty           numeric not null check (qty > 0),
+  unit_id       int,
+  cost_total    numeric not null default 0,
+  status        text not null default 'posted' check (status in ('posted','reversed')),
+  note          text not null default '',
+  created_at    timestamptz not null default now(),
+  created_by    int,
+  created_login text
+);
+create table if not exists map_batch_items (
+  id         serial primary key,
+  batch_id   int not null,
+  product_id int not null,
+  qty        numeric not null check (qty > 0),
+  unit_cost  numeric not null default 0
+);
+create index if not exists map_batch_items_batch_idx on map_batch_items (batch_id);
+
+-- Версия карты производства: защита от одновременного редактирования
+create table if not exists map_meta (
+  id         int primary key default 1,
+  version    int not null default 1,
+  updated_at timestamptz not null default now()
+);
+insert into map_meta (id, version) values (1, 1) on conflict (id) do nothing;

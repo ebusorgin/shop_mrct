@@ -321,18 +321,23 @@ export interface Packaging {
 
 export type PackagingInput = Omit<Packaging, 'id'> & { id?: number };
 
+/** Единица количества в документе: кг/л/шт или порция — база цены фасовки. */
+export type ReportUnit = 'kg' | 'l' | 'kom' | 'porcija';
+
 /** Строка отчёта-отгрузки (Otpremnica): количество уже в кг / л / шт. */
 export interface ReportLine {
   /** id фасовки — ключ для ручного порядка строк. */
   packagingId: number;
   name: string;
-  unit: 'kg' | 'l' | 'kom' | 'porcija';
+  unit: ReportUnit;
   qty: number;
   price: number;
   vatRate: number;
   net: number;
   vat: number;
   gross: number;
+  /** Вес строки в кг (для объёма 1 л = 1 кг); 0 — штучное без веса. */
+  weightKg: number;
 }
 
 /** Документ отчёта по заказу одного магазина за дату доставки. */
@@ -348,6 +353,10 @@ export interface ReportDoc {
   net: number;
   vat: number;
   gross: number;
+  /** Общий вес документа в кг. */
+  weightKg: number;
+  /** Ставка PDV, применённая к документу, %. */
+  vatRate: number;
   /** По какой цене построен документ: продажная или себестоимость. */
   priceMode: 'sale' | 'cost';
 }
@@ -413,6 +422,9 @@ export interface ArchiveOrderItem {
   packagingName: string;
   qtyBase: number;
   unitCode: string;
+  /** Количество и единица ровно как в строке отчёта-отгрузки. */
+  reportQty: number;
+  reportUnit: ReportUnit;
 }
 
 /** Сохранённый заказ в архиве: магазин, состав и итоги. */
@@ -898,4 +910,143 @@ export interface SupplierInvoiceDetail {
   gross: number | null;
   supplier: Omit<SupplierCard, 'invoices'>;
   items: SupplierInvoiceItem[];
+}
+
+/** ---------- Ручное списание склада по доставке ---------- */
+
+export interface DeliveryWriteoffLine {
+  productId: number;
+  name: string;
+  unitCode: string;
+  qty: number;
+  unitCost: number;
+  cost: number;
+  /** Остаток на складе сейчас, в базовых единицах. */
+  stockQty: number;
+  /** Хватает ли остатка на это списание. */
+  enough: boolean;
+}
+
+export interface DeliveryWriteoffOrder {
+  id: number;
+  storeId: number;
+  storeCode: string;
+  storeName: string;
+  number: string;
+  positions: number;
+}
+
+export interface DeliveryWriteoffRecord {
+  id: number;
+  storeId: number | null;
+  storeCode: string | null;
+  storeName: string | null;
+  at: string;
+  login: string | null;
+  costTotal: number;
+  positions: number;
+}
+
+export interface DeliveryWriteoffPreview {
+  date: string;
+  storeId: number | null;
+  orders: DeliveryWriteoffOrder[];
+  lines: DeliveryWriteoffLine[];
+  totalCost: number;
+  records: DeliveryWriteoffRecord[];
+  blocked: boolean;
+  /** Сколько позиций не покрыто остатком. */
+  shortages: number;
+  canPost: boolean;
+}
+
+export interface DeliveryWriteoffResult {
+  id: number;
+  date: string;
+  storeId: number | null;
+  positions: number;
+  totalCost: number;
+  orders: number;
+}
+
+// ================= ЕДИНАЯ КАРТА ПРОИЗВОДСТВА =================
+// Один глобальный граф: сырьё -> операции -> состояния -> блюда.
+// Количество входа задаётся на связи (MapInput.qty), а не на узле.
+
+export type MapNodeKind = 'product' | 'state' | 'output';
+
+export interface MapPackaging {
+  id: number;
+  name: string;
+  qtyBase: number;
+  minOrder: number;
+  isDefault: boolean;
+  price: number;
+  priceBasis: 'unit' | 'portion' | 'piece';
+  cost: number;
+  available: boolean;
+}
+
+export interface MapNode {
+  id: number;
+  kind: MapNodeKind;
+  refId: number | null;
+  name: string;
+  nameEn: string;
+  nameSr: string;
+  catalogId: number | null;
+  unitId: number;
+  unitCode: string;
+  x: number;
+  y: number;
+  portionQty: number;
+  price: number;
+  note: string;
+  packagings: MapPackaging[];
+}
+
+export interface MapInput {
+  nodeId: number;
+  qty: number;
+  inMass: boolean;
+  /** Потери на связи, % (уварка, очистки). */
+  lossPct: number | null;
+}
+
+export interface MapOp {
+  id: number;
+  name: string;
+  yieldPct: number | null;
+  /** Планируемый выход операции (сколько нужно получить). Выход = сумма ингредиентов. */
+  planQty: number | null;
+  /** Единица партии (г/мл). */
+  planUnitId: number | null;
+  laborHours: number;
+  outputNodeId: number;
+  note: string;
+  x: number;
+  y: number;
+  inputs: MapInput[];
+}
+
+export interface ProductionMap {
+  nodes: MapNode[];
+  ops: MapOp[];
+  /** Версия карты для защиты от одновременного редактирования. */
+  version: number;
+}
+
+/** Результат выпуска партии по операции карты. */
+export interface MapProduceResult {
+  batchId: number;
+  qty: number;
+  unitId: number;
+  costTotal: number;
+  items: { productId: number; name: string; unitCode: string; qty: number; unitCost: number; cost: number }[];
+}
+
+/** Результат списания при отгрузке. */
+export interface MapShipResult {
+  qty: number;
+  items: { productId: number; qty: number }[];
 }

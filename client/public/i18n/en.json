@@ -14,7 +14,7 @@
     "groupOperations": "Operations",
     "groupStock": "Stock",
     "groupOther": "More",
-    "constructor": "Dish Constructor",
+    "constructor": "Production map",
     "stock": "Stock",
     "semis": "Semi-finished",
     "cards": "Tech cards",
@@ -185,7 +185,7 @@
     "category": "Category"
   },
   "constructor": {
-    "title": "Dish Constructor",
+    "title": "Production map",
     "search": "Search...",
     "save": "Save Recipe",
     "ingredients": "Ingredients"

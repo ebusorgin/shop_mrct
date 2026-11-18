@@ -111,7 +111,7 @@ type Tab = 'items' | 'journal' | 'shelf';
                 @if (m.type === 'writeoff') { <span class="badge red">расход</span> }
                 @if (m.type === 'adjustment') { <span class="badge amber">корр.</span> }
               </td>
-              <td class="num">{{ m.qty > 0 ? '+' : '' }}{{ fmtQty(m.qty, m.unitCode) }}</td>
+              <td class="num">{{ m.qty > 0 ? '+' : '' }}{{ fmtQty(m.qty, m.unitCode, true) }}</td>
               <td class="muted">{{ m.docType ?? '—' }} @if (m.docId) { #{{ m.docId }}}</td>
               <td class="muted">{{ m.comment }}</td>
             </tr>

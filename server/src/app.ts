@@ -11,6 +11,7 @@ import { waybillsRouter } from './routes/waybills';
 import { importRouter } from './routes/import';
 import { semisRouter } from './routes/semis';
 import { cardsRouter } from './routes/cards';
+import { productionMapRouter } from './routes/production-map';
 import { batchesRouter } from './routes/batches';
 import { dashboardRouter } from './routes/dashboard';
 import { pointsRouter } from './routes/points';
@@ -45,6 +46,8 @@ export function createApp(): express.Express {
   app.use('/api/import', requireOffice, importRouter);
   app.use('/api/semis', requireOffice, semisRouter);
   app.use('/api/cards', requireOffice, cardsRouter);
+  // единая карта производства: общий граф сырьё -> операции -> блюда
+  app.use('/api/production-map', requireOffice, productionMapRouter);
   app.use('/api/batches', requireOffice, batchesRouter);
   app.use('/api/dashboard', requireOffice, dashboardRouter);
   // торговые точки: справочник магазинов

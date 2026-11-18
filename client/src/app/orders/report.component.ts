@@ -1,9 +1,11 @@
 import { ChangeDetectionStrategy, Component, DestroyRef, OnInit, computed, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, RouterLink } from '@angular/router';
+import { FormsModule } from '@angular/forms';
 import { ApiService } from '../core/api.service';
 import { httpErr } from '../core/format';
 import { OrderReport, ReportDoc, ReportLine } from '../core/models';
+import { DeliveryWriteoffComponent } from './delivery-writeoff.component';
 
 /** Сербское число: точка — тысячи, запятая — дробная часть (45.505,00). */
 function grouped(value: number, decimals: number): string {
@@ -21,7 +23,7 @@ function grouped(value: number, decimals: number): string {
 @Component({
   selector: 'app-order-report',
   standalone: true,
-  imports: [RouterLink],
+  imports: [RouterLink, FormsModule, DeliveryWriteoffComponent],
   templateUrl: './report.component.html',
   styleUrl: './report.component.css',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -50,14 +52,35 @@ export class OrderReportComponent implements OnInit {
   err = signal('');
   /** Офисный отчёт можно построить по себестоимости вместо продажной цены. */
   priceMode = signal<'sale' | 'cost'>('sale');
+  /** Ставка PDV для отчёта; по умолчанию 20 %. */
+  vatRate = signal(20);
+  vatInput: number | null = 20;
+  settingsErr = signal('');
 
   /** Перетаскивание строк: откуда тащим и над какой строкой сейчас курсор. */
   dragFrom = signal<{ orderId: number; index: number } | null>(null);
   dragOver = signal<{ orderId: number; index: number } | null>(null);
   orderSaving = signal(false);
+  /** Окно ручного списания склада по доставке (офис). */
+  woOpen = signal(false);
   orderNote = signal('');
 
   documents = computed(() => this.report()?.documents ?? []);
+
+  /** Сводка по всем документам даты: вес, нетто, налог и сумма к оплате. */
+  totalWeight = computed(() => {
+    const sum = this.documents().reduce((s, d) => s + (d.weightKg ?? 0), 0);
+    return Math.round(sum * 1000) / 1000;
+  });
+  totalNet = computed(() => Math.round(this.documents().reduce((s, d) => s + d.net, 0) * 100) / 100);
+  totalVat = computed(() => Math.round(this.documents().reduce((s, d) => s + d.vat, 0) * 100) / 100);
+  totalGross = computed(() => Math.round(this.documents().reduce((s, d) => s + d.gross, 0) * 100) / 100);
+  /** Ставка, реально применённая сервером (для магазина — 20 %, для офиса — выбранная). */
+  docVatRate = computed(() => this.documents()[0]?.vatRate ?? this.vatRate());
+
+  /** Текущий диапазон индексов документов: 843 … 850. */
+  firstIndex = computed(() => this.indexFromNumber(this.documents()[0]?.number));
+  lastIndex = computed(() => this.indexFromNumber(this.documents()[this.documents().length - 1]?.number));
 
   /** Позиции без цены — документ неполный, подсказываем заполнить цену фасовки. */
   missingPrices = computed(() =>
@@ -75,6 +98,16 @@ export class OrderReportComponent implements OnInit {
   });
 
   ngOnInit(): void {
+    try {
+      const raw = localStorage.getItem('report.vatRate');
+      const saved = raw == null ? NaN : Number(raw);
+      if (Number.isFinite(saved) && saved >= 0 && saved <= 100) {
+        this.vatRate.set(saved);
+        this.vatInput = saved;
+      }
+    } catch {
+      /* приватный режим — остаётся 20 % */
+    }
     this.load();
   }
 
@@ -84,7 +117,7 @@ export class OrderReportComponent implements OnInit {
     this.err.set('');
     const request$ = this.storeMode
       ? this.api.myOrderReport$(this.date)
-      : this.api.orderReport$(this.date, this.storeId, this.priceMode());
+      : this.api.orderReport$(this.date, this.storeId, this.priceMode(), this.vatRate());
     request$
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
@@ -197,6 +230,45 @@ export class OrderReportComponent implements OnInit {
 
   qty(line: ReportLine): string {
     return grouped(line.qty, 3);
+  }
+
+  /** Вес документа/сводки для печати. */
+  weight(value: number): string {
+    return `${grouped(value, 3)} kg`;
+  }
+
+  /** Ставка налога без лишних нулей: 20 -> 20, 7.5 -> 7,5. */
+  rateLabel(rate: number): string {
+    return Number.isInteger(rate) ? String(rate) : String(rate).replace('.', ',');
+  }
+
+  get docYear(): string {
+    return this.date.slice(0, 4);
+  }
+
+  /** Числовая часть номера «2026-843» -> 843. */
+  private indexFromNumber(number: string | undefined): number | null {
+    const match = String(number ?? '').match(/-(\d+)$/);
+    return match ? Number(match[1]) : null;
+  }
+
+  /** Применить ставку PDV и пересобрать отчёт. */
+  applyVat(value: number | null): void {
+    const rate = Number(value);
+    if (!Number.isFinite(rate) || rate < 0 || rate > 100) {
+      this.settingsErr.set('Ставка налога должна быть числом от 0 до 100 %');
+      return;
+    }
+    this.settingsErr.set('');
+    this.vatInput = rate;
+    if (this.vatRate() === rate) return;
+    this.vatRate.set(rate);
+    try {
+      localStorage.setItem('report.vatRate', String(rate));
+    } catch {
+      /* приватный режим — просто не запоминаем */
+    }
+    this.load();
   }
 
   /** Единица для узкой колонки JM: «porcija» не помещается — печатаем «porc.». */

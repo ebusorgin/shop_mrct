@@ -216,6 +216,15 @@ storeRouter.put(
         [storeId, deliveryDate, comment, req.user?.id ?? null]
       );
       const id = rows[0].id;
+      // Повторная проверка внутри транзакции: фасовку могли снять с продажи
+      // или удалить между предварительной проверкой и вставкой строк.
+      const { rows: availableInTx } = await client.query<{ id: number }>(
+        'select id from product_packagings where available and id = any($1::int[]) for share',
+        [ids]
+      );
+      if (availableInTx.length !== ids.length) {
+        throw new ApiError(400, 'Часть позиций больше не доступна для заказа');
+      }
       // Номер отчёта-отгрузки выдаётся один раз: обновление заказа его не меняет
       // и не расходует номер (nextval вычисляется только для строки без doc_no).
       await client.query(

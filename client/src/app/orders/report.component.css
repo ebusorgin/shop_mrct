@@ -19,6 +19,68 @@
   background: var(--amber-soft); color: #7a5a00; font-size: 12.5px; line-height: 1.45;
 }
 
+/* ---------- настройки отчёта ---------- */
+.report-settings {
+  max-width: 210mm; margin: 0 auto 14px; padding: 12px 14px;
+  border: 1px solid var(--border); border-radius: 12px;
+  background: linear-gradient(180deg, #fbfdff, #fff); box-shadow: var(--shadow);
+}
+.report-settings > summary { list-style: none; }
+.report-settings > summary::-webkit-details-marker { display: none; }
+.report-settings > summary::after {
+  content: '▾'; margin-left: auto; color: var(--muted); font-size: 13px;
+  transition: transform .15s ease;
+}
+.report-settings[open] > summary::after { transform: rotate(180deg); }
+.report-settings > summary:hover b { color: var(--accent); }
+.rs-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 14px; cursor: pointer; }
+.rs-head .muted { font-size: 11.5px; }
+.rs-ico {
+  width: 28px; height: 28px; border-radius: 8px; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--accent-soft); font-size: 15px;
+}
+.rs-grid { display: grid; grid-template-columns: 1.1fr 1fr 1.3fr; gap: 12px; align-items: start; }
+.rs-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.rs-label { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); font-weight: 700; }
+.rs-field small { font-size: 11.5px; line-height: 1.35; }
+.rs-seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; width: fit-content; max-width: 100%; }
+.rs-seg button {
+  border: 0; background: #fff; padding: 6px 10px; font: inherit; font-size: 12px;
+  font-weight: 600; color: var(--muted); cursor: pointer; white-space: nowrap;
+}
+.rs-seg button + button { border-left: 1px solid var(--border); }
+.rs-seg button.on { background: var(--accent); color: #fff; }
+.rs-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.rs-line input { width: 110px; min-width: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+.rs-line .btn { flex: 0 0 auto; }
+.rs-suffix { font-size: 12px; color: var(--muted); }
+.rs-range { font-size: 13px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+.rs-msg { margin-top: 10px; padding: 7px 10px; border-radius: 8px; font-size: 12.5px; }
+.rs-msg.bad { background: var(--red-soft); color: var(--red); }
+.rs-msg.good { background: var(--green-soft); color: var(--green); }
+
+/* ---------- сводка по всем документам ---------- */
+.report-summary {
+  max-width: 210mm; margin: 0 auto 14px;
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px;
+}
+/* сводка живёт внутри раскрывающихся настроек */
+.report-settings .report-summary { max-width: none; margin: 14px 0 0; }
+.sum-tile {
+  border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px;
+  background: #fff; box-shadow: var(--shadow); min-width: 0;
+}
+.sum-label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); font-weight: 700; }
+.sum-tile b { display: block; font-size: 20px; line-height: 1.2; margin-top: 4px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.sum-tile small { display: block; margin-top: 2px; font-size: 11px; color: var(--muted); }
+.sum-tile.weight { background: linear-gradient(180deg, #f6f9fd, #fff); }
+.sum-tile.tax { background: linear-gradient(180deg, #fffaf0, #fff); border-color: #ecd9a6; }
+.sum-tile.tax b { color: var(--amber); }
+.sum-tile.grand { background: linear-gradient(145deg, var(--brand-blue), var(--brand-blue-dark)); border-color: var(--brand-blue-dark); color: #fff; }
+.sum-tile.grand .sum-label, .sum-tile.grand small { color: #d7ecfb; }
+.sum-tile.grand b { font-size: 22px; }
+
 /* ---------- лист документа (A4) ---------- */
 .sheet {
   width: 210mm; max-width: 100%; min-height: 297mm; margin: 0 auto 18px; padding: 14mm 15mm;
@@ -92,12 +154,19 @@
   .doc-line .dv { flex: 1 1 auto; }
   .totals { width: 100%; }
   .signs { padding-top: 16mm; }
+  .rs-grid { grid-template-columns: 1fr 1fr; }
+  .rs-grid .rs-field:last-child { grid-column: 1 / -1; }
+  .report-summary { grid-template-columns: 1fr 1fr; }
 }
 
 /* Только совсем узкий телефон: две колонки реквизитов уже нечитаемы. */
 @media screen and (max-width: 520px) {
   .parties { grid-template-columns: 1fr; }
   .pr { grid-template-columns: 31mm minmax(0, 1fr); }
+  .rs-grid { grid-template-columns: 1fr; }
+  .rs-grid .rs-field:last-child { grid-column: auto; }
+  .rs-line { flex-wrap: wrap; }
+  .report-summary { grid-template-columns: 1fr; }
 }
 
 @media print {

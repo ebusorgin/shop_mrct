@@ -1,6 +1,7 @@
 /**
  * Отчёт-отгрузка (Otpremnica) по сохранённым заказам магазинов за дату доставки.
- * Цена фасовки хранится за выбранную базу: кг/л/шт, порцию (упаковку) или штуку; PDV — 20%.
+ * Цена фасовки хранится за выбранную базу: кг/л/шт, порцию (упаковку) или штуку;
+ * ставка PDV задаётся параметром отчёта (по умолчанию 20 %).
  * storeId = null — документы по всем магазинам, у которых есть заказ на дату.
  */
 import { pool } from '../db';
@@ -16,18 +17,28 @@ const SUPPLIER = {
   account: '170-003007091300003',
 };
 
+/** Единица количества в документе: кг/л/шт или порция — как задана база цены в фасовке. */
+export type ReportUnit = 'kg' | 'l' | 'kom' | 'porcija';
+
+/** За что указана цена фасовки: кг/л/шт, порция (упаковка) или штука. */
+export type PriceBasis = 'unit' | 'portion' | 'piece';
+
+/** Размерность единицы техкарты. */
+export type Dimension = 'mass' | 'volume' | 'count';
+
 export interface ReportLine {
   /** id фасовки — стабильный ключ строки для ручного порядка (в печать не выводится). */
   packagingId: number;
   name: string;
-  /** Единица количества в документе: кг/л/шт или порция — как задана база цены в фасовке. */
-  unit: 'kg' | 'l' | 'kom' | 'porcija';
+  unit: ReportUnit;
   qty: number;
   price: number;
   vatRate: number;
   net: number;
   vat: number;
   gross: number;
+  /** Вес строки в кг (для объёма 1 л = 1 кг); 0 — для штучных без веса. */
+  weightKg: number;
 }
 
 export interface ReportDoc {
@@ -43,6 +54,10 @@ export interface ReportDoc {
   net: number;
   vat: number;
   gross: number;
+  /** Общий вес документа в кг. */
+  weightKg: number;
+  /** Ставка PDV, применённая к строкам документа, %. */
+  vatRate: number;
   /** По какой цене построен документ: продажная или себестоимость. */
   priceMode: ReportPriceMode;
 }
@@ -70,15 +85,15 @@ interface ReportRow {
   qtyBase: number;
   price: number;
   cost: number;
-  priceBasis: 'unit' | 'portion' | 'piece';
-  dimension: 'mass' | 'volume' | 'count';
+  priceBasis: PriceBasis;
+  dimension: Dimension;
 }
 
 function round2(n: number): number {
   return Math.round((n + Number.EPSILON) * 100) / 100;
 }
 
-function unitOf(dimension: ReportRow['dimension']): ReportLine['unit'] {
+function unitOf(dimension: Dimension): ReportUnit {
   if (dimension === 'mass') return 'kg';
   if (dimension === 'volume') return 'l';
   return 'kom';
@@ -89,24 +104,32 @@ function unitOf(dimension: ReportRow['dimension']): ReportLine['unit'] {
  * кг/л (unit, вес/объём), порции (portion, упаковки), штуки (piece).
  * Для штучной продукции цена за штуку — это количество штук в упаковках;
  * для весовой «за штуку» считаем одну упаковку одной штукой.
+ * Общий для отчёта-отгрузки и архива заказов: единицы на экране и в документе
+ * должны совпадать.
  */
-function quantityOf(r: ReportRow): { unit: ReportLine['unit']; qty: number } {
-  if (r.priceBasis === 'portion') {
-    return { unit: 'porcija', qty: r.qty };
+export function reportQuantity(
+  qty: number,
+  qtyBase: number,
+  priceBasis: PriceBasis,
+  dimension: Dimension
+): { unit: ReportUnit; qty: number } {
+  if (priceBasis === 'portion') {
+    return { unit: 'porcija', qty };
   }
-  if (r.priceBasis === 'piece') {
-    return { unit: 'kom', qty: r.dimension === 'count' ? r.qty * r.qtyBase : r.qty };
+  if (priceBasis === 'piece') {
+    return { unit: 'kom', qty: dimension === 'count' ? qty * qtyBase : qty };
   }
   return {
-    unit: unitOf(r.dimension),
-    qty: r.dimension === 'count' ? r.qty * r.qtyBase : (r.qty * r.qtyBase) / 1000,
+    unit: unitOf(dimension),
+    qty: dimension === 'count' ? qty * qtyBase : (qty * qtyBase) / 1000,
   };
 }
 
 export async function orderReport(
   deliveryDate: string,
   storeId: number | null,
-  priceMode: ReportPriceMode = 'sale'
+  priceMode: ReportPriceMode = 'sale',
+  vatRate: number = VAT_RATE
 ): Promise<{ documents: ReportDoc[] }> {
   const { rows } = await pool.query<ReportRow>(
     `select o.id as "orderId",
@@ -157,28 +180,36 @@ export async function orderReport(
         net: 0,
         vat: 0,
         gross: 0,
+        weightKg: 0,
+        vatRate,
         priceMode,
       };
       docs.set(r.orderId, doc);
     }
-    const { unit, qty } = quantityOf(r);
+    const { unit, qty } = reportQuantity(r.qty, r.qtyBase, r.priceBasis, r.dimension);
     const price = priceMode === 'cost' ? r.cost : r.price;
     const net = round2(qty * price);
-    const vat = round2((net * VAT_RATE) / 100);
+    const rate = vatRate;
+    const vat = round2((net * rate) / 100);
+    // Вес не зависит от базы цены: считаем по количеству упаковок и весу упаковки.
+    // Объём переводим в кг условно 1 л = 1 кг; штучное без веса — 0.
+    const weightKg = r.dimension === 'count' ? 0 : Math.round(r.qty * r.qtyBase) / 1000;
     doc.lines.push({
       packagingId: r.packagingId,
       name: r.cardNameSr || r.cardName,
       unit,
       qty,
       price,
-      vatRate: VAT_RATE,
+      vatRate: rate,
       net,
       vat,
       gross: round2(net + vat),
+      weightKg,
     });
     doc.net = round2(doc.net + net);
     doc.vat = round2(doc.vat + vat);
     doc.gross = round2(doc.gross + net + vat);
+    doc.weightKg = Math.round((doc.weightKg + weightKg) * 1000) / 1000;
   }
 
   return { documents: [...docs.values()] };

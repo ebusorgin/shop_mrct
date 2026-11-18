@@ -40,7 +40,10 @@ export const routes: Routes = [
           { path: 'stock', loadComponent: () => import('./pages/stock.component').then((m) => m.StockComponent) },
           { path: 'semis', loadComponent: () => import('./pages/semis.component').then((m) => m.SemisComponent) },
           { path: 'cards', loadComponent: () => import('./pages/cards.component').then((m) => m.CardsComponent) },
-          { path: 'constructor', loadComponent: () => import('./pages/constructor.component').then((m) => m.ConstructorComponent) },
+          { path: 'map', loadComponent: () => import('./pages/production-map.component').then((m) => m.ProductionMapComponent) },
+          // старые адреса ведут на новую карту
+          { path: 'constructor', pathMatch: 'full', redirectTo: 'map' },
+          { path: 'constructor/map', pathMatch: 'full', redirectTo: 'map' },
           { path: 'orders', loadComponent: () => import('./orders/orders.component').then((m) => m.OrdersComponent) },
           {
             path: 'orders/report',

@@ -1,17 +1,31 @@
 /** Форматирование количества из БАЗОВЫХ единиц (г/мл/шт) в читаемые: кг/л — только отображение. */
-export function fmtQty(baseQty: number, unitCode: string): string {
+export function fmtQty(baseQty: number, unitCode: string, signed = false): string {
   const abs = Math.abs(baseQty);
+  const sign = signed && baseQty < 0 ? '−' : '';
   if (unitCode === 'г') {
-    return abs >= 1000 ? `${trim(abs / 1000)} кг` : `${trim(abs)} г`;
+    return abs >= 1000 ? `${sign}${trim(abs / 1000)} кг` : `${sign}${trim(abs)} г`;
   }
   if (unitCode === 'мл') {
-    return abs >= 1000 ? `${trim(abs / 1000)} л` : `${trim(abs)} мл`;
+    return abs >= 1000 ? `${sign}${trim(abs / 1000)} л` : `${sign}${trim(abs)} мл`;
   }
-  return `${trim(abs)} ${unitCode}`;
+  return `${sign}${trim(abs)} ${unitCode}`;
 }
 
 export function trim(n: number): string {
   return String(Math.round(n * 1000) / 1000);
+}
+
+/** Единица количества отчёта-отгрузки по-русски: кг / л / шт / порц. */
+export function reportUnitLabel(unit: string): string {
+  if (unit === 'kg') return 'кг';
+  if (unit === 'l') return 'л';
+  if (unit === 'kom') return 'шт';
+  return 'порц.';
+}
+
+/** Количество в единицах отчёта-отгрузки: «3 кг», «5 порц.», «30 шт». */
+export function fmtReportQty(qty: number, unit: string): string {
+  return `${trim(qty)} ${reportUnitLabel(unit)}`;
 }
 
 /** Округление денег до копеек (сотых dinara) — тысячных на UI быть не должно. */

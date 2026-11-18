@@ -38,18 +38,65 @@ export interface AgentFile {
  * Поворот фото. Отдельный модельный проход пробовали — он стабильно съедал 30–120 с
  * (а на пакетах листов до двух минут) и почти всегда возвращал 0°: снимки этих телефонов
  * лежат пикселями ровно, хотя EXIF ставит orientation=6/8. Слепо доверять EXIF нельзя —
- * поворот по нему ломает ровный документ. Поэтому читаем как есть: «Распознавание» умеет мысленно
- * развернуть лист, если тот лёг боком. Возвращает 0° для каждого файла (PDF — тоже 0).
+ * поворот по нему ломает ровный документ.
+ *
+ * Поэтому решаем по самим пикселям: у лежащего боком листа текст даёт сильный перепад
+ * яркости по горизонтали (dx), у ровного — по вертикали (dy). EXIF orientation 6/8
+ * используем только как подсказку направления и только когда картинка действительно
+ * боком: у ровного снимка с ошибочным EXIF dx/dy < 1. Стоимость — уменьшенная копия
+ * 400 px, без модели.
  */
 export async function detectRotationsAsync(
   list: { name: string; mime: string; buf: Buffer }[],
   _workDir: string,
   log: (kind: LogKind, text: string) => void
 ): Promise<number[]> {
-  if (list.some((f) => f.mime.startsWith('image/'))) {
-    log('stage', 'Ориентация: читаю фото как есть, без отдельного прохода');
+  const rotations: number[] = [];
+  let turned = 0;
+  for (const f of list) {
+    if (!f.mime.startsWith('image/')) {
+      rotations.push(0);
+      continue;
+    }
+    try {
+      const meta = await sharp(f.buf).metadata();
+      const exif = meta.orientation ?? 1;
+      if (exif !== 6 && exif !== 8) {
+        rotations.push(0);
+        continue;
+      }
+      // EXIF не доверяем: сравниваем перепады по x и y на уменьшенной копии.
+      const { data, info } = await sharp(f.buf)
+        .rotate(0) // без EXIF — читаем физические пиксели
+        .resize({ width: 400 })
+        .greyscale()
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+      const w = info.width;
+      const h = info.height;
+      let dx = 0;
+      let dy = 0;
+      for (let y = 1; y < h - 1; y++) {
+        for (let x = 1; x < w - 1; x++) {
+          const i = y * w + x;
+          dx += Math.abs(data[i + 1] - data[i - 1]);
+          dy += Math.abs(data[i + w] - data[i - w]);
+        }
+      }
+      const ratio = dx / Math.max(1, dy);
+      if (ratio > 1.25) {
+        rotations.push(exif === 8 ? 270 : 90);
+        turned++;
+      } else {
+        rotations.push(0);
+      }
+    } catch {
+      rotations.push(0);
+    }
   }
-  return list.map(() => 0);
+  if (turned) log('stage', `Ориентация: ${turned} фото лежат боком — разворачиваю перед чтением`);
+  else log('stage', 'Ориентация: фото лежат ровно — читаю как есть');
+  return rotations;
 }
 
 /**

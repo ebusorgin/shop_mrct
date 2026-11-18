@@ -69,6 +69,7 @@ const DOC_UNITS: Record<string, { code: string; factor: number }> = {
   граммов: { code: 'г', factor: 1 }, грамма: { code: 'г', factor: 1 }, грам: { code: 'г', factor: 1 },
   g: { code: 'г', factor: 1 }, gr: { code: 'г', factor: 1 }, gram: { code: 'г', factor: 1 }, grams: { code: 'г', factor: 1 },
   кг: { code: 'г', factor: 1000 }, kg: { code: 'г', factor: 1000 }, kilograms: { code: 'г', factor: 1000 },
+  kilogram: { code: 'г', factor: 1000 }, kilogramm: { code: 'г', factor: 1000 }, kilograma: { code: 'г', factor: 1000 },
   kilos: { code: 'г', factor: 1000 }, kilo: { code: 'г', factor: 1000 },
   килограмм: { code: 'г', factor: 1000 }, килограммов: { code: 'г', factor: 1000 }, килограмма: { code: 'г', factor: 1000 },
   т: { code: 'г', factor: 1000000 }, тонна: { code: 'г', factor: 1000000 }, тонн: { code: 'г', factor: 1000000 },
@@ -989,12 +990,29 @@ importRouter.post(
         }))
         // «R. % (rabat) 0,00» — пустая графа бланка, а не скидка
         .filter((d) => !(Math.abs(d.amount ?? 0) < 0.005 && Math.abs(d.percent ?? 0) < 0.005));
-      const discNet = r2(discItems.reduce((s, d) => s + (d.amount ?? 0), 0));
+      // «% popusta na red» — скидка напечатана процентом прямо в строке товара и уже
+      // входит в напечатанный Iznos. Второй раз её из суммы строки не вычитаем.
+      for (const d of discItems) {
+        if (d.percent != null && /popusta\s+na\s+red|rabat\s+na\s+red/i.test(d.name)) {
+          d.includedInLineSum = true;
+        }
+      }
+      const discNet = r2(
+        discItems.reduce((s, d) => s + (d.includedInLineSum === true ? 0 : (d.amount ?? 0)), 0)
+      );
       if (discItems.length) {
         doc.discounts = { total: discNet, items: discItems };
         // итог по скидкам печатаем ПОСЛЕ привязки к строкам — там перепутанные суммы исправляются
         const parts = discItems
-          .map((d) => `${d.name}${d.productName ? ` («${d.productName}»)` : ''}${d.amount != null ? ` −${trimNum(d.amount)}` : ' — сумма не прочитана'}`)
+          .map(
+            (d) =>
+              `${d.name}${d.productName ? ` («${d.productName}»)` : ''}` +
+              (d.includedInLineSum === true
+                ? ' — в строке, уже учтена'
+                : d.amount != null
+                  ? ` −${trimNum(d.amount)}`
+                  : ' — сумма не прочитана')
+          )
           .join(', ');
         corrections.push(`Найдены строки скидок: ${parts}`);
       }
@@ -1506,6 +1524,41 @@ importRouter.post(
             : []);
         if (Array.isArray(row) && row.length !== 1) row = undefined;
         const target = Array.isArray(row) ? row[0] : row;
+        // Скидка-процент в строке товара: напечатанный Iznos уже после скидки.
+        // Только фиксируем её на строке, суммы не трогаем (даже если модель дала сумму).
+        if (d.includedInLineSum === true && target) {
+          const printed = target.lineSum ?? 0;
+          const pct = d.percent != null && d.percent > 0 && d.percent < 100 ? d.percent : null;
+          const amount = pct != null && printed > 0 ? r2((printed * pct) / (100 - pct)) : d.amount != null ? r2(d.amount) : null;
+          if (amount != null && printed > 0) {
+            const rate = target.vatRate ?? d.vatRate ?? null;
+            const amountGross =
+              rate != null ? r2(amount * (1 + rate / 100)) : d.amountGross != null ? r2(d.amountGross) : null;
+            target.rowDiscount = {
+              name: d.name,
+              amount,
+              amountGross,
+              percent: pct,
+              vatRate: rate,
+              reason: 'скидка в строке уже учтена в напечатанной сумме',
+            };
+            const idx = outDiscounts.length;
+            outDiscounts.push({
+              name: d.name,
+              productName: target.rawName ?? d.productName ?? null,
+              discountKind: d.kind ?? 'percent',
+              amount,
+              amountGross,
+              percent: pct,
+              vatRate: rate,
+              includedInLineSum: true,
+              doubt: null,
+            });
+            outTargets.push(target);
+            discAttached++;
+            continue;
+          }
+        }
         let amount = d.amount != null ? r2(d.amount) : null;
         const amountGross0 = d.amountGross != null ? r2(d.amountGross) : null;
         const lineSum = target?.lineSum ?? null;

@@ -59,11 +59,16 @@ export async function loadSupplierRefs(client?: PoolClient): Promise<SupplierRef
 
 const normText = (s: string): string => s.toUpperCase().replace(/Ё/g, 'Е').replace(/[^A-ZА-Я0-9]+/g, ' ').trim();
 
+/** Юридические формы не различают поставщика: «Monolith DOO» = «Monolith D.O.O.». */
+const LEGAL_FORM = /(^|\s)(D\s*O\s*O|LLC|LTD|LIMITED|GMBH|INC|PLC|A\s*D)(?=\s|$)/g;
+const baseName = (s: string): string => normText(s).replace(LEGAL_FORM, ' ').replace(/\s+/g, ' ').trim();
+
 /** Название поставщика целиком в тексте (по словам, чтобы WFC не совпал с обрывком слова). */
 function hasName(text: string, name: string): boolean {
-  const n = normText(name);
+  const n = baseName(name);
   if (n.length < 3) return false;
-  return new RegExp(`(^|\\s)${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\s|$)`).test(text);
+  const t = baseName(text);
+  return new RegExp(`(^|\\s)${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\s|$)`).test(t);
 }
 
 export interface SupplierMatch {
@@ -94,36 +99,24 @@ export function matchSupplier(
   const pibTokens = new Set([...(transcript.match(/\d{8,9}/g) ?? []), ...digitTokens.filter((t) => t.length === 8 || t.length === 9)]);
   const glnTokens = new Set([...(transcript.match(/\d{13}/g) ?? []), ...digitTokens.filter((t) => t.length === 13)]);
 
-  // 1. Название из ответа модели: «WFC», «WFC DOO BEOGRAD», «MMM LASTA …».
-  if (supplierNorm) {
-    for (const ref of refs) {
-      if (hasName(supplierNorm, ref.name) || (ref.legalName && hasName(supplierNorm, ref.legalName))) {
-        return { ref, via: 'названию' };
-      }
-    }
-    // то же название могло попасть в транскрипцию (модель вернула пустое поле)
-    for (const ref of refs) {
-      const tokens = ref.legalName ? [ref.name, ref.legalName] : [ref.name];
-      if (tokens.some((t) => hasName(transcriptNorm, t))) return { ref, via: 'названию' };
-    }
-  }
-
-  // 2. PIB продавца — самые надёжные 8–9 цифр.
-  if (pib) {
+  // 1. PIB продавца — самый надёжный признак: MMM Lasta в шапке OT-документа
+  //    важнее блока «Otprema», где напечатано производство. Наш собственный PIB
+  //    (блок получателя) поставщиком не считается.
+  if (pib && pib !== OWN_PIB) {
     const ref = refs.find((r) => r.pib && r.pib === pib);
     if (ref) return { ref, via: 'PIB' };
   }
   {
-    const ref = refs.find((r) => r.pib && pibTokens.has(r.pib));
+    const ref = refs.find((r) => r.pib && r.pib !== OWN_PIB && pibTokens.has(r.pib));
     if (ref) return { ref, via: 'PIB' };
   }
 
-  // 3. GLN — 13 цифр, напечатаны в верхней части листа рядом с логотипом.
+  // 2. GLN — 13 цифр, напечатаны в верхней части листа рядом с логотипом.
   for (const ref of refs) {
     if (ref.gln.length >= 12 && glnTokens.has(ref.gln)) return { ref, via: 'GLN' };
   }
 
-  // 4. Банковский счёт продавца (только цифры, обычно 18 знаков).
+  // 3. Банковский счёт продавца (только цифры, обычно 18 знаков).
   for (const ref of refs) {
     for (const acc of ref.accounts) {
       const digits = acc.replace(/\D+/g, '');
@@ -131,9 +124,19 @@ export function matchSupplier(
     }
   }
 
-  // 5. Название в транскрипции — последний шанс, когда поле ПОСТАВЩИК пустое.
+  // 4. Название из ответа модели: «WFC», «WFC DOO BEOGRAD», «MMM LASTA …».
+  if (supplierNorm) {
+    for (const ref of refs) {
+      if (hasName(supplierNorm, ref.name) || (ref.legalName && hasName(supplierNorm, ref.legalName))) {
+        return { ref, via: 'названию' };
+      }
+    }
+  }
+
+  // 5. Название в транскрипции — когда поле ПОСТАВЩИК пустое или не совпало.
   for (const ref of refs) {
-    if (hasName(transcriptNorm, ref.name)) return { ref, via: 'названию' };
+    const tokens = ref.legalName ? [ref.name, ref.legalName] : [ref.name];
+    if (tokens.some((t) => hasName(transcriptNorm, t))) return { ref, via: 'названию' };
   }
   return null;
 }

@@ -252,6 +252,8 @@ type ImpLineState = 'fix' | 'check' | 'new' | 'ready';
     .svc-apply{margin:4px 0 2px;align-self:flex-start}
     .confirm-wrap{display:grid;gap:4px;justify-items:end}
     .confirm-hint{font-size:12px;color:#b4232a;text-align:right;max-width:320px}
+    .confirm-err{font-size:12px;color:#b4232a;text-align:right;max-width:420px;line-height:1.45}
+    .rc-unitfix{margin-top:6px;font-size:11px;padding:4px 8px;min-height:0}
     .imp-totals{display:grid;gap:4px;font-size:13px;background:#fbfcfe;border:1px solid var(--border);border-radius:10px;padding:10px 14px}
     .tt{display:grid;grid-template-columns:130px 120px minmax(0,210px);gap:10px;align-items:baseline}
     .tt b{text-align:right;font-variant-numeric:tabular-nums}
@@ -777,6 +779,14 @@ type ImpLineState = 'fix' | 'check' | 'new' | 'ready';
                     </select>
                   </span>
                   <small class="rc-hint">{{ qtyHint(it) || 'Базовые единицы: г / мл / шт' }}</small>
+                  @if (unitMismatch(it); as mm) {
+                    @if (mm.massVolume) {
+                      <button type="button" class="btn sm rc-unitfix" (click)="alignUnit(it)"
+                              [title]="'Товар хранится в «' + mm.productUnit + '», а строка приходит в «' + mm.lineUnit + '». Пересчитать как 1 ' + mm.lineUnit + ' ≈ 1 ' + mm.productUnit + ' и приходовать в складской единице'">
+                        → {{ mm.productUnit }} · 1 {{ mm.lineUnit }} ≈ 1 {{ mm.productUnit }}
+                      </button>
+                    }
+                  }
                 </label>
 
                 <label class="rc-field">
@@ -974,9 +984,11 @@ type ImpLineState = 'fix' | 'check' | 'new' | 'ready';
           <div class="spacer"></div>
           <div class="confirm-wrap">
             <button class="btn primary" [disabled]="impSaving() || !canConfirm()" (click)="confirmImport()">
-              Приходовать на склад
+              {{ impSaving() ? 'Проводим…' : 'Приходовать на склад' }}
             </button>
-            @if (!canConfirm() && confirmBlockers()) {
+            @if (confirmErr()) {
+              <div class="confirm-err" role="alert">{{ confirmErr() }}</div>
+            } @else if (!canConfirm() && confirmBlockers()) {
               <div class="confirm-hint">{{ confirmBlockers() }}</div>
             }
           </div>
@@ -1191,6 +1203,8 @@ export class WaybillsComponent implements OnInit {
   impBusy = signal(false);
   impSaving = signal(false);
   impErr = signal('');
+  /** Ошибка проведения — показывается прямо под кнопкой в футере, а не только сверху страницы. */
+  confirmErr = signal('');
   impNumber = '';
   impSupplier = '';
   impDate = today();
@@ -1586,6 +1600,7 @@ export class WaybillsComponent implements OnInit {
     request$.subscribe({
         next: (r) => {
           this.impBusy.set(false);
+          this.confirmErr.set('');
           this.parsed.set(r);
           this.discNotes.set([]); // разбор новый — заметки про учёт скидок из прежнего больше не актуальны
           this.extrasPreview.set(list.slice(1).map((f) => f.dataUrl));
@@ -1927,8 +1942,42 @@ export class WaybillsComponent implements OnInit {
   }
 
   /** Любая правка полей карточки: статус, счётчики и фильтр должны обновиться сразу. */
+  /** Смена единицы/товара в карточке — старая ошибка проведения уже не актуальна. */
   onDraftChange(): void {
+    if (this.confirmErr()) this.confirmErr.set('');
     this.touchItems();
+  }
+
+  /**
+   * Строка и выбранный товар стоят в разных размерностях (мл против г или счётной единицы).
+   * Такой приход сервер не пропустит без коэффициента пересчёта у товара.
+   */
+  unitMismatch(it: ImpDraft): { lineUnit: string; productUnit: string; productUnitId: number; massVolume: boolean } | null {
+    if (it.mode !== 'match' || it.productId == null || it.unitId == null) return null;
+    const line = this.units().find((u) => u.id === it.unitId);
+    const prod = this.products().find((p) => p.id === it.productId);
+    if (!line || !prod) return null;
+    const prodUnit = this.units().find((u) => u.id === prod.unitId);
+    if (!prodUnit || line.dimension === prodUnit.dimension) return null;
+    return {
+      lineUnit: line.code,
+      productUnit: prodUnit.code,
+      productUnitId: prodUnit.id,
+      // быстрый пересчёт 1:1 осмыслен только для объёма и массы; штуки сюда не подставляем
+      massVolume: line.dimension !== 'count' && prodUnit.dimension !== 'count',
+    };
+  }
+
+  /**
+   * Быстрый пересчёт мл↔г как 1:1 (плотность ~1: вода, сок, уксус).
+   * Количество не меняется числом, меняется только складская единица; деньги строки остаются.
+   */
+  alignUnit(it: ImpDraft): void {
+    const mm = this.unitMismatch(it);
+    if (!mm || !mm.massVolume) return;
+    it.unitId = mm.productUnitId;
+    this.onDraftChange();
+    this.recalcPrice(it);
   }
 
   /** Строку правили после разбора? Тогда «вернуть как было» активна. */
@@ -2062,6 +2111,7 @@ export class WaybillsComponent implements OnInit {
     if (!p) return;
     this.impSaving.set(true);
     this.err.set('');
+    this.confirmErr.set('');
     const body = {
       number: this.impNumber.trim(),
       supplier: this.impSupplier,
@@ -2106,7 +2156,7 @@ export class WaybillsComponent implements OnInit {
       },
       error: (e) => {
         this.impSaving.set(false);
-        this.err.set(httpErr(e));
+        this.confirmErr.set(httpErr(e));
       },
     });
   }

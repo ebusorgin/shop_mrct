@@ -23,12 +23,25 @@ export interface MoveInput {
  * пишет строку в journal movements. Вызывается внутри транзакции.
  */
 export async function applyMovement(client: PoolClient, m: MoveInput): Promise<void> {
-  // строка остатков существует у каждого продукта (создаётся при POST /products)
-  const { rows } = await client.query(
-    'select qty::float8 as qty, avg_cost::float8 as avg_cost from stock where product_id = $1 for update',
-    [m.productId]
-  );
-  if (rows.length === 0) throw new ApiError(404, `Нет строки склада для продукта #${m.productId}`);
+  // строка остатков должна существовать у каждого продукта, но номенклатура из миграций/импорта
+  // иногда приходит без неё — заводим нулевую строку прямо здесь, движение сразу её обновит.
+  const selectStock = () =>
+    client.query(
+      'select qty::float8 as qty, avg_cost::float8 as avg_cost from stock where product_id = $1 for update',
+      [m.productId]
+    );
+  let { rows } = await selectStock();
+  if (rows.length === 0) {
+    const inserted = await client.query(
+      `insert into stock (product_id, qty, avg_cost)
+       select p.id, 0, 0 from products p where p.id = $1
+       on conflict (product_id) do nothing
+       returning qty::float8 as qty, avg_cost::float8 as avg_cost`,
+      [m.productId]
+    );
+    rows = inserted.rows.length ? inserted.rows : (await selectStock()).rows;
+    if (rows.length === 0) throw new ApiError(404, `Продукт #${m.productId} не найден — движение не провести`);
+  }
 
   const oldQty: number = rows[0].qty;
   const oldCost: number = rows[0].avg_cost;

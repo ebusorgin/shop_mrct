@@ -111,7 +111,7 @@ export async function ingestWaybill(client: PoolClient, head: WaybillInHead, ite
     if (u.factor !== 1) throw new ApiError(400, `Приход в «${it.unitId}» запрещён: хранение только в базовых (г/мл/шт)`);
     // базовая единица продукта + его коэффициенты пересчёта размерностей — для перевода и проверки
     const { rows: pr } = await client.query(
-      'select unit_id, g_per_pcs::float8 as gp, ml_per_pcs::float8 as mp, g_per_ml::float8 as gm from products where id = $1',
+      'select name, unit_id, g_per_pcs::float8 as gp, ml_per_pcs::float8 as mp, g_per_ml::float8 as gm from products where id = $1',
       [it.productId]
     );
     if (!pr.length) throw new ApiError(400, `Продукт #${it.productId} не найден`);
@@ -120,7 +120,26 @@ export async function ingestWaybill(client: PoolClient, head: WaybillInHead, ite
       mlPerPcs: pr[0].mp == null ? null : Number(pr[0].mp),
       gPerMl: pr[0].gm == null ? null : Number(pr[0].gm),
     };
-    const qtyBase = toBaseCross(it.qty, it.unitId, pr[0].unit_id, units, conv);
+    let qtyBase: number;
+    try {
+      qtyBase = toBaseCross(it.qty, it.unitId, pr[0].unit_id, units, conv);
+    } catch (e) {
+      // Без контекста строки ошибка размераностей выглядит как «ничего не произошло»:
+      // человек должен видеть, какой именно товар и какую единицу поправить.
+      if (e instanceof ApiError) {
+        const { rows: codes } = await client.query(
+          'select id, code from units where id = any($1::int[])',
+          [[it.unitId, pr[0].unit_id]]
+        );
+        const codeOf = (id: number) => (codes.find((x: { id: number }) => x.id === id)?.code as string | undefined) ?? String(id);
+        throw new ApiError(
+          400,
+          `«${pr[0].name}»: строка приходит в «${codeOf(it.unitId)}», а товар хранится в «${codeOf(pr[0].unit_id as number)}». ` +
+            `Смените единицу этой строки на «${codeOf(pr[0].unit_id as number)}» в карточке (количество пересчитается) или задайте коэффициент «грамм в 1 мл (плотность)» в номенклатуре товара.`
+        );
+      }
+      throw e;
+    }
     // себестоимость за каноничную базовую единицу — из денег строки (работает и при кросс-размерном приходе)
     const money = it.qty * (it.price ?? 0);
     const costBase = qtyBase > 0 ? money / qtyBase : 0;

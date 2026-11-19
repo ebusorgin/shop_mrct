@@ -39,14 +39,14 @@ export const routes: Routes = [
           { path: '', pathMatch: 'full', loadComponent: () => import('./pages/dashboard.component').then((m) => m.DashboardComponent) },
           { path: 'waybills', loadComponent: () => import('./pages/waybills.component').then((m) => m.WaybillsComponent) },
           { path: 'stock', loadComponent: () => import('./pages/stock.component').then((m) => m.StockComponent) },
-          // рецептуры и заготовки объединены на карте производства
-          { path: 'semis', pathMatch: 'full', redirectTo: 'map' },
-          { path: 'cards', pathMatch: 'full', redirectTo: 'map' },
-          { path: 'map', loadComponent: () => import('./pages/production-map.component').then((m) => m.ProductionMapComponent) },
+          // рецептуры и заготовки живут в разделе «Рецептуры»; старую карту убрали
+          { path: 'semis', pathMatch: 'full', redirectTo: 'recipes' },
+          { path: 'cards', pathMatch: 'full', redirectTo: 'recipes' },
+          { path: 'map', pathMatch: 'full', redirectTo: 'recipes' },
           { path: 'recipes', canDeactivate: [unsavedChangesGuard], loadComponent: () => import('./pages/recipes.component').then((m) => m.RecipesComponent) },
-          // старые адреса ведут на новую карту
-          { path: 'constructor', pathMatch: 'full', redirectTo: 'map' },
-          { path: 'constructor/map', pathMatch: 'full', redirectTo: 'map' },
+          // старые адреса конструктора ведут в «Рецептуры»
+          { path: 'constructor', pathMatch: 'full', redirectTo: 'recipes' },
+          { path: 'constructor/map', pathMatch: 'full', redirectTo: 'recipes' },
           { path: 'orders', loadComponent: () => import('./orders/orders.component').then((m) => m.OrdersComponent) },
           {
             path: 'orders/report',

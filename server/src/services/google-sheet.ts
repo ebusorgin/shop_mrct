@@ -238,6 +238,9 @@ interface PackagingRef {
   cardId: number;
   cardName: string;
   packagingName: string;
+  /** Своё название фасовки («Квашеная капуста ведра 1000г») — приоритетнее составного. */
+  title: string | null;
+  titleSr: string | null;
   /** Вес/объём упаковки в базовой единице выхода техкарты (г/мл/шт). */
   qtyBase: number;
   /** Единица выхода техкарты. */
@@ -246,9 +249,9 @@ interface PackagingRef {
   isDefault: boolean;
 }
 
-/** Название в списке: «техкарта · фасовка»; если техкарта уже содержит размер — только она. */
+/** Название в списке: своё название фасовки, иначе «техкарта · фасовка». */
 const saleName = (p: PackagingRef): string =>
-  packagingLabel(p.cardName, packagingWeight(p.qtyBase, p.unitCode));
+  (p.title ?? '').trim() || packagingLabel(p.cardName, packagingWeight(p.qtyBase, p.unitCode));
 
 /** Размер порции из названия позиции — для выбора фасовки того же веса. */
 function sizeOf(value: string): { value: number; dimension: string } | null {
@@ -276,6 +279,7 @@ interface Matchers {
 async function loadMatchers(): Promise<Matchers> {
   const { rows } = await pool.query<Omit<PackagingRef, 'qtyBase'> & { qtyBase: number }>(
     `select pk.id, pk.node_id as "cardId", tc.name as "cardName", pk.name as "packagingName",
+            nullif(btrim(pk.title), '') as title, nullif(btrim(pk.title_sr), '') as "titleSr",
             pk.qty_base::float8 as "qtyBase", pk.is_default as "isDefault",
             u.code as "unitCode", u.dimension
        from prod_packagings pk
@@ -291,6 +295,10 @@ async function loadMatchers(): Promise<Matchers> {
   for (const row of rows) {
     const ref: PackagingRef = { ...row, qtyBase: Number(row.qtyBase) };
     exactSale.set(normName(`${ref.cardName} ${ref.packagingName}`), ref.id);
+    // Своё название фасовки сопоставляем напрямую: в листах встречаются названия
+    // вида «Квашеная капуста ведра 1000г», которых нет в составном «техкарта + фасовка».
+    if (ref.title) exactSale.set(normName(ref.title), ref.id);
+    if (ref.titleSr) exactSale.set(normName(ref.titleSr), ref.id);
     // техкарта уже содержит размер («Грибы 250г» + «250 г») — строки идут без повтора
     if (normName(ref.cardName).includes(normName(ref.packagingName))) {
       exactSale.set(normName(ref.cardName), ref.id);

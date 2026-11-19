@@ -908,6 +908,40 @@ export class SettingsComponent implements OnInit {
     const tabs = this.sheetTabs();
     return tabs.find((tab) => tab.name === this.sheetTab()) ?? tabs[0] ?? null;
   });
+
+  /**
+   * Вкладка ближайшего будущего дня. Дата берётся из имени листа: «21.11», «5.11»,
+   * «22,11 (копия)». Год не указан — считаем текущим; если дата уже прошла, берём следующий.
+   */
+  private defaultSheetTab(tabs: GoogleSheet['tabs']): string {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    let bestName = '';
+    let bestTime = Number.POSITIVE_INFINITY;
+    for (const tab of tabs) {
+      const date = this.tabDate(tab.name, today);
+      if (!date) continue;
+      if (date.getTime() <= today.getTime()) continue;
+      if (date.getTime() < bestTime) {
+        bestTime = date.getTime();
+        bestName = tab.name;
+      }
+    }
+    return bestName || tabs[0]?.name || '';
+  }
+
+  /** Дата из имени листа; null — имени не похоже на день/месяц. */
+  private tabDate(name: string, today: Date): Date | null {
+    const m = String(name).match(/(\d{1,2})\s*[.,]\s*(\d{1,2})/);
+    if (!m) return null;
+    const day = Number(m[1]);
+    const month = Number(m[2]);
+    if (day < 1 || day > 31 || month < 1 || month > 12) return null;
+    const date = new Date(today.getFullYear(), month - 1, day);
+    if (date.getDate() !== day || date.getMonth() !== month - 1) return null;
+    if (date.getTime() <= today.getTime()) date.setFullYear(today.getFullYear() + 1);
+    return date;
+  }
   /** Колонки рисуются по ширине листа, даже если строк нет. */
   readonly sheetColumns = computed(() => Array.from({ length: this.sheetActive()?.width ?? 0 }));
   /** Строка заголовков листа: ищем «Min Заказ» среди первых строк. */
@@ -1121,7 +1155,9 @@ export class SettingsComponent implements OnInit {
       next: (doc) => {
         this.sheetDoc.set(doc);
         const current = this.sheetTab();
-        this.sheetTab.set(doc?.tabs.some((tab) => tab.name === current) ? current : doc?.tabs[0]?.name ?? '');
+        this.sheetTab.set(
+          doc?.tabs.some((tab) => tab.name === current) ? current : this.defaultSheetTab(doc?.tabs ?? [])
+        );
       },
       error: (e) => this.sheetErr.set(`Не удалось загрузить сохранённую таблицу: ${httpErr(e)}`),
     });
@@ -1150,7 +1186,9 @@ export class SettingsComponent implements OnInit {
       next: (doc) => {
         this.sheetDoc.set(doc);
         const current = this.sheetTab();
-        this.sheetTab.set(doc.tabs.some((tab) => tab.name === current) ? current : doc.tabs[0]?.name ?? '');
+        this.sheetTab.set(
+          doc.tabs.some((tab) => tab.name === current) ? current : this.defaultSheetTab(doc.tabs)
+        );
         const matched = new Set<string>();
         for (const tab of doc.tabs) {
           tab.rows.forEach((row, index) => {

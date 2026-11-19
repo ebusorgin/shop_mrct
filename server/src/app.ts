@@ -21,6 +21,7 @@ import { settingsRouter } from './routes/settings';
 import { aiRouter } from './routes/ai';
 import { requireAdmin, requireAuth, requireOffice } from './services/auth';
 import { requireMapMigrated } from './services/map-migration';
+import { qoderCliVersion } from './services/qoder-cli';
 
 export function createApp(): express.Express {
   const app = express();
@@ -29,7 +30,12 @@ export function createApp(): express.Express {
   app.use('/api/import', express.json({ limit: '80mb' }));
   app.use(express.json({ limit: '1mb' }));
 
-  app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'mixmarkt-crm' }));
+  // версия qodercli видна снаружи: регрессии CLI ломают чтение фото в «Умном приходе»
+  app.get('/api/health', (_req, res) => {
+    void qoderCliVersion()
+      .then((cli) => res.json({ ok: true, service: 'mixmarkt-crm', cli }))
+      .catch(() => res.json({ ok: true, service: 'mixmarkt-crm', cli: null }));
+  });
   // вход/выход и управление пользователями — свои проверки внутри роутера
   app.use('/api/auth', authRouter);
   // всё остальное API — только с действующей сессией

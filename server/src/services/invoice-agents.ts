@@ -604,11 +604,12 @@ export function cleanAgentDoc(raw: Record<string, unknown>): AgentDoc {
   return doc;
 }
 
-/** Агент «Распознавание»: vision-проход. */
+/** Агент «Распознавание»: vision-проход. `plain` — без stream-json (обход регрессии CLI). */
 export async function runReaderAgent(
   files: AgentFile[],
   workDir: string,
-  log: (kind: LogKind, text: string) => void
+  log: (kind: LogKind, text: string) => void,
+  opts: { plain?: boolean } = {}
 ): Promise<string> {
   log('stage', 'Агент «Распознавание»: читаю документ по колонкам');
   // Thinking выключено: это переписывание документа, рассуждения только жгут минуты
@@ -616,6 +617,7 @@ export async function runReaderAgent(
   const { text, durationMs } = await runCliLogged(readerPrompt(files.map((f) => f.name)), workDir, log, {
     timeoutMs: 600000,
     extraArgs: ['--thinking', 'disabled'],
+    streamJson: opts.plain ? false : true,
   });
   if (durationMs != null) log('stage', `Агент «Распознавание» закончил за ${(durationMs / 1000).toFixed(1)} с`);
   let clean = text.trim();

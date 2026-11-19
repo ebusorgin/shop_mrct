@@ -23,6 +23,52 @@ export interface CliRun {
 }
 
 /**
+ * Версии CLI, в которых потоковый режим отдаёт картинку модели как заглушку
+ * «Binary content provided» — «Распознавание» честно отвечает «НЕ НАКЛАДНАЯ».
+ * Проверено на проде: 1.1.91–1.1.92 не читают фото ни в одном режиме, 1.1.93 —
+ * только в обычном. 1.1.90 работает в обоих.
+ */
+export const CLI_VERSIONS_WITH_BROKEN_VISION = ['1.1.91', '1.1.92', '1.1.93'];
+
+let cliVersionCache: string | null | undefined;
+
+/** Версия qodercli (кэш на процесс). Нужна в логах: регрессии CLI ломают чтение фото. */
+export async function qoderCliVersion(): Promise<string | null> {
+  if (cliVersionCache !== undefined) return cliVersionCache;
+  const bin = qoderCliBin();
+  cliVersionCache = await new Promise<string | null>((resolve) => {
+    let out = '';
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(bin, ['--version'], { windowsHide: true, env: cliEnv() });
+    } catch {
+      resolve(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {
+        /* процесс уже завершился */
+      }
+      resolve(null);
+    }, 10000);
+    child.stdout?.on('data', (d: Buffer) => (out += d.toString('utf8')));
+    child.stderr?.on('data', (d: Buffer) => (out += d.toString('utf8')));
+    child.on('error', () => {
+      clearTimeout(timer);
+      resolve(null);
+    });
+    child.on('close', () => {
+      clearTimeout(timer);
+      const m = out.match(/\d+\.\d+\.\d+/);
+      resolve(m ? m[0] : out.trim().slice(0, 40) || null);
+    });
+  });
+  return cliVersionCache ?? null;
+}
+
+/**
  * CRM может работать внутри Qoder (агентский процесс): его SDK-переменные ломают обычный
  * запуск CLI («SDK worker sessions are no longer supported»). Оставляем только токен.
  */
@@ -55,8 +101,7 @@ export function runQoderCli(
     /** Дополнительные аргументы CLI (например, --agent). */
     extraArgs?: string[];
   } = {}
-): Promise<CliRun> {
-  return new Promise((resolve, reject) => {
+): Promise<CliRun> {  return new Promise((resolve, reject) => {
     const bin = qoderCliBin();
     if (bin.includes(path.sep) && !fs.existsSync(bin)) {
       reject(new ApiError(503, `Сервис ИИ не найден на сервере: ${bin}. Установите CLI или задайте QODERCLI_BIN.`));
@@ -177,7 +222,22 @@ export function consumeCliLine(
     return;
   }
   if (j.type === 'user') {
-    if (content.some((c) => c.type === 'tool_result')) log('tool', 'Инструмент ответил — продолжаю');
+    const results = content.filter((c) => c.type === 'tool_result');
+    if (results.length) {
+      const hasImage = results.some(
+        (c) => Array.isArray(c.content) && (c.content as Record<string, unknown>[]).some((b) => b?.type === 'image')
+      );
+      const binaryStub = results.some(
+        (c) => typeof c.content === 'string' && /binary content provided/i.test(c.content)
+      );
+      if (binaryStub && !hasImage) {
+        // CLI 1.1.91+ в потоковом режиме отдаёт модели заглушку вместо картинки:
+        // без этого сообщения разбор выглядит как «плохое фото», а виновата версия CLI.
+        log('error', 'CLI передал фото модели как текст, а не изображение — модель его не видит (проверьте версию qodercli: рабочая 1.1.90)');
+      } else {
+        log('tool', 'Инструмент ответил — продолжаю');
+      }
+    }
     return;
   }
   if (j.type === 'result') {
@@ -242,7 +302,7 @@ export async function runCliLogged(
   prompt: string,
   cwd: string,
   log: (kind: LogKind, text: string) => void,
-  opts: { timeoutMs?: number; extraArgs?: string[] } = {}
+  opts: { timeoutMs?: number; extraArgs?: string[]; streamJson?: boolean } = {}
 ): Promise<{ text: string; model: string | null; durationMs: number | null; run: CliRun }> {
   const state: CliChatter = { model: null, answer: [], final: null, durationMs: null };
   const onLine = (line: string, stream: 'out' | 'err'): void => {
@@ -253,13 +313,14 @@ export async function runCliLogged(
     }
     consumeCliLine(line, state, log);
   };
+  const streamJson = opts.streamJson !== false;
   let run = await runQoderCli(prompt, cwd, opts.timeoutMs ?? 240000, {
-    streamJson: true,
+    streamJson,
     onLine,
     extraArgs: opts.extraArgs,
   });
   // Старая версия CLI может не знать stream-json: тогда повторяем обычным запуском.
-  if (run.code !== 0 && /output-format|unknown option|invalid.*format/i.test(stripAnsi(run.stderr + run.stdout))) {
+  if (streamJson && run.code !== 0 && /output-format|unknown option|invalid.*format/i.test(stripAnsi(run.stderr + run.stdout))) {
     log('stage', 'CLI не поддерживает потоковый режим — повторяю обычным запуском');
     state.answer = [];
     state.final = null;

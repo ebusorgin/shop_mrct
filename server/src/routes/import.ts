@@ -19,6 +19,7 @@ import {
   runStructurerAgent,
   type AgentDoc,
 } from '../services/invoice-agents';
+import { CLI_VERSIONS_WITH_BROKEN_VISION, qoderCliVersion } from '../services/qoder-cli';
 import { classifyNewProduct, findLexEntry, lexIdentity, matchByMeaning } from '../services/product-lexicon';
 import { isPlaceholderSupplier, resolveOrCreateSupplier } from '../services/supplier-match';
 
@@ -711,6 +712,9 @@ importRouter.post(
         'result',
         `Готово за ${((Date.now() - startedAt) / 1000).toFixed(1)} с: ${items.length} ${pluralRu(items.length, 'позиция', 'позиции', 'позиций')}${warnCount ? `, требуют внимания: ${warnCount}` : ''}`
       );
+      console.log(
+        `[import] parse-cli job=${jobId || '-'} готово за ${((Date.now() - startedAt) / 1000).toFixed(1)} с: ${items.length} поз., предупреждений ${warnCount}`
+      );
     }
 
     res.json({
@@ -812,13 +816,54 @@ importRouter.post(
         'stage',
         `Агенты получили документ: ${prepared.files.map((f) => f.name).join(', ')} · ${(prepared.totalBytes / 1024).toFixed(0)} КБ · фото выпрямлены`
       );
+      {
+        const cliVer = await qoderCliVersion();
+        console.log(
+          `[import] parse-cli job=${jobId || '-'} старт: файлов ${list.length}, ${(totalBytes / 1024).toFixed(0)} КБ, qodercli ${cliVer ?? '?'}`
+        );
+        if (cliVer && CLI_VERSIONS_WITH_BROKEN_VISION.includes(cliVer)) {
+          log('stage', `qodercli ${cliVer} не передаёт фото модели — нужна 1.1.90`);
+        }
+      }
 
       // ── агент «Распознавание» ──────────────────────────────────────────────────
       stageAt = Date.now();
+      const readerStart = Date.now();
       let transcript = await runReaderAgent(prepared.files, workDir, log);
-      timings.reader = Date.now() - stageAt;
-      const firstLine = transcript.split('\n')[0] ?? '';
-      const notInvoice = /^ТИП:\s*НЕ\s*НАКЛАДНАЯ/i.test(firstLine.trim());
+      let firstLine = transcript.split('\n')[0] ?? '';
+      let notInvoice = /^ТИП:\s*НЕ\s*НАКЛАДНАЯ/i.test(firstLine.trim());
+      // Регрессия CLI (1.1.91–1.1.93): в потоковом режиме модель получает заглушку
+      // «Binary content provided» вместо фото и отвечает «НЕ НАКЛАДНАЯ». Повторяем
+      // чтение без stream-json — 1.1.93 в обычном режиме картинку отдаёт.
+      const imageLost = /binary\s+content|бинарн|визуальн|изображени[ея]\s+не|не\s+открыл/i.test(transcript);
+      if (notInvoice && imageLost) {
+        log('stage', '«Распознавание» не увидело фото — повторяю чтение в обычном режиме');
+        const retry = await runReaderAgent(prepared.files, workDir, log, { plain: true }).catch(() => '');
+        const retryNotInvoice = /^ТИП:\s*НЕ\s*НАКЛАДНАЯ/i.test((retry.split('\n')[0] ?? '').trim());
+        if (retry && !retryNotInvoice) {
+          transcript = retry;
+          firstLine = transcript.split('\n')[0] ?? '';
+          notInvoice = false;
+          log('stage', '«Распознавание»: обычный режим прочитал документ — продолжаю разбор');
+        }
+      }
+      timings.reader = Date.now() - readerStart;
+      {
+        // Постоянный лог на сервере (journal): без него разбор «НЕ НАКЛАДНАЯ» на проде не диагностируется.
+        const cliVer = await qoderCliVersion();
+        console.log(
+          `[import] parse-cli job=${jobId || '-'} files=${list.length} ${(totalBytes / 1024).toFixed(0)} КБ · qodercli ${cliVer ?? '?'} · reader ${notInvoice ? 'НЕ НАКЛАДНАЯ' : 'ok'} ${transcript.length} симв. за ${((Date.now() - readerStart) / 1000).toFixed(1)} с`
+        );
+        if (notInvoice) {
+          console.log(`[import] parse-cli job=${jobId || '-'} reader: ${firstLine.slice(0, 300)}`);
+          console.log(`[import] parse-cli job=${jobId || '-'} transcript head: ${transcript.replace(/\s+/g, ' ').slice(0, 400)}`);
+          if (cliVer && CLI_VERSIONS_WITH_BROKEN_VISION.includes(cliVer)) {
+            console.log(
+              `[import] parse-cli job=${jobId || '-'} ВНИМАНИЕ: qodercli ${cliVer} не передаёт фото модели в потоковом режиме — нужна версия 1.1.90`
+            );
+          }
+        }
+      }
       log('stage', notInvoice ? '«Распознавание»: документ не похож на накладную' : `«Распознавание»: прочитано ${transcript.length.toLocaleString('ru-RU')} символов`);
 
       const catalog = await loadCatalog();
@@ -840,6 +885,9 @@ importRouter.post(
       if (notInvoice) {
         const rawReason = firstLine.replace(/^ТИП:\s*/i, '').trim();
         const reason = /^(НЕ\s*НАКЛАДНАЯ|NOT\s+(AN\s+)?INVOICE)$/i.test(rawReason) ? '' : rawReason;
+        // «Модель не увидела картинку» — это не плохое фото, а сбой передачи файла ИИ:
+        // просить переснять лист бессмысленно, нужна понятная причина для администратора.
+        const lostImage = imageLost && !/ГОТОВО|прочитан/i.test(reason);
         res.json({
           storedFile,
           fileName,
@@ -848,8 +896,11 @@ importRouter.post(
           doc: { number: null, supplier: null, date: null, supplierPib: null, currency: 'RSD', totalSum: null, totalVat: null, totalGross: null },
           items: [],
           warnings: [
-            `Файл не распознан как накладная${reason ? `: ${reason}` : ''}. ` +
-              `Снимите лист с таблицей товаров и итогами целиком, без наклона и обрезанных краёв, и повторите разбор.`,
+            lostImage
+              ? `Сервер не смог передать фото модели ИИ${reason ? `: ${reason}` : ''}. ` +
+                `Файл сохранён, переснимать его не нужно — повторите разбор или сообщите администратору (проверка qodercli на сервере).`
+              : `Файл не распознан как накладная${reason ? `: ${reason}` : ''}. ` +
+                `Снимите лист с таблицей товаров и итогами целиком, без наклона и обрезанных краёв, и повторите разбор.`,
           ],
           corrections: [],
           serviceLines: [],

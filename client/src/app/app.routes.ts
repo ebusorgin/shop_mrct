@@ -1,5 +1,6 @@
 import { Routes } from '@angular/router';
 import { authGuard, adminGuard, officeGuard, storeGuard } from './core/auth.guard';
+import { unsavedChangesGuard } from './core/unsaved.guard';
 
 export const routes: Routes = [
   { path: 'login', loadComponent: () => import('./pages/login.component').then((m) => m.LoginComponent) },
@@ -42,7 +43,7 @@ export const routes: Routes = [
           { path: 'semis', pathMatch: 'full', redirectTo: 'map' },
           { path: 'cards', pathMatch: 'full', redirectTo: 'map' },
           { path: 'map', loadComponent: () => import('./pages/production-map.component').then((m) => m.ProductionMapComponent) },
-          { path: 'recipes', loadComponent: () => import('./pages/recipes.component').then((m) => m.RecipesComponent) },
+          { path: 'recipes', canDeactivate: [unsavedChangesGuard], loadComponent: () => import('./pages/recipes.component').then((m) => m.RecipesComponent) },
           // старые адреса ведут на новую карту
           { path: 'constructor', pathMatch: 'full', redirectTo: 'map' },
           { path: 'constructor/map', pathMatch: 'full', redirectTo: 'map' },

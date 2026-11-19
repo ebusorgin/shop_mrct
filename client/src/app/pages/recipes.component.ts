@@ -1598,6 +1598,20 @@ export class RecipesComponent implements OnInit {
     this.select(id, false);
   }
 
+  /** Роутер вызывает перед уходом со страницы: несохранённые правки не теряем молча. */
+  canDeactivate(): boolean {
+    if (!this.editing() || !this.dirty()) return true;
+    return confirm('В рецептуре есть несохранённые изменения. Уйти со страницы и потерять их?');
+  }
+
+  /** Закрытие/обновление вкладки: браузер покажет своё предупреждение. */
+  @HostListener('window:beforeunload', ['$event'])
+  onBeforeUnload(ev: BeforeUnloadEvent): void {
+    if (!this.dirty()) return;
+    ev.preventDefault();
+    ev.returnValue = '';
+  }
+
   private confirmDiscard(): boolean {
     if (!this.editing() || !this.dirty()) return true;
     return confirm('В составе есть несохранённые изменения. Отменить их?');

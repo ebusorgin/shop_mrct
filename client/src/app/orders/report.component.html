@@ -8,7 +8,7 @@
     @if (priceMode() === 'cost') { <span class="badge amber">Себестоимость</span> }
     @if (!storeMode) {
       <span class="drag-note no-print" [class.saving]="orderSaving()">
-        {{ orderSaving() ? 'Сохраняю порядок…' : (orderNote() || 'Перетащите строки за ⋮⋮ — порядок сохраняется автоматически') }}
+        {{ orderSaving() ? 'Сохраняю порядок…' : orderNote() }}
       </span>
     }
   }
@@ -194,17 +194,9 @@
         </thead>
         <tbody>
           @for (line of doc.lines; track line.packagingId) {
-            <tr
-              [class.dragging]="dragFrom()?.orderId === doc.orderId && dragFrom()?.index === $index"
-              [class.drop-target]="dragOver()?.orderId === doc.orderId && dragOver()?.index === $index && dragFrom()?.index !== $index"
-              (dragover)="onLineDragOver(doc, $index, $event)"
-              (drop)="onLineDrop(doc, $index, $event)">
+            <tr>
               <td class="num">{{ $index + 1 }}</td>
               <td class="name">
-                @if (!storeMode) {
-                  <span class="drag-grip no-print" draggable="true" title="Перетащите строку, чтобы изменить порядок"
-                        (dragstart)="onLineDragStart(doc, $index, $event)" (dragend)="onLineDragEnd()">⋮⋮</span>
-                }
                 <span class="line-name">{{ line.name }}</span>
                 @if (!storeMode) {
                   <button type="button" class="line-edit no-print" (click)="editRecipe(line.nodeId)"

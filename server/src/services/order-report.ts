@@ -5,6 +5,8 @@
  * storeId = null — документы по всем магазинам, у которых есть заказ на дату.
  */
 import { pool } from '../db';
+import { sheetsPool } from '../db-sheets';
+import { freezeOrderPrices } from './order-price-snapshot';
 
 export const VAT_RATE = 20;
 
@@ -131,12 +133,42 @@ export function reportQuantity(
   };
 }
 
+/**
+ * Порядок строк из листа Google-таблицы за дату доставки: id фасовки -> номер строки.
+ * Отчёт строится строго в порядке Excel-таблицы; листы называются «18.11» / «5.11».
+ * Если отдельная база листов недоступна, порядок остаётся прежним.
+ */
+async function sheetLineOrder(deliveryDate: string): Promise<Map<number, number> | null> {
+  const [, mm, dd] = deliveryDate.split('-');
+  if (!mm || !dd) return null;
+  const wantDay = Number(dd);
+  const wantMonth = Number(mm);
+  try {
+    const { rows } = await sheetsPool.query<{ name: string; links: (number | null)[] }>(
+      'select name, links from google_sheet_tabs'
+    );
+    const tab = rows.find((t) => {
+      const m = String(t.name ?? '').trim().match(/^(\d{1,2})[.,](\d{1,2})$/);
+      return !!m && Number(m[1]) === wantDay && Number(m[2]) === wantMonth;
+    });
+    if (!tab || !Array.isArray(tab.links)) return null;
+    const position = new Map<number, number>();
+    tab.links.forEach((pid, index) => {
+      if (pid != null && !position.has(Number(pid))) position.set(Number(pid), index);
+    });
+    return position;
+  } catch {
+    return null;
+  }
+}
+
 export async function orderReport(
   deliveryDate: string,
   storeId: number | null,
   priceMode: ReportPriceMode = 'sale',
   vatRate: number = VAT_RATE
-): Promise<{ documents: ReportDoc[] }> {
+): Promise<{ documents: ReportDoc[] }> {  // Даты, которые уже наступили, сначала фиксируют цены — дальше читаем слепок.
+  await freezeOrderPrices();
   const { rows } = await pool.query<ReportRow>(
     `select o.id as "orderId",
             o.doc_no as "docNo",
@@ -149,8 +181,10 @@ export async function orderReport(
             s.mbr as "storeMbr", s.account_no as "storeAccount",
             coalesce(pk.title, tc.name) as "cardName",
             coalesce(pk.title_sr, nullif(tc.name_sr, ''), '') as "cardNameSr",
-            i.qty, pk.qty_base::float8 as "qtyBase", pk.price::float8 as price, pk.cost::float8 as cost,
-            pk.price_basis as "priceBasis", u.dimension
+            i.qty, pk.qty_base::float8 as "qtyBase",
+            coalesce(i.price_snapshot, pk.price)::float8 as price,
+            coalesce(i.cost_snapshot, pk.cost)::float8 as cost,
+            coalesce(i.basis_snapshot, pk.price_basis) as "priceBasis", u.dimension
        from store_orders o
        join stores s on s.id = o.store_id
        join store_order_items i on i.order_id = o.id
@@ -220,6 +254,19 @@ export async function orderReport(
     doc.vat = round2(doc.vat + vat);
     doc.gross = round2(doc.gross + net + vat);
     doc.weightKg = Math.round((doc.weightKg + weightKg) * 1000) / 1000;
+  }
+
+  // Строгое правило: строки документа идут в порядке листа Excel за эту дату.
+  // Позиции, которых в листе нет, остаются в конце в прежнем порядке.
+  const sheetOrder = await sheetLineOrder(deliveryDate);
+  if (sheetOrder) {
+    for (const doc of docs.values()) {
+      doc.lines.sort((a, b) => {
+        const pa = sheetOrder.get(a.packagingId) ?? Number.MAX_SAFE_INTEGER;
+        const pb = sheetOrder.get(b.packagingId) ?? Number.MAX_SAFE_INTEGER;
+        return pa - pb;
+      });
+    }
   }
 
   return { documents: [...docs.values()] };

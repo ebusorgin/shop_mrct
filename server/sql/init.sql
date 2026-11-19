@@ -669,6 +669,14 @@ create table if not exists store_order_items (
 -- старые базы: колонка появится при миграции/переименовании
 alter table store_order_items add column if not exists legacy_packaging_id int;
 
+-- Слепок цен строки заказа на момент наступления даты доставки.
+-- Отчёт-отгрузка и архив читают эти значения, поэтому изменение цен фасовок
+-- в будущем не пересчитывает прошлые документы.
+alter table store_order_items add column if not exists price_snapshot numeric;
+alter table store_order_items add column if not exists cost_snapshot numeric;
+alter table store_order_items add column if not exists basis_snapshot text;
+alter table store_order_items add column if not exists snapshot_at timestamptz;
+
 -- ---------- Списание склада по доставке (вручную, кнопкой) ----------
 -- Каждая запись — факт списания сырья по техкартам всех заказов даты доставки.
 -- store_id = null — списание по всем магазинам этой даты; иначе — по одному магазину.

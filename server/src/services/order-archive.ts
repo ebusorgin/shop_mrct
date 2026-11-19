@@ -6,6 +6,7 @@
  */
 import { pool } from '../db';
 import { deliveryWindows } from './order-window';
+import { freezeOrderPrices } from './order-price-snapshot';
 import { reportQuantity, type Dimension, type PriceBasis, type ReportUnit } from './order-report';
 
 /** Будущая дата доставки: open — приём заказа ещё не закрыт. */
@@ -38,6 +39,7 @@ export interface OrderArchivePayload {
 }
 
 export async function orderArchive(storeId: number | null): Promise<OrderArchivePayload> {
+  await freezeOrderPrices();
   const [{ rows: orders }, windows] = await Promise.all([
     pool.query<ArchiveOrderRow>(
       `select o.id,
@@ -57,7 +59,7 @@ export async function orderArchive(storeId: number | null): Promise<OrderArchive
                          'packagingName', pk.name,
                          'qtyBase', pk.qty_base::float8,
                          'unitCode', u.code,
-                         'priceBasis', pk.price_basis,
+                         'priceBasis', coalesce(i.basis_snapshot, pk.price_basis),
                          'dimension', u.dimension
                        ) order by coalesce(pk.title, tc.name), pk.qty_base)
                        filter (where i.packaging_id is not null), '[]') as items

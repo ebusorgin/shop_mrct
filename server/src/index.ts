@@ -5,6 +5,7 @@ import { initDb } from './init-db';
 import { initSheetsDb } from './db-sheets';
 import { pool } from './db';
 import { ensureAdminUser, purgeExpiredSessions } from './services/auth';
+import { freezeOrderPrices } from './services/order-price-snapshot';
 import { attachLogWs } from './services/ws-log';
 
 async function main(): Promise<void> {
@@ -23,6 +24,19 @@ async function main(): Promise<void> {
   server.listen(config.port, config.host, () => {
     console.log(`MIX markt CRM API: http://${config.host}:${config.port}/api`);
   });
+  // Слепки цен: как только дата доставки наступила, цены строк фиксируются,
+  // чтобы будущие изменения цен не пересчитывали прошлые документы.
+  const freeze = (): void => {
+    freezeOrderPrices()
+      .then((n) => {
+        if (n > 0) console.log(`[prices] зафиксированы цены ${n} строк заказов`);
+      })
+      .catch((e: unknown) => {
+        console.error('[prices] снимок цен:', e instanceof Error ? e.message : e);
+      });
+  };
+  setTimeout(freeze, 5000);
+  setInterval(freeze, 30 * 60 * 1000).unref();
 }
 
 main().catch(async (e: unknown) => {

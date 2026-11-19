@@ -14,6 +14,7 @@
 import { config } from '../config';
 import { ApiError } from '../http';
 import { createGptClient } from './gpt-transport';
+import { runCliLogged } from './qoder-cli';
 
 /** Поле-коэффициент пересчёта размерности (совпадает с именем поля в products/semi_products). */
 export type ConvField = 'gPerPcs' | 'mlPerPcs' | 'gPerMl';
@@ -109,67 +110,120 @@ function parseObject(text: string): Record<string, unknown> {
   return JSON.parse(slice) as Record<string, unknown>;
 }
 
-/**
- * Спросить у модели один коэффициент пересчёта размерности.
- * Транспорт (напрямую или через Tor) и ключ — общие с разбором накладных: createGptClient().
- */
-export async function askConvCoefficient(what: {
-  name: string;
-  kind: string;
-  unitCode: string | null;
-  context: string | null;
-  field: ConvField;
-  current: number | null;
-}): Promise<AiCoefficient> {
-  const spec = CONV_FIELDS[what.field];
-  const oa = await createGptClient(); // без ключа бросает 501 — так же, как импорт накладных
-  let text = '';
+/** Спросить текст у модели: OpenAI при наличии ключа, иначе Qoder CLI. */
+async function askModelText(taskText: string): Promise<{ text: string; model: string }> {
+  if (config.openaiKey) {
+    const oa = await createGptClient();
+    try {
+      const r = await oa.chat.completions.create({
+        model: config.openaiModel,
+        response_format: { type: 'json_object' },
+        max_completion_tokens: 900,
+        messages: [
+          { role: 'system', content: SYSTEM },
+          { role: 'user', content: taskText },
+        ],
+      });
+      return { text: r.choices[0]?.message?.content ?? '', model: config.openaiModel };
+    } catch (e) {
+      throw new ApiError(502, `GPT не ответил: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`);
+    }
+  }
   try {
-    const r = await oa.chat.completions.create({
-      model: config.openaiModel,
-      response_format: { type: 'json_object' },
-      max_completion_tokens: 700,
-      messages: [
-        { role: 'system', content: SYSTEM },
-        { role: 'user', content: task(spec, what) },
-      ],
-    });
-    text = r.choices[0]?.message?.content ?? '';
+    const r = await runCliLogged(`${SYSTEM}\n\n${taskText}`, process.cwd(), () => {}, { timeoutMs: 90000 });
+    return { text: r.text, model: r.model ? `Qoder ${r.model}` : 'Qoder CLI' };
   } catch (e) {
-    throw new ApiError(502, `GPT не ответил: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`);
+    throw new ApiError(502, `ИИ недоступен: ${(e instanceof Error ? e.message : String(e)).slice(0, 200)}`);
   }
+}
 
-  let data: Record<string, unknown>;
-  try {
-    data = parseObject(text);
-  } catch {
-    throw new ApiError(502, `GPT вернул не JSON: ${text.slice(0, 160) || 'пустой ответ'}`);
-  }
-
-  const reason = String(data.reason ?? '').trim().slice(0, 400);
-  const confidence = ['high', 'medium', 'low'].includes(String(data.confidence)) ? String(data.confidence) : 'low';
-  const raw = typeof data.value === 'string' ? Number(data.value.replace(',', '.')) : Number(data.value);
-
+/** Проверить ответ модели по физическим границам поля и вернуть безопасное число. */
+function interpret(field: ConvField, data: Record<string, unknown> | null, model: string): AiCoefficient {
+  const spec = CONV_FIELDS[field];
+  const obj = data && typeof data === 'object' ? data : {};
+  const reason = String(obj.reason ?? '').trim().slice(0, 400);
+  const confidence = ['high', 'medium', 'low'].includes(String(obj.confidence)) ? String(obj.confidence) : 'low';
+  const raw = typeof obj.value === 'string' ? Number(obj.value.replace(',', '.')) : Number(obj.value);
   if (!Number.isFinite(raw) || raw <= 0) {
-    return {
-      value: null,
-      confidence,
-      reason: reason || 'модель не дала числовое значение',
-      model: config.openaiModel,
-    };
+    return { value: null, confidence, reason: reason || 'модель не дала числовое значение', model };
   }
   if (raw < spec.min || raw > spec.max) {
-    // число физически невозможно для этого поля — почти всегда перевод не в те единицы
     return {
       value: null,
       confidence: 'low',
       reason:
-        `GPT ответил ${raw} ${spec.unit} — это вне физических пределов поля ` +
+        `Модель ответила ${raw} ${spec.unit} — это вне физических пределов поля ` +
         `(${spec.min}…${spec.max} ${spec.unit}), значение не подставляем. Ответ модели: ${reason || '—'}`,
-      model: config.openaiModel,
+      model,
     };
   }
-  // округляем до микрона/миллиграмма: лишние знаки модель всё равно не гарантирует
   const value = Math.round(raw * 1e6) / 1e6;
-  return { value, confidence, reason, model: config.openaiModel };
+  return { value, confidence, reason, model };
+}
+
+interface ConvWhat {
+  name: string;
+  kind: string;
+  unitCode: string | null;
+  context: string | null;
+  current: Partial<Record<ConvField, number | null>> | null;
+}
+
+export interface AiCoefficientResult extends AiCoefficient {
+  field: ConvField;
+  unit: string;
+}
+
+function taskAll(what: ConvWhat): string {
+  const rows = (Object.keys(CONV_FIELDS) as ConvField[]).map((field) => {
+    const f = CONV_FIELDS[field];
+    const cur = what.current?.[field];
+    return (
+      `- ${field}: ${f.ask}? Это ${f.what}, единицы — ${f.unit}.` +
+      (cur != null ? ` Сейчас в системе задано: ${cur} ${f.unit}.` : '') +
+      ` Учти: ${f.traps}`
+    );
+  });
+  return (
+    `ЗАПИСЬ СКЛАДА: «${what.name}» (${what.kind})\n` +
+    `Учитывается на складе в: ${what.unitCode ?? 'единица не задана'}\n` +
+    (what.context ? `Описание/категория из карточки: ${what.context}\n` : '') +
+    `\nНужны три справочные величины. Если величина неприменима или её нет — value: null.\n` +
+    rows.join('\n') +
+    `\n\nФОРМАТ ОТВЕТА (только JSON, без markdown):\n` +
+    `{"gPerPcs":{"value":number|null,"confidence":"high"|"medium"|"low","reason":"1-3 короткие фразы по-русски"},` +
+    `"mlPerPcs":{"value":number|null,"confidence":"high"|"medium"|"low","reason":"..."},` +
+    `"gPerMl":{"value":number|null,"confidence":"high"|"medium"|"low","reason":"..."}}`
+  );
+}
+
+/** Спросить сразу три коэффициента одним запросом (один процесс CLI вместо трёх). */
+export async function askConvCoefficients(what: ConvWhat): Promise<AiCoefficientResult[]> {
+  const { text, model } = await askModelText(taskAll(what));
+  let data: Record<string, unknown>;
+  try {
+    data = parseObject(text);
+  } catch {
+    throw new ApiError(502, `ИИ вернул не JSON: ${text.slice(0, 160) || 'пустой ответ'}`);
+  }
+  return (Object.keys(CONV_FIELDS) as ConvField[]).map((field) => {
+    const part = data[field] && typeof data[field] === 'object' ? (data[field] as Record<string, unknown>) : null;
+    return { field, unit: CONV_FIELDS[field].unit, ...interpret(field, part, model) };
+  });
+}
+
+/**
+ * Спросить у модели один коэффициент пересчёта размерности.
+ * OpenAI — если задан ключ, иначе Qoder CLI (он же обслуживает «Умный приход»).
+ */
+export async function askConvCoefficient(what: Omit<ConvWhat, 'current'> & { field: ConvField; current: number | null }): Promise<AiCoefficient> {
+  const spec = CONV_FIELDS[what.field];
+  const { text, model } = await askModelText(task(spec, { ...what, current: what.current }));
+  let data: Record<string, unknown>;
+  try {
+    data = parseObject(text);
+  } catch {
+    throw new ApiError(502, `ИИ вернул не JSON: ${text.slice(0, 160) || 'пустой ответ'}`);
+  }
+  return interpret(what.field, data, model);
 }

@@ -384,4 +384,16 @@ export class ApiService {
   }): Observable<M.AiCoefficient> {
     return this.http.post<M.AiCoefficient>(`${this.base}/ai/coefficient`, body);
   }
+
+  /** Сразу три коэффициента одним запросом (один процесс ИИ вместо трёх). */
+  askCoefficients$(body: {
+    sourceType?: 'raw' | 'semi';
+    refId?: number;
+    name?: string;
+    unitCode?: string | null;
+    context?: string | null;
+  }): Observable<{ results: (M.AiCoefficient & { field: 'gPerPcs' | 'mlPerPcs' | 'gPerMl'; unit: string })[] }> {
+    return this.http.post<{ results: (M.AiCoefficient & { field: 'gPerPcs' | 'mlPerPcs' | 'gPerMl'; unit: string })[] }>(
+      `${this.base}/ai/coefficients`, body);
+  }
 }

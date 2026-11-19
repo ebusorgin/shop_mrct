@@ -1,9 +1,8 @@
 import { ChangeDetectionStrategy, ChangeDetectorRef, Component, EventEmitter, Input, OnInit, Output, computed, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { catchError, forkJoin, of } from 'rxjs';
 import { ApiService } from '../core/api.service';
-import { AiCoefficient, Unit } from '../core/models';
+import { Unit } from '../core/models';
 import { httpErr } from '../core/format';
 import { HintDirective } from './hint.directive';
 
@@ -322,45 +321,35 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
     const base = this.edit.id
       ? { sourceType: 'raw' as const, refId: this.edit.id }
       : { sourceType: 'raw' as const, name, unitCode, context: this.edit.category.trim() || null };
-    const fields: ConvField[] = ['gPerPcs', 'mlPerPcs', 'gPerMl'];
-    forkJoin(
-      fields.map((field) =>
-        this.api.askCoefficient$({ ...base, field }).pipe(
-          // одно поле может не ответить — остальные подсказки всё равно нужны
-          catchError((e: unknown) =>
-            of({
-              field,
-              unit: '',
-              value: null,
-              confidence: 'low',
-              reason: `не удалось спросить: ${httpErr(e)}`,
-              model: '',
-            } as AiCoefficient)
-          )
-        )
-      )
-    ).subscribe((results) => {
-      const lines: AiLine[] = [];
-      let model = '';
-      for (const r of results) {
-        if (r.model) model = r.model;
-        if (r.value != null) {
-          if (r.field === 'gPerPcs') this.edit.gPerPcs = r.value;
-          else if (r.field === 'mlPerPcs') this.edit.mlPerPcs = r.value;
-          else this.edit.gPerMl = r.value;
-          lines.push({
-            field: r.field,
-            label: AI_LABELS[r.field],
-            text: `${r.value} ${r.unit} · ${r.reason} · уверенность: ${AI_CONFIDENCE[r.confidence] ?? r.confidence}`,
-          });
-        } else {
-          lines.push({ field: r.field, label: AI_LABELS[r.field], text: `не подставили — ${r.reason}` });
+    this.api.askCoefficients$(base).subscribe({
+      next: (res) => {
+        const lines: AiLine[] = [];
+        let model = '';
+        for (const r of res.results) {
+          if (r.model) model = r.model;
+          if (r.value != null) {
+            if (r.field === 'gPerPcs') this.edit.gPerPcs = r.value;
+            else if (r.field === 'mlPerPcs') this.edit.mlPerPcs = r.value;
+            else this.edit.gPerMl = r.value;
+            lines.push({
+              field: r.field,
+              label: AI_LABELS[r.field],
+              text: `${r.value} ${r.unit} · ${r.reason} · уверенность: ${AI_CONFIDENCE[r.confidence] ?? r.confidence}`,
+            });
+          } else {
+            lines.push({ field: r.field, label: AI_LABELS[r.field], text: `не подставили — ${r.reason}` });
+          }
         }
-      }
-      this.aiModel.set(model);
-      this.aiLines.set(lines);
-      this.asking.set(false);
-      this.cdr.markForCheck();
+        this.aiModel.set(model);
+        this.aiLines.set(lines);
+        this.asking.set(false);
+        this.cdr.markForCheck();
+      },
+      error: (e: unknown) => {
+        this.asking.set(false);
+        this.aiErr.set(`не удалось спросить: ${httpErr(e)}`);
+        this.cdr.markForCheck();
+      },
     });
   }
 

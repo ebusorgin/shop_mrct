@@ -9,6 +9,8 @@ export interface Unit {
 export interface Product {
   id: number;
   name: string;
+  /** Альтернативные названия для накладных и поиска (без учёта регистра). */
+  aliases?: string[];
   category: string;
   unitId: number;
   unitCode: string;

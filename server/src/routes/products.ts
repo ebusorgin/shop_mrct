@@ -14,7 +14,9 @@ const SQL_LIST = `
          p.shelf_life_days as "shelfLifeDays",
          p.g_per_pcs::float8 as "gPerPcs", p.ml_per_pcs::float8 as "mlPerPcs", p.g_per_ml::float8 as "gPerMl",
          coalesce(s.qty, 0)::float8 as "stockQty",
-         coalesce(s.avg_cost, 0)::float8 as "avgCost"
+         coalesce(s.avg_cost, 0)::float8 as "avgCost",
+         coalesce((select json_agg(a.alias_raw order by lower(a.alias_raw))
+                     from product_aliases a where a.product_id = p.id), '[]'::json) as aliases
     from products p
     join units u on u.id = p.unit_id
     left join stock s on s.product_id = p.id`;
@@ -37,6 +39,34 @@ function intOrNull(body: Record<string, unknown>, field: string): number | null 
   return n;
 }
 
+/** Нормализация псевдонима для матчинга — как normName в импорте накладных. */
+function aliasKey(value: string): string {
+  return value.toLowerCase().replace(/ё/g, 'е').replace(/[^а-яa-z0-9]+/g, ' ').trim();
+}
+
+/** Псевдонимы из тела запроса: массив или строка через запятую/точку с запятой/перенос. */
+function aliasList(body: Record<string, unknown>): string[] | null {
+  if (!('aliases' in body)) return null;
+  const v = body.aliases;
+  let raw: unknown[] = [];
+  if (Array.isArray(v)) raw = v;
+  else if (typeof v === 'string') raw = v.split(/[,;\n]+/);
+  else if (v == null) raw = [];
+  else throw new ApiError(400, 'Поле «aliases» — массив строк');
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    const text = String(item ?? '').trim();
+    if (!text) continue;
+    if (text.length > 120) throw new ApiError(400, `Псевдоним слишком длинный: «${text.slice(0, 40)}…»`);
+    const key = aliasKey(text);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(text);
+  }
+  return out;
+}
+
 productsRouter.get(
   '/',
   wrap(async (req, res) => {
@@ -45,7 +75,11 @@ productsRouter.get(
     const q = typeof req.query.q === 'string' ? req.query.q.trim().toLowerCase() : '';
     const cat = typeof req.query.category === 'string' && req.query.category ? req.query.category : null;
     if (q) {
-      where.push(`lower(p.name) like '%' || $${params.length + 1} || '%'`);
+      where.push(
+        `(lower(p.name) like '%' || $${params.length + 1} || '%'
+          or exists (select 1 from product_aliases a
+                      where a.product_id = p.id and a.alias like '%' || $${params.length + 1} || '%'))`
+      );
       params.push(q);
     }
     if (cat) {
@@ -127,6 +161,45 @@ async function ensureCategory(client: { query: (sql: string, params?: unknown[])
   await client.query('insert into product_categories (name) values ($1) on conflict (name) do nothing', [name]);
 }
 
+/**
+ * Заменить ручной список псевдонимов позиции. Псевдонимы из накладных входят в этот же
+ * список, поэтому пользователь может их убрать. Чужой псевдоним не перепривязываем молча:
+ * возвращаем понятную ошибку, чтобы не испортить распознавание накладных.
+ */
+async function saveAliases(
+  client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }> },
+  productId: number,
+  aliases: string[],
+  productName: string
+): Promise<void> {
+  const nameKey = aliasKey(productName);
+  const keys = [...new Set(aliases.map(aliasKey).filter((k) => k && k !== nameKey))];
+  if (keys.length) {
+    const { rows } = await client.query(
+      `select a.alias, a.alias_raw, p.name
+         from product_aliases a join products p on p.id = a.product_id
+        where a.alias = any($1) and a.product_id <> $2 limit 3`,
+      [keys, productId]
+    );
+    if (rows.length) {
+      const raw = String(rows[0].alias_raw ?? rows[0].alias);
+      throw new ApiError(400, `Псевдоним «${raw}» уже привязан к товару «${rows[0].name}»`);
+    }
+  }
+  await client.query('delete from product_aliases where product_id = $1', [productId]);
+  const seen = new Set<string>();
+  for (const text of aliases) {
+    const key = aliasKey(text);
+    if (!key || key === nameKey || seen.has(key)) continue;
+    seen.add(key);
+    await client.query(
+      `insert into product_aliases (product_id, alias, alias_raw, source)
+       values ($1,$2,$3,'manual') on conflict (alias) do nothing`,
+      [productId, key, text]
+    );
+  }
+}
+
 productsRouter.post(
   '/',
   wrap(async (req, res) => {
@@ -138,6 +211,7 @@ productsRouter.post(
     const gPerPcs = convNum(req.body, 'gPerPcs');
     const mlPerPcs = convNum(req.body, 'mlPerPcs');
     const gPerMl = convNum(req.body, 'gPerMl');
+    const aliases = aliasList(req.body);
     const id = await tx(async (client) => {
       await assertBaseUnit(client, unitId, 'Продукт');
       await assertNameFree(client, name, 'products');
@@ -147,12 +221,13 @@ productsRouter.post(
       );
       await client.query('insert into stock (product_id, qty, avg_cost) values ($1, 0, 0)', [rows[0].id]);
       await ensureCategory(client, category || 'прочее');
+      if (aliases?.length) await saveAliases(client, rows[0].id, aliases, name);
       await auditTx(client, req.user, {
         action: 'create',
         entity: 'product',
         entityId: rows[0].id,
         title: `Продукт «${name}»`,
-        details: { category: category || 'прочее', unitId, minStock, shelfLifeDays, gPerPcs, mlPerPcs, gPerMl },
+        details: { category: category || 'прочее', unitId, minStock, shelfLifeDays, gPerPcs, mlPerPcs, gPerMl, aliases: aliases ?? [] },
       });
       return rows[0].id as number;
     });
@@ -179,7 +254,8 @@ productsRouter.patch(
     if ('mlPerPcs' in req.body) push('ml_per_pcs', convNum(req.body, 'mlPerPcs'));
     if ('gPerMl' in req.body) push('g_per_ml', convNum(req.body, 'gPerMl'));
     if (req.body.active !== undefined) push('active', Boolean(req.body.active));
-    if (!fields.length) throw new ApiError(400, 'Нет полей для обновления');
+    const aliases = aliasList(req.body);
+    if (!fields.length && aliases === null) throw new ApiError(400, 'Нет полей для обновления');
     if (req.body.unitId !== undefined) {
       await tx(async (client) => assertBaseUnit(client, reqNum(req.body, 'unitId'), 'Продукт'));
     }
@@ -199,16 +275,20 @@ productsRouter.patch(
       await client.query(`update products set ${fields.join(', ')} where id = $${params.length}`, params);
       if (req.body.category !== undefined) await ensureCategory(client, String(req.body.category).trim() || 'прочее');
       const { rows: after } = await client.query(`select ${snapCols} from products where id = $1`, [id]);
+      if (aliases) await saveAliases(client, id, aliases, String(after[0].name));
       const changes = diff(before[0], after[0]);
       // число мог подсказать GPT (кнопка «Спросить у ИИ») — в журнале это должно отличаться
       // от ручной правки, но только когда менять действительно было что
       const ai = aiSource(req.body ?? {});
+      const details: Record<string, unknown> = { ...changes };
+      if (aliases) details.aliases = aliases;
+      if (ai && Object.keys(changes).length) details.ai_model = ai;
       await auditTx(client, req.user, {
         action: 'update',
         entity: 'product',
         entityId: id,
         title: `Продукт «${after[0].name}»`,
-        details: ai && Object.keys(changes).length ? { ...changes, ai_model: ai } : changes,
+        details,
       });
     });
     res.json({ ok: true });

@@ -189,6 +189,12 @@ interface EditorSnapshot {
       border: 1px solid var(--border); border-radius: 8px; background: #fff; color: var(--ink);
     }
     .side-select:focus { outline: none; border-color: var(--brand-blue); }
+    .side-on-sale {
+      display: flex; align-items: center; gap: 7px; margin: 0 0 8px;
+      font-size: 12.5px; color: var(--muted); cursor: pointer; user-select: none;
+    }
+    .side-on-sale input { width: 15px; height: 15px; accent-color: var(--brand-blue); cursor: pointer; }
+    .side-on-sale b { color: var(--ink); font-weight: 600; }
 
     .side-list { overflow: auto; min-height: 0; flex: 1; display: flex; flex-direction: column; gap: 10px; padding-right: 2px; }
     .list-group { display: flex; flex-direction: column; gap: 6px; }
@@ -423,6 +429,11 @@ interface EditorSnapshot {
           <input [ngModel]="query()" (ngModelChange)="query.set($event)" placeholder="Поиск по названию…" />
           @if (query()) { <button type="button" (click)="query.set('')" title="Очистить">✕</button> }
         </div>
+
+        <label class="side-on-sale" title="Показывать только рецепты, участвующие в продаже">
+          <input type="checkbox" [ngModel]="onSaleOnly()" (ngModelChange)="setOnSaleOnly($event)" />
+          <span><b>в продаже</b></span>
+        </label>
 
         @if (tab() === 'output') {
           <select class="side-select" [ngModel]="catalogFilter()" (ngModelChange)="setCatalog($event)" title="Фильтр по каталогу">
@@ -738,7 +749,7 @@ interface EditorSnapshot {
                       </div>
                     </td>
                     <td class="num">
-                      <input type="number" min="0" step="any"
+                      <input type="number" min="0" step="1" inputmode="numeric"
                              [ngModel]="rowQty(row)"
                              (ngModelChange)="setRowQty(i, $event)" />
                     </td>
@@ -793,7 +804,7 @@ interface EditorSnapshot {
                         (valueChange)="setAddNode($event)" />
                     </label>
                     <label class="f">Количество
-                      <input type="number" min="0" step="any" [ngModel]="addDisplayQty() ?? ''"
+                      <input type="number" min="0" step="1" inputmode="numeric" [ngModel]="addDisplayQty() ?? ''"
                              (ngModelChange)="setAddQty($event)" />
                     </label>
                     <div class="add-unit-box">
@@ -1048,6 +1059,8 @@ export class RecipesComponent implements OnInit {
   readonly query = signal('');
   /** Каталог блюд; запоминается между открытиями раздела. */
   readonly catalogFilter = signal('');
+  /** Показывать только рецепты, участвующие в продаже (по умолчанию — да). */
+  readonly onSaleOnly = signal(true);
   readonly selectedId = signal<number | null>(null);
   readonly recentIds = signal<number[]>([]);
   readonly draft = signal<DraftInput[]>([]);
@@ -1413,6 +1426,38 @@ export class RecipesComponent implements OnInit {
       .filter((n): n is MapNode => !!n);
   });
 
+  /**
+   * Рецептуры, участвующие в продаже: блюда с доступной фасовкой и вся их
+   * цепочка заготовок вверх по составу. Всё остальное не попадает в выборку.
+   */
+  readonly saleNodeIds = computed<Set<number>>(() => {
+    const m = this.map();
+    const set = new Set<number>();
+    if (!m) return set;
+    const opByOut = new Map(m.ops.map((o) => [o.outputNodeId, o] as const));
+    const queue: number[] = [];
+    for (const n of m.nodes) {
+      if (n.kind === 'product') continue;
+      if ((n.packagings ?? []).some((p) => p.available)) {
+        set.add(n.id);
+        queue.push(n.id);
+      }
+    }
+    while (queue.length) {
+      const id = queue.pop() as number;
+      const op = opByOut.get(id);
+      if (!op) continue;
+      for (const i of op.inputs) {
+        if (set.has(i.nodeId)) continue;
+        const src = m.nodes.find((n) => n.id === i.nodeId);
+        if (!src || src.kind === 'product') continue;
+        set.add(i.nodeId);
+        queue.push(i.nodeId);
+      }
+    }
+    return set;
+  });
+
   readonly rows = computed<RecipeRow[]>(() => {
     const m = this.map();
     if (!m) return [];
@@ -1422,6 +1467,7 @@ export class RecipesComponent implements OnInit {
     return m.nodes
       .filter((n) => n.kind !== 'product')
       .filter((n) => this.roleOf(n) === this.tab())
+      .filter((n) => !this.onSaleOnly() || this.saleNodeIds().has(n.id))
       .filter((n) => !cat || String(n.catalogId ?? '') === cat)
       .filter((n) => !q || n.name.toLowerCase().includes(q))
       .map((n) => {
@@ -1446,6 +1492,7 @@ export class RecipesComponent implements OnInit {
   ngOnInit(): void {
     try {
       this.catalogFilter.set(localStorage.getItem('recipes.catalog') ?? '');
+      this.onSaleOnly.set(localStorage.getItem('recipes.onSale') !== '0');
       const raw = JSON.parse(localStorage.getItem(RECENT_KEY) ?? '[]');
       if (Array.isArray(raw)) {
         this.recentIds.set(
@@ -1577,6 +1624,22 @@ export class RecipesComponent implements OnInit {
     this.clearSelection();
   }
 
+  setOnSaleOnly(value: boolean): void {
+    if (this.onSaleOnly() === value) return;
+    if (!this.confirmDiscard()) return;
+    this.onSaleOnly.set(value);
+    try {
+      localStorage.setItem('recipes.onSale', value ? '1' : '0');
+    } catch {
+      /* приватный режим */
+    }
+    this.msg.set('');
+    const current = this.selectedId();
+    if (current != null && !this.rows().some((r) => r.id === current)) {
+      this.clearSelection();
+    }
+  }
+
   setTab(kind: RecipeTab): void {
     if (this.tab() === kind) return;
     if (!this.confirmDiscard()) return;
@@ -1603,8 +1666,11 @@ export class RecipesComponent implements OnInit {
   }
 
   countOf(kind: RecipeTab): number {
+    const set = this.saleNodeIds();
     return (
-      this.map()?.nodes.filter((n) => n.kind !== 'product' && this.roleOf(n) === kind).length ?? 0
+      this.map()?.nodes.filter(
+        (n) => n.kind !== 'product' && this.roleOf(n) === kind && (!this.onSaleOnly() || set.has(n.id))
+      ).length ?? 0
     );
   }
 
@@ -1844,11 +1910,12 @@ export class RecipesComponent implements OnInit {
   }
 
   setAddQty(value: unknown): void {
-    const n = value === '' || value == null ? null : Number(value);
-    if (n == null || !Number.isFinite(n)) {
+    const raw = value === '' || value == null ? null : Number(value);
+    if (raw == null || !Number.isFinite(raw)) {
       this.addQty.set(null);
       return;
     }
+    const n = Math.max(0, Math.round(raw));
     const model = this.addModel();
     if (!model) {
       this.addQty.set(n);
@@ -2373,13 +2440,14 @@ export class RecipesComponent implements OnInit {
     return this.rowChoices(row).length > 1;
   }
 
-  /** Количество для поля ввода — в выбранной пользователем единице. */
+  /** Количество для поля ввода — в выбранной пользователем единице; только целые. */
   rowQty(row: DraftInput): number {
+    const whole = (v: number): number => (v > 0 ? Math.max(1, Math.round(v)) : 0);
     const { src, target, conv } = this.rowNodes(row);
     const displayId = this.rowDisplayUnitId(row);
-    if (!src || !target || displayId == null || displayId === src.unitId) return row.qty;
+    if (!src || !target || displayId == null || displayId === src.unitId) return whole(row.qty);
     const value = toBaseClient(this.units(), row.qty, src.unitId, displayId, conv);
-    return value == null ? row.qty : Math.round(value * 10) / 10;
+    return value == null ? whole(row.qty) : whole(value);
   }
 
   rowUnitCode(row: DraftInput): string {
@@ -2431,8 +2499,9 @@ export class RecipesComponent implements OnInit {
   }
 
   setRowQty(index: number, value: unknown): void {
-    const n = Number(value);
-    if (!Number.isFinite(n)) return;
+    const raw = Number(value);
+    if (!Number.isFinite(raw)) return;
+    const n = Math.max(0, Math.round(raw));
     this.draft.update((list) =>
       list.map((row, i) => {
         if (i !== index) return row;
@@ -2442,7 +2511,7 @@ export class RecipesComponent implements OnInit {
           return { ...row, qty: n };
         }
         const sourceQty = toBaseClient(this.units(), n, displayId, src.unitId, conv);
-        return { ...row, qty: sourceQty == null ? n : Math.round(sourceQty * 1e6) / 1e6 };
+        return { ...row, qty: sourceQty == null ? n : Math.round(sourceQty * 1000) / 1000 };
       })
     );
   }

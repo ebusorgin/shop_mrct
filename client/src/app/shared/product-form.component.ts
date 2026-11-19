@@ -152,7 +152,7 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
         </div>
         @if (aiLines().length) {
           <div class="ai-note">
-            <div class="ai-note-head">🤖 {{ aiModel() || 'ИИ' }}: значения подставлены в поля — проверьте и поправьте перед сохранением</div>
+            <div class="ai-note-head">🤖 {{ aiModel() || 'ИИ' }}: @if (aiApplied() > 0) { значения подставлены в поля — проверьте и поправьте перед сохранением } @else { уверенных значений нет — поля не изменены }</div>
             @for (l of aiLines(); track l.field) {
               <div><b>{{ l.label }}</b> — {{ l.text }}</div>
             }
@@ -242,6 +242,7 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
   /** Ждём GPT по трём коэффициентам — один запрос на поле, ответы могут идти десятки секунд. */
   asking = signal(false);
   aiLines = signal<AiLine[]>([]);
+  aiApplied = signal(0);
   aiModel = signal('');
   aiErr = signal('');
   /** Псевдонимы позиции: как поставщик/накладная называет товар. */
@@ -316,6 +317,7 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
     this.asking.set(true);
     this.aiErr.set('');
     this.aiLines.set([]);
+    this.aiApplied.set(0);
     this.aiModel.set('');
     const unitCode = this.units().find((u) => u.id === this.edit.unitId)?.code ?? null;
     const base = this.edit.id
@@ -325,9 +327,11 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
       next: (res) => {
         const lines: AiLine[] = [];
         let model = '';
+        let applied = 0;
         for (const r of res.results) {
           if (r.model) model = r.model;
           if (r.value != null) {
+            applied++;
             if (r.field === 'gPerPcs') this.edit.gPerPcs = r.value;
             else if (r.field === 'mlPerPcs') this.edit.mlPerPcs = r.value;
             else this.edit.gPerMl = r.value;
@@ -342,6 +346,7 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
         }
         this.aiModel.set(model);
         this.aiLines.set(lines);
+        this.aiApplied.set(applied);
         this.asking.set(false);
         this.cdr.markForCheck();
       },

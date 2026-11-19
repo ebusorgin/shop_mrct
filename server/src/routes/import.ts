@@ -829,21 +829,26 @@ importRouter.post(
       // ── агент «Распознавание» ──────────────────────────────────────────────────
       stageAt = Date.now();
       const readerStart = Date.now();
+      const isNotInvoiceText = (t: string): boolean => /^ТИП:\s*НЕ\s*НАКЛАДНАЯ/i.test((t.split('\n')[0] ?? '').trim());
+      /** Модель увидела заглушку вместо картинки: «Binary content provided», «не вижу изображение» и т.п. */
+      const imageLostText = (t: string): boolean =>
+        /binary\s+content|бинарн|визуальн|изображени[ея]\s+не|не\s+открыл|не\s+вижу|не\s+могу\s+выполнить/i.test(t);
       let transcript = await runReaderAgent(prepared.files, workDir, log);
       let firstLine = transcript.split('\n')[0] ?? '';
-      let notInvoice = /^ТИП:\s*НЕ\s*НАКЛАДНАЯ/i.test(firstLine.trim());
+      let notInvoice = isNotInvoiceText(transcript);
       // Регрессия CLI (1.1.91–1.1.93): в потоковом режиме модель получает заглушку
-      // «Binary content provided» вместо фото и отвечает «НЕ НАКЛАДНАЯ». Повторяем
-      // чтение без stream-json — 1.1.93 в обычном режиме картинку отдаёт.
-      const imageLost = /binary\s+content|бинарн|визуальн|изображени[ея]\s+не|не\s+открыл/i.test(transcript);
-      if (notInvoice && imageLost) {
+      // «Binary content provided» вместо фото. Тогда она либо отвечает «НЕ НАКЛАДНАЯ»,
+      // либо просто пишет прозу без строки «ТИП:». Повторяем чтение без stream-json —
+      // 1.1.93 в обычном режиме картинку отдаёт.
+      let imageLost = imageLostText(transcript) && (notInvoice || !/^ТИП\s*:/m.test(transcript));
+      if (imageLost) {
         log('stage', '«Распознавание» не увидело фото — повторяю чтение в обычном режиме');
         const retry = await runReaderAgent(prepared.files, workDir, log, { plain: true }).catch(() => '');
-        const retryNotInvoice = /^ТИП:\s*НЕ\s*НАКЛАДНАЯ/i.test((retry.split('\n')[0] ?? '').trim());
-        if (retry && !retryNotInvoice) {
+        if (retry && /^ТИП\s*:/m.test(retry) && !isNotInvoiceText(retry)) {
           transcript = retry;
           firstLine = transcript.split('\n')[0] ?? '';
           notInvoice = false;
+          imageLost = false;
           log('stage', '«Распознавание»: обычный режим прочитал документ — продолжаю разбор');
         }
       }
@@ -852,9 +857,9 @@ importRouter.post(
         // Постоянный лог на сервере (journal): без него разбор «НЕ НАКЛАДНАЯ» на проде не диагностируется.
         const cliVer = await qoderCliVersion();
         console.log(
-          `[import] parse-cli job=${jobId || '-'} files=${list.length} ${(totalBytes / 1024).toFixed(0)} КБ · qodercli ${cliVer ?? '?'} · reader ${notInvoice ? 'НЕ НАКЛАДНАЯ' : 'ok'} ${transcript.length} симв. за ${((Date.now() - readerStart) / 1000).toFixed(1)} с`
+          `[import] parse-cli job=${jobId || '-'} files=${list.length} ${(totalBytes / 1024).toFixed(0)} КБ · qodercli ${cliVer ?? '?'} · reader ${imageLost ? 'ФОТО НЕ ДОШЛО' : notInvoice ? 'НЕ НАКЛАДНАЯ' : 'ok'} ${transcript.length} симв. за ${((Date.now() - readerStart) / 1000).toFixed(1)} с`
         );
-        if (notInvoice) {
+        if (notInvoice || imageLost) {
           console.log(`[import] parse-cli job=${jobId || '-'} reader: ${firstLine.slice(0, 300)}`);
           console.log(`[import] parse-cli job=${jobId || '-'} transcript head: ${transcript.replace(/\s+/g, ' ').slice(0, 400)}`);
           if (cliVer && CLI_VERSIONS_WITH_BROKEN_VISION.includes(cliVer)) {
@@ -864,7 +869,14 @@ importRouter.post(
           }
         }
       }
-      log('stage', notInvoice ? '«Распознавание»: документ не похож на накладную' : `«Распознавание»: прочитано ${transcript.length.toLocaleString('ru-RU')} символов`);
+      log(
+        'stage',
+        imageLost
+          ? '«Распознавание»: фото не дошло до модели'
+          : notInvoice
+            ? '«Распознавание»: документ не похож на накладную'
+            : `«Распознавание»: прочитано ${transcript.length.toLocaleString('ru-RU')} символов`
+      );
 
       const catalog = await loadCatalog();
       const units = await loadUnitRows();
@@ -882,12 +894,11 @@ importRouter.post(
       );
       log('stage', `Каталог: ${catalog.products.length} позиций · категорий: ${categories.length} · агент «Каталог» сопоставляет строки`);
 
-      if (notInvoice) {
+      if (notInvoice || imageLost) {
         const rawReason = firstLine.replace(/^ТИП:\s*/i, '').trim();
         const reason = /^(НЕ\s*НАКЛАДНАЯ|NOT\s+(AN\s+)?INVOICE)$/i.test(rawReason) ? '' : rawReason;
         // «Модель не увидела картинку» — это не плохое фото, а сбой передачи файла ИИ:
         // просить переснять лист бессмысленно, нужна понятная причина для администратора.
-        const lostImage = imageLost && !/ГОТОВО|прочитан/i.test(reason);
         res.json({
           storedFile,
           fileName,
@@ -896,7 +907,7 @@ importRouter.post(
           doc: { number: null, supplier: null, date: null, supplierPib: null, currency: 'RSD', totalSum: null, totalVat: null, totalGross: null },
           items: [],
           warnings: [
-            lostImage
+            imageLost
               ? `Сервер не смог передать фото модели ИИ${reason ? `: ${reason}` : ''}. ` +
                 `Файл сохранён, переснимать его не нужно — повторите разбор или сообщите администратору (проверка qodercli на сервере).`
               : `Файл не распознан как накладная${reason ? `: ${reason}` : ''}. ` +

@@ -30,13 +30,13 @@ export interface CliRun {
  */
 export const CLI_VERSIONS_WITH_BROKEN_VISION = ['1.1.91', '1.1.92', '1.1.93'];
 
-let cliVersionCache: string | null | undefined;
+let cliVersionCache: { value: string | null; at: number } | null = null;
 
-/** Версия qodercli (кэш на процесс). Нужна в логах: регрессии CLI ломают чтение фото. */
+/** Версия qodercli (кэш 60 с). Нужна в логах: регрессии CLI ломают чтение фото. */
 export async function qoderCliVersion(): Promise<string | null> {
-  if (cliVersionCache !== undefined) return cliVersionCache;
+  if (cliVersionCache && Date.now() - cliVersionCache.at < 60_000) return cliVersionCache.value;
   const bin = qoderCliBin();
-  cliVersionCache = await new Promise<string | null>((resolve) => {
+  const value = await new Promise<string | null>((resolve) => {
     let out = '';
     let child: ReturnType<typeof spawn>;
     try {
@@ -65,7 +65,8 @@ export async function qoderCliVersion(): Promise<string | null> {
       resolve(m ? m[0] : out.trim().slice(0, 40) || null);
     });
   });
-  return cliVersionCache ?? null;
+  cliVersionCache = { value, at: Date.now() };
+  return value;
 }
 
 /**

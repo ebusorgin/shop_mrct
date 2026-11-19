@@ -507,6 +507,25 @@ insert into units (code, name, dimension, base_factor) values
   ('шт', 'штука',     'count',  1)
 on conflict do nothing;
 
+-- Тара для фасовок: складские позиции категории «упаковка» (банки, крышки, контейнеры).
+-- Нужны, чтобы в «Фасовки и цены» можно было добавлять тару к упаковке продукта.
+insert into products (name, category, unit_id, min_stock, active)
+select v.name, 'упаковка', (select id from units where code = 'шт'), 0, true
+  from (values
+    ('банка 1000г'),
+    ('банка 450г'),
+    ('крышка к банке 1000г'),
+    ('крышка к банке 450г'),
+    ('контейнер 2кг'),
+    ('одноразовая посуда для горячего')
+  ) as v(name)
+on conflict (name) do nothing;
+
+insert into stock (product_id)
+select p.id from products p
+ where lower(btrim(p.category)) = 'упаковка'
+on conflict (product_id) do nothing;
+
 insert into stores (id, code, name, position) values
   (103, 'Mix 38103', 'Магазин 103', 1),
   (104, 'Mix 38104', 'Магазин 104', 2),

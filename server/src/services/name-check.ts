@@ -1,14 +1,13 @@
 import { PoolClient } from 'pg';
 import { ApiError } from '../http';
 
-export type NameTable = 'products' | 'semi_products' | 'tech_cards' | 'dishes';
+// Рецептуры живут на карте и проверяются при сохранении карты;
+// здесь остаётся уникальность складской номенклатуры.
+export type NameTable = 'products';
 export type NameColumn = 'name' | 'name_en' | 'name_sr';
 
 const SECTION: Record<NameTable, string> = {
   products: 'Сырьё',
-  semi_products: 'Полуфабрикаты',
-  tech_cards: 'Техкарты',
-  dishes: 'Изделия',
 };
 
 /**

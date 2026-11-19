@@ -5,7 +5,7 @@ import { FormsModule } from '@angular/forms';
 import { CommonModule } from '@angular/common';
 import { TranslatePipe } from '@ngx-translate/core';
 import { ApiService } from '../core/api.service';
-import { AppSettings, DeliveryRule, GoogleSheet, GptTestResult, OrderHistoryResult, PointCard, ProductCatalog, RawCategory, TechCard } from '../core/models';
+import { AppSettings, DeliveryRule, GoogleSheet, GptTestResult, OrderHistoryResult, PointCard, ProductCatalog, RawCategory } from '../core/models';
 import { fmtQty, httpErr } from '../core/format';
 import { packagingLabel } from '../core/packaging-label';
 import { PasswordFormComponent } from '../shared/password-form.component';
@@ -18,6 +18,17 @@ interface DeliveryDay {
   number: number;
   label: string;
   weekend: boolean;
+}
+
+/** Фасовка карты для ручного сопоставления строк Google-таблицы. */
+interface LinkPackaging {
+  id: number;
+  nodeName: string;
+  title: string | null;
+  qtyBase: number;
+  minOrder: number;
+  unitCode: string;
+  catalogName: string | null;
 }
 
 function calendarDate(date: Date): string {
@@ -69,6 +80,11 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
   changeDetection: ChangeDetectionStrategy.OnPush,
   styles: [`
     .cat-badge { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; border-radius:8px; margin-right:8px; font-size:15px; line-height:1; vertical-align:middle; }
+    /* ---------- ручная сортировка строк (категории, каталоги) ---------- */
+    tr.row-drag { cursor:grab; }
+    tr.row-drag.dragging { opacity:.45; }
+    tr.row-drag.drop-target td { border-top:2px solid var(--brand-blue-dark); }
+    .drag-grip { width:26px; color:var(--muted); letter-spacing:-3px; user-select:none; white-space:nowrap; }
     .pc-icon { width:150px; }
     .pc-color { width:46px; height:34px; padding:2px; }
     /* ---------- блок «Доставки»: шапка, вкладки, календарь, правило ---------- */
@@ -545,17 +561,28 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
       <h3>📦 Категории номенклатуры</h3>
       <div class="muted" style="font-size:12px; margin-bottom:10px">
         Список предлагается при выборе категории у позиции склада. При удалении категории её позиции переходят в «прочее».
+        Порядок меняется перетаскиванием строк и общий для всех страниц.
       </div>
       @if (catsErr()) { <div class="err">{{ catsErr() }}</div> }
       @if (catsMsg()) { <div class="ok-msg">{{ catsMsg() }}</div> }
       <table class="tbl" aria-label="Категории номенклатуры">
-        <tr><th>Категория</th><th class="num">Позиций</th><th></th></tr>
+        <tr><th class="drag-grip" aria-label="Перетаскивание"></th><th>Категория</th><th class="num">Позиций</th><th></th></tr>
         @for (c of cats(); track c.id) {
-          <tr>
+          <tr class="row-drag"
+              [attr.draggable]="editingCat() === c.id ? null : 'true'"
+              [class.dragging]="dragCatId() === c.id"
+              [class.drop-target]="dragCatOver() === c.id && dragCatId() !== c.id && dragCatId() !== null"
+              (dragstart)="onCatDragStart($event, c)"
+              (dragover)="onCatDragOver($event, c)"
+              (drop)="onCatDrop($event, c)"
+              (dragend)="onCatDragEnd()">
+            <td class="drag-grip" title="Перетащите, чтобы изменить порядок">⋮⋮</td>
             @if (editingCat() === c.id) {
               <td>
                 <div class="row" style="gap:6px; align-items:center">
                   <input [ngModel]="editCatName()" (ngModelChange)="editCatName.set($event)"
+                    [readOnly]="!!c.protected"
+                    [title]="c.protected ? 'Системную категорию нельзя переименовать' : ''"
                     (keyup.enter)="saveRename()" (keyup.escape)="editingCat.set(null)" />
                   <select class="pc-icon" title="Иконка" [ngModel]="editCatIcon()" (ngModelChange)="editCatIcon.set($event)">
                     <option value="">— без иконки —</option>
@@ -579,12 +606,17 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
               </td>
               <td class="num muted">{{ c.productCount }}</td>
               <td style="white-space:nowrap">
-                <button class="btn sm" (click)="startRename(c)" title="Изменить">✎</button>
-                <button class="btn sm danger" (click)="deleteCat(c)" title="Удалить">🗑</button>
+                <button class="btn sm" (click)="startRename(c)"
+                        [title]="c.protected ? 'Изменить иконку и цвет (имя заблокировано)' : 'Изменить'">✎</button>
+                @if (c.protected) {
+                  <button class="btn sm" disabled title="Системная категория — удаление запрещено">🔒</button>
+                } @else {
+                  <button class="btn sm danger" (click)="deleteCat(c)" title="Удалить">🗑</button>
+                }
               </td>
             }
           </tr>
-        } @empty { <tr class="empty"><td colspan="3">Категорий пока нет — добавьте первую</td></tr> }
+        } @empty { <tr class="empty"><td colspan="4">Категорий пока нет — добавьте первую</td></tr> }
       </table>
       <div class="row mt">
         <input style="max-width:240px" placeholder="Новая категория" [ngModel]="newCatName()"
@@ -607,17 +639,28 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
       <h3>🥗 Каталог продукции</h3>
       <div class="muted" style="font-size:12px; margin-bottom:10px">
         Список предлагается при создании техкарты. При удалении каталога техкарты остаются, но без каталога.
+        Порядок меняется перетаскиванием строк и общий для всех страниц.
       </div>
       @if (pcErr()) { <div class="err">{{ pcErr() }}</div> }
       @if (pcMsg()) { <div class="ok-msg">{{ pcMsg() }}</div> }
       <table class="tbl" aria-label="Каталоги продукции">
-        <tr><th>Каталог</th><th class="num">Техкарт</th><th></th></tr>
+        <tr><th class="drag-grip" aria-label="Перетаскивание"></th><th>Каталог</th><th class="num">Техкарт</th><th></th></tr>
         @for (c of productCatalogs(); track c.id) {
-          <tr>
+          <tr class="row-drag"
+              [attr.draggable]="editingPc() === c.id ? null : 'true'"
+              [class.dragging]="dragPcId() === c.id"
+              [class.drop-target]="dragPcOver() === c.id && dragPcId() !== c.id && dragPcId() !== null"
+              (dragstart)="onPcDragStart($event, c)"
+              (dragover)="onPcDragOver($event, c)"
+              (drop)="onPcDrop($event, c)"
+              (dragend)="onPcDragEnd()">
+            <td class="drag-grip" title="Перетащите, чтобы изменить порядок">⋮⋮</td>
             @if (editingPc() === c.id) {
               <td>
                 <div class="row" style="gap:6px; align-items:center">
                   <input [ngModel]="editPcName()" (ngModelChange)="editPcName.set($event)"
+                    [readOnly]="!!c.protected"
+                    [title]="c.protected ? 'Системный каталог нельзя переименовать' : ''"
                     (keyup.enter)="savePcRename()" (keyup.escape)="editingPc.set(null)" />
                   <select class="pc-icon" title="Иконка" [ngModel]="editPcIcon()" (ngModelChange)="editPcIcon.set($event)">
                     <option value="">— без иконки —</option>
@@ -641,12 +684,17 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
               </td>
               <td class="num muted">{{ c.cardCount ?? 0 }}</td>
               <td style="white-space:nowrap">
-                <button class="btn sm" (click)="startPcRename(c)" title="Изменить">✎</button>
-                <button class="btn sm danger" (click)="deletePc(c)" title="Удалить">🗑</button>
+                <button class="btn sm" (click)="startPcRename(c)"
+                        [title]="c.protected ? 'Изменить иконку и цвет (имя заблокировано)' : 'Изменить'">✎</button>
+                @if (c.protected) {
+                  <button class="btn sm" disabled title="Системный каталог — удаление запрещено">🔒</button>
+                } @else {
+                  <button class="btn sm danger" (click)="deletePc(c)" title="Удалить">🗑</button>
+                }
               </td>
             }
           </tr>
-        } @empty { <tr class="empty"><td colspan="3">Каталогов пока нет — добавьте первый</td></tr> }
+        } @empty { <tr class="empty"><td colspan="4">Каталогов пока нет — добавьте первый</td></tr> }
       </table>
       <div class="row mt">
         <input style="max-width:240px" placeholder="Новый каталог" [ngModel]="newPcName()"
@@ -908,11 +956,7 @@ export class SettingsComponent implements OnInit {
   sheetMinOrder(rowIndex: number): number | null {
     const id = this.sheetLink(rowIndex);
     if (id === null) return null;
-    for (const card of this.cards()) {
-      const found = (card.packagings ?? []).find((pk) => pk.id === id);
-      if (found) return found.minOrder;
-    }
-    return null;
+    return this.linkPackages().find((pk) => pk.id === id)?.minOrder ?? null;
   }
 
   /** Позиция листа без продукции — в её ячейке вместо пустого поля показываем выбор. */
@@ -966,26 +1010,26 @@ export class SettingsComponent implements OnInit {
     y: number;
   } | null>(null);
   readonly linkSaving = signal(false);
-  readonly cards = signal<TechCard[]>([]);
+  readonly linkPackages = signal<LinkPackaging[]>([]);
   private cardsRequested = false;
 
   readonly linkOptions = computed<PickOption[]>(() =>
-    this.cards()
-      .flatMap((card) => (card.packagings ?? []).map((pk) => ({
+    this.linkPackages()
+      .map((pk) => ({
         id: pk.id,
-        label: packagingLabel(card.name, fmtQty(pk.qtyBase, card.portionUnitCode)),
-        unit: fmtQty(pk.qtyBase, card.portionUnitCode),
-        group: card.catalogName ?? undefined,
-      })))
+        label: packagingLabel(pk.title ?? pk.nodeName, fmtQty(pk.qtyBase, pk.unitCode)),
+        unit: fmtQty(pk.qtyBase, pk.unitCode),
+        group: pk.catalogName ?? undefined,
+      }))
       .sort((a, b) => a.label.localeCompare(b.label, 'ru'))
   );
 
-  /** Список продукции грузим один раз — только когда он реально понадобился. */
+  /** Список фасовок карты грузим один раз — только когда он реально понадобился. */
   private ensureCards(): void {
     if (this.cardsRequested) return;
     this.cardsRequested = true;
-    this.api.cards$().pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
-      next: (cards) => this.cards.set(cards),
+    this.api.mapPackagings$().pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: (packagings) => this.linkPackages.set(packagings),
       error: (e) => {
         this.cardsRequested = false;
         this.sheetErr.set(`Не удалось загрузить продукцию: ${httpErr(e)}`);
@@ -1313,6 +1357,12 @@ export class SettingsComponent implements OnInit {
   editPcIcon = signal('');
   editPcColor = signal('#eef2f7');
 
+  // ---- ручная сортировка перетаскиванием ----
+  dragCatId = signal<number | null>(null);
+  dragCatOver = signal<number | null>(null);
+  dragPcId = signal<number | null>(null);
+  dragPcOver = signal<number | null>(null);
+
   /** Набор иконок каталога: одна иконка не может быть у двух каталогов. */
   readonly catalogIcons = [
     '🥗', '🥙', '🌯', '🌮', '🍕', '🍔', '🍟', '🍲', '🍜', '🥘', '🍛', '🍣',
@@ -1591,6 +1641,64 @@ export class SettingsComponent implements OnInit {
     });
   }
 
+  /** Перестановка элемента списка: dragged встаёт на место target. */
+  private moveTo<T extends { id: number }>(list: T[], fromId: number, toId: number): T[] {
+    const from = list.findIndex((x) => x.id === fromId);
+    const to = list.findIndex((x) => x.id === toId);
+    if (from < 0 || to < 0 || from === to) return list;
+    const next = [...list];
+    const [item] = next.splice(from, 1);
+    next.splice(to, 0, item);
+    return next;
+  }
+
+  onCatDragStart(e: DragEvent, c: RawCategory): void {
+    if (this.editingCat() === c.id) { e.preventDefault(); return; }
+    this.dragCatId.set(c.id);
+    this.dragCatOver.set(null);
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', String(c.id));
+    }
+  }
+
+  onCatDragOver(e: DragEvent, c: RawCategory): void {
+    if (this.dragCatId() === null) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    if (this.dragCatOver() !== c.id) this.dragCatOver.set(c.id);
+  }
+
+  onCatDrop(e: DragEvent, c: RawCategory): void {
+    e.preventDefault();
+    const from = this.dragCatId();
+    this.dragCatEnd();
+    if (from === null || from === c.id) return;
+    const next = this.moveTo(this.cats(), from, c.id);
+    if (next === this.cats()) return;
+    this.cats.set(next);
+    this.saveCatOrder();
+  }
+
+  onCatDragEnd(): void { this.dragCatEnd(); }
+
+  private dragCatEnd(): void {
+    this.dragCatId.set(null);
+    this.dragCatOver.set(null);
+  }
+
+  private saveCatOrder(): void {
+    this.catsErr.set('');
+    this.catsMsg.set('');
+    this.api.reorderRawCategories$(this.cats().map((c) => c.id)).subscribe({
+      next: () => this.catsMsg.set('Порядок сохранён ✓'),
+      error: (e: unknown) => {
+        this.catsErr.set(`Не удалось сохранить порядок: ${httpErr(e)}`);
+        this.loadCats();
+      },
+    });
+  }
+
   // ---- каталог продукции ----
   loadPcs(): void {
     this.api.productCatalogList$().subscribe({
@@ -1652,6 +1760,53 @@ export class SettingsComponent implements OnInit {
         this.loadPcs();
       },
       error: (e: unknown) => this.pcErr.set(httpErr(e)),
+    });
+  }
+
+  onPcDragStart(e: DragEvent, c: ProductCatalog): void {
+    if (this.editingPc() === c.id) { e.preventDefault(); return; }
+    this.dragPcId.set(c.id);
+    this.dragPcOver.set(null);
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', String(c.id));
+    }
+  }
+
+  onPcDragOver(e: DragEvent, c: ProductCatalog): void {
+    if (this.dragPcId() === null) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    if (this.dragPcOver() !== c.id) this.dragPcOver.set(c.id);
+  }
+
+  onPcDrop(e: DragEvent, c: ProductCatalog): void {
+    e.preventDefault();
+    const from = this.dragPcId();
+    this.dragPcEnd();
+    if (from === null || from === c.id) return;
+    const next = this.moveTo(this.productCatalogs(), from, c.id);
+    if (next === this.productCatalogs()) return;
+    this.productCatalogs.set(next);
+    this.savePcOrder();
+  }
+
+  onPcDragEnd(): void { this.dragPcEnd(); }
+
+  private dragPcEnd(): void {
+    this.dragPcId.set(null);
+    this.dragPcOver.set(null);
+  }
+
+  private savePcOrder(): void {
+    this.pcErr.set('');
+    this.pcMsg.set('');
+    this.api.reorderProductCatalogs$(this.productCatalogs().map((c) => c.id)).subscribe({
+      next: () => this.pcMsg.set('Порядок сохранён ✓'),
+      error: (e: unknown) => {
+        this.pcErr.set(`Не удалось сохранить порядок: ${httpErr(e)}`);
+        this.loadPcs();
+      },
     });
   }
 }

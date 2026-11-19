@@ -100,7 +100,7 @@ export async function importOrderHistory(): Promise<OrderHistoryResult> {
 
   const [{ rows: stores }, { rows: packagings }] = await Promise.all([
     pool.query<{ id: number; code: string }>('select id, code from stores'),
-    pool.query<{ id: number }>('select id from product_packagings'),
+    pool.query<{ id: number }>('select id from prod_packagings'),
   ]);
   const storesById = new Map(stores.map((store) => [store.id, store.id]));
   const storesByCode = new Map(stores.map((store) => [store.code, store.id]));

@@ -1,5 +1,5 @@
 import { Injectable, inject } from '@angular/core';
-import { HttpClient, HttpParams } from '@angular/common/http';
+import { HttpClient, HttpParams, HttpResponse } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import * as M from './models';
 
@@ -91,36 +91,52 @@ export class ApiService {
     return this.http.post<M.ImportParseResult>(`${this.base}/import/parse-cli`, body);
   }
 
-  // ---- semis ----
-  /** заготовки каталога — они же «мои схемы» конструктора (список отдаёт only hasBoard) */
-  semis$(): Observable<M.Semi[]> { return this.http.get<M.Semi[]>(`${this.base}/semis`); }
-  /** одна заготовка со столом конструктора (board) */
-  semi$(id: number): Observable<M.Semi> { return this.http.get<M.Semi>(`${this.base}/semis/${id}`); }
-  createSemi(body: unknown): Observable<{ id: number }> { return this.http.post<{ id: number }>(`${this.base}/semis`, body); }
-  patchSemi(id: number, body: unknown): Observable<unknown> { return this.http.patch(`${this.base}/semis/${id}`, body); }
-  deleteSemi(id: number): Observable<unknown> { return this.http.delete(`${this.base}/semis/${id}`); }
-
-  // ---- cards ----
-  cards$(): Observable<M.TechCard[]> { return this.http.get<M.TechCard[]>(`${this.base}/cards`); }
   productCatalogs$(): Observable<M.ProductCatalog[]> {
     return this.http.get<M.ProductCatalog[]>(`${this.base}/meta/product-catalogs`);
   }
-  createCard(body: unknown): Observable<{ id: number }> { return this.http.post<{ id: number }>(`${this.base}/cards`, body); }
-  patchCard(id: number, body: unknown): Observable<unknown> { return this.http.patch(`${this.base}/cards/${id}`, body); }
-  deleteCard(id: number): Observable<unknown> { return this.http.delete(`${this.base}/cards/${id}`); }
-  cardExpansion$(cardId: number, portions: number): Observable<M.ExpansionRow[]> {
-    return this.http.get<M.ExpansionRow[]>(`${this.base}/cards/${cardId}/expansion`, {
-      params: new HttpParams().set('portions', String(portions)),
-    });
+  /** Активные фасовки карты: ручное сопоставление строк Google-таблицы. */
+  mapPackagings$(): Observable<{
+    id: number; nodeId: number; nodeName: string; title: string | null; name: string;
+    qtyBase: number; minOrder: number; available: boolean; price: number;
+    unitCode: string; unitId: number; catalogName: string | null;
+  }[]> {
+    return this.http.get<{
+      id: number; nodeId: number; nodeName: string; title: string | null; name: string;
+      qtyBase: number; minOrder: number; available: boolean; price: number;
+      unitCode: string; unitId: number; catalogName: string | null;
+    }[]>(`${this.base}/production-map/packagings`);
   }
 
   // ---- production map (единый граф производства) ----
   productionMap$(): Observable<M.ProductionMap> {
     return this.http.get<M.ProductionMap>(`${this.base}/production-map`);
   }
-  saveProductionMap(body: unknown): Observable<{ ok: boolean }> {
-    return this.http.put<{ ok: boolean }>(`${this.base}/production-map`, body);
+  saveProductionMap(body: unknown): Observable<{
+    ok: boolean;
+    version: number;
+    warnings: { opUid: number; opName: string; plan: number; net: number; diff: number }[];
+  }> {
+    return this.http.put<{
+      ok: boolean;
+      version: number;
+      warnings: { opUid: number; opName: string; plan: number; net: number; diff: number }[];
+    }>(`${this.base}/production-map`, body);
   }
+  /** ИИ-раскладка: облака сырья по категориям и компактные этапы. */
+  aiLayoutMap$(body: unknown, ai = true): Observable<{
+    nodes: { uid: number; x: number; y: number }[];
+    ops: { uid: number; x: number; y: number }[];
+    summary: string;
+    ai: boolean;
+  }> {
+    return this.http.post<{
+      nodes: { uid: number; x: number; y: number }[];
+      ops: { uid: number; x: number; y: number }[];
+      summary: string;
+      ai: boolean;
+    }>(`${this.base}/production-map/ai-layout`, { ...(body as object), ai });
+  }
+
   /** Выпуск партии по операции: списание сырья по составу с потерями. */
   produceMapBatch$(opId: number, qty?: number): Observable<M.MapProduceResult> {
     return this.http.post<M.MapProduceResult>(`${this.base}/production-map/ops/${opId}/produce`, { qty: qty ?? null });
@@ -205,6 +221,23 @@ export class ApiService {
   reorderReportLines$(orderId: number, packagingIds: number[]): Observable<{ ok: boolean; packagingIds: number[] }> {
     return this.http.put<{ ok: boolean; packagingIds: number[] }>(`${this.base}/orders/report/order`, { orderId, packagingIds });
   }
+  /** Документы даты в PDF: один документ — сам PDF, несколько — zip-архив. */
+  downloadOrderReportFile$(
+    date: string,
+    storeId?: number,
+    priceMode: 'sale' | 'cost' = 'sale',
+    vatRate = 20
+  ): Observable<HttpResponse<Blob>> {
+    const params: Record<string, string> = { date };
+    if (storeId !== undefined) params['storeId'] = String(storeId);
+    if (priceMode === 'cost') params['price'] = 'cost';
+    if (vatRate !== 20) params['vat'] = String(vatRate);
+    return this.http.get(`${this.base}/orders/report/pdf`, { params, responseType: 'blob', observe: 'response' });
+  }
+  /** Изменить количество упаковок позиции в заказе (офис) — строка заказа перезаписывается. */
+  setReportLineQty$(orderId: number, packagingId: number, qty: number): Observable<{ ok: boolean }> {
+    return this.http.put<{ ok: boolean }>(`${this.base}/orders/report/line`, { orderId, packagingId, qty });
+  }
 
   // ---- ручное списание склада по доставке (офис) ----
   /** Статус списаний на дату доставки. */
@@ -285,6 +318,9 @@ export class ApiService {
   deleteRawCategory$(id: number): Observable<{ ok: boolean }> {
     return this.http.delete<{ ok: boolean }>(`${this.base}/settings/raw-categories/${id}`);
   }
+  reorderRawCategories$(ids: number[]): Observable<{ ok: boolean }> {
+    return this.http.put<{ ok: boolean }>(`${this.base}/settings/raw-categories/order`, { ids });
+  }
   allRawProducts$(): Observable<M.RawProductRef[]> {
     return this.http.get<M.RawProductRef[]>(`${this.base}/settings/raw-products-all`);
   }
@@ -295,6 +331,9 @@ export class ApiService {
   }
   createProductCatalog$(name: string, icon = '', color = ''): Observable<M.ProductCatalog> {
     return this.http.post<M.ProductCatalog>(`${this.base}/settings/product-catalogs`, { name, icon, color });
+  }
+  reorderProductCatalogs$(ids: number[]): Observable<{ ok: boolean }> {
+    return this.http.put<{ ok: boolean }>(`${this.base}/settings/product-catalogs/order`, { ids });
   }
   updateProductCatalog$(id: number, patch: { name?: string; icon?: string; color?: string }): Observable<{ ok: boolean }> {
     return this.http.patch<{ ok: boolean }>(`${this.base}/settings/product-catalogs/${id}`, patch);

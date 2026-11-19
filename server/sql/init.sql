@@ -67,6 +67,27 @@ alter table product_categories add column if not exists color text not null defa
 create unique index if not exists product_categories_icon_uniq
   on product_categories (icon) where icon <> '';
 
+-- Системные категории склада: их нельзя удалить (и переименовать).
+alter table product_categories add column if not exists protected boolean not null default false;
+-- Ручной порядок категорий (перетаскивание в настройках).
+alter table product_categories add column if not exists position int not null default 0;
+do $$
+begin
+  if not exists (select 1 from app_migrations where name = 'rawcat_position_v1') then
+    with ordered as (
+      select id, row_number() over (order by name) as rn from product_categories
+    )
+    update product_categories pc set position = o.rn from ordered o where o.id = pc.id;
+    insert into app_migrations (name) values ('rawcat_position_v1');
+  end if;
+end $$;
+insert into product_categories (name, icon, color, protected, position) values
+  ('упаковка', '📦', '#efe7d8', true, coalesce((select max(position) + 1 from product_categories), 1)),
+  ('прочее',   '🗂', '#e9e6df', true, coalesce((select max(position) + 1 from product_categories), 1) + 1)
+on conflict (name) do update set protected = true;
+update product_categories set protected = true
+ where lower(btrim(name)) in ('упаковка', 'прочее');
+
 -- Каталог готовой продукции (разделы меню/витрины): техкарты ссылаются на него.
 create table if not exists product_catalogs (
   id       serial primary key,
@@ -505,6 +526,22 @@ insert into product_catalogs (name, position) values
   ('супы', 5)
 on conflict (name) do nothing;
 
+-- Системный каталог продукции «прочее» удалять и переименовывать нельзя.
+alter table product_catalogs add column if not exists protected boolean not null default false;
+
+-- Каталоги для рецептур карты: заготовки, выпечка и десерты.
+insert into product_catalogs (name, position, icon, color) values
+  ('заготовки', 6, '🥣', '#d8c3a5'),
+  ('выпечка', 7, '🥐', '#f0c987'),
+  ('десерты', 8, '🍰', '#f3b6c2'),
+  ('прочее', 9, '📦', '#d9d3c7')
+on conflict (name) do update
+  -- позицию не трогаем: порядок задаётся вручную в настройках и должен переживать перезапуск
+  set icon = case when product_catalogs.icon = '' then excluded.icon else product_catalogs.icon end,
+      color = case when product_catalogs.color = '' then excluded.color else product_catalogs.color end;
+update product_catalogs set protected = true
+ where lower(btrim(name)) = 'прочее';
+
 -- ---------- Периоды повторяющихся доставок ----------
 -- Справочник: активный день недели (ISO: 1 — понедельник … 7 — воскресенье) или активное
 -- число месяца (1…31) делает каждый подходящий будущий день днём доставки. Эти даты в
@@ -575,7 +612,7 @@ create unique index if not exists store_orders_doc_no_uniq
   on store_orders (doc_no) where doc_no is not null;
 create sequence if not exists store_order_doc_seq start with 843 minvalue 1;
 
--- Ручной порядок строк в отчёте-отгрузке: массив id фасовок этого заказа.
+-- Ручной порядок строк в отчёте-отгрузке: массив id фасовок карты (prod_packagings).
 -- Пусто/null — обычный порядок каталога; меняется перетаскиванием в отчёте.
 alter table store_orders add column if not exists line_order int[];
 
@@ -603,10 +640,15 @@ end $$;
 
 create table if not exists store_order_items (
   order_id     int not null references store_orders(id) on delete cascade,
-  packaging_id int not null references product_packagings(id),
+  -- после миграции на карту это prod_packagings.id; у существующих баз id
+  -- переезжает туда же, старый id остаётся в legacy_packaging_id
+  packaging_id int not null,
+  legacy_packaging_id int,
   qty          int not null check (qty > 0 and qty <= 999),
   primary key (order_id, packaging_id)
 );
+-- старые базы: колонка появится при миграции/переименовании
+alter table store_order_items add column if not exists legacy_packaging_id int;
 
 -- ---------- Списание склада по доставке (вручную, кнопкой) ----------
 -- Каждая запись — факт списания сырья по техкартам всех заказов даты доставки.
@@ -870,6 +912,11 @@ create table if not exists prod_nodes (
   note        text not null default ''
 );
 create index if not exists prod_nodes_kind_idx on prod_nodes (kind);
+-- архив вместо удаления: на фасовки ссылается история заказов
+alter table prod_nodes add column if not exists archived boolean not null default false;
+alter table prod_nodes add column if not exists legacy_kind text;
+alter table prod_nodes add column if not exists legacy_id int;
+create index if not exists prod_nodes_archived_idx on prod_nodes (archived);
 
 create table if not exists prod_ops (
   id             serial primary key,
@@ -883,6 +930,8 @@ create table if not exists prod_ops (
   position       int not null default 0
 );
 create index if not exists prod_ops_output_idx on prod_ops (output_node_id);
+alter table prod_ops add column if not exists legacy_source text;
+alter table prod_ops add column if not exists legacy_id int;
 -- план выхода операции: сколько нужно получить; выход считается как сумма ингредиентов
 alter table prod_ops add column if not exists plan_qty numeric check (plan_qty is null or plan_qty >= 0);
 alter table prod_ops add column if not exists plan_unit_id int;
@@ -921,7 +970,39 @@ create table if not exists prod_packagings (
   position    int not null default 0
 );
 create index if not exists prod_packagings_node_idx on prod_packagings (node_id);
-create unique index if not exists prod_packagings_default_uniq on prod_packagings (node_id) where is_default;
+alter table prod_packagings add column if not exists archived boolean not null default false;
+alter table prod_packagings add column if not exists legacy_id int;
+alter table prod_packagings add column if not exists title text;
+alter table prod_packagings add column if not exists title_en text;
+alter table prod_packagings add column if not exists title_sr text;
+-- тара фасовки: несколько позиций склада из категории «упаковка» на одну фасовку,
+-- без повторов (пара «фасовка + позиция» — первичный ключ).
+create table if not exists prod_packaging_tare (
+  packaging_id int not null references prod_packagings(id) on delete cascade,
+  product_id   int not null references products(id) on delete cascade,
+  position     int not null default 0,
+  primary key (packaging_id, product_id)
+);
+create index if not exists prod_packaging_tare_product_idx on prod_packaging_tare (product_id);
+do $$
+begin
+  if not exists (select 1 from app_migrations where name = 'packaging_tare_multi_v1') then
+    if exists (select 1 from information_schema.columns
+                where table_schema = current_schema()
+                  and table_name = 'prod_packagings' and column_name = 'tare_product_id') then
+      insert into prod_packaging_tare (packaging_id, product_id, position)
+        select id, tare_product_id, 0 from prod_packagings where tare_product_id is not null
+        on conflict do nothing;
+    end if;
+    insert into app_migrations (name) values ('packaging_tare_multi_v1');
+  end if;
+end $$;
+alter table prod_packagings drop constraint if exists prod_packagings_tare_fkey;
+alter table prod_packagings drop column if exists tare_product_id;
+create index if not exists prod_packagings_archived_idx on prod_packagings (archived);
+drop index if exists prod_packagings_default_uniq;
+create unique index if not exists prod_packagings_default_uniq
+  on prod_packagings (node_id) where is_default and not archived;
 
 -- ---------- Операционный контур карты производства: выпуск партий ----------
 create table if not exists map_batches (
@@ -953,3 +1034,19 @@ create table if not exists map_meta (
   updated_at timestamptz not null default now()
 );
 insert into map_meta (id, version) values (1, 1) on conflict (id) do nothing;
+
+-- Строки заказов ссылаются на фасовки карты. На старых базах внешний ключ
+-- добавляется только после миграции: до неё packaging_id ещё хранит старые id.
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'store_order_items_prod_packaging_fkey'
+  ) and (
+    not exists (select 1 from store_order_items)
+    or exists (select 1 from app_migrations where name = 'legacy_to_map_v1')
+  ) then
+    alter table store_order_items
+      add constraint store_order_items_prod_packaging_fkey
+      foreign key (packaging_id) references prod_packagings(id);
+  end if;
+end $$;

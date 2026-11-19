@@ -51,22 +51,22 @@ export async function orderArchive(storeId: number | null): Promise<OrderArchive
               coalesce(json_agg(json_build_object(
                          'packagingId', i.packaging_id,
                          'qty', i.qty,
-                         'cardName', tc.name,
-                         'cardNameEn', tc.name_en,
-                         'cardNameSr', tc.name_sr,
+                         'cardName', coalesce(pk.title, tc.name),
+                         'cardNameEn', coalesce(pk.title_en, tc.name_en),
+                         'cardNameSr', coalesce(pk.title_sr, tc.name_sr),
                          'packagingName', pk.name,
                          'qtyBase', pk.qty_base::float8,
                          'unitCode', u.code,
                          'priceBasis', pk.price_basis,
                          'dimension', u.dimension
-                       ) order by tc.name, pk.qty_base)
+                       ) order by coalesce(pk.title, tc.name), pk.qty_base)
                        filter (where i.packaging_id is not null), '[]') as items
          from store_orders o
          join stores s on s.id = o.store_id
          left join store_order_items i on i.order_id = o.id
-         left join product_packagings pk on pk.id = i.packaging_id
-         left join tech_cards tc on tc.id = pk.card_id
-         left join units u on u.id = tc.portion_unit_id
+         left join prod_packagings pk on pk.id = i.packaging_id
+         left join prod_nodes tc on tc.id = pk.node_id
+         left join units u on u.id = tc.unit_id
         where $1::int is null or o.store_id = $1
         group by o.id, s.code, s.name
         order by o.delivery_date desc, s.code`,

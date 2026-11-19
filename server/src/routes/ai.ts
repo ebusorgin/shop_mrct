@@ -32,13 +32,6 @@ const SQL_PRODUCT = `
     left join units u on u.id = p.unit_id
    where p.id = $1`;
 
-const SQL_SEMI = `
-  select sp.name, u.code as "unitCode", nullif(trim(sp.note), '') as context,
-         ${convCols('sp')}
-    from semi_products sp
-    left join units u on u.id = sp.unit_id
-   where sp.id = $1`;
-
 /** Необязательный текст из тела запроса: пустое/нестроковое значение — «не задано». */
 function optText(v: unknown): string | null {
   if (typeof v !== 'string') return null;
@@ -50,7 +43,6 @@ aiRouter.post(
   '/coefficient',
   wrap(async (req, res) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const sourceType = body.sourceType === 'semi' ? 'semi' : 'raw';
     const field = body.field;
     if (!isConvField(field)) throw new ApiError(400, 'field должен быть gPerPcs, mlPerPcs или gPerMl');
 
@@ -60,14 +52,12 @@ aiRouter.post(
     let what: Parameters<typeof askConvCoefficient>[0];
     if (hasId) {
       const refId = reqInt(body, 'refId');
-      const { rows } = await pool.query(sourceType === 'semi' ? SQL_SEMI : SQL_PRODUCT, [refId]);
-      if (!rows.length) {
-        throw new ApiError(404, sourceType === 'semi' ? 'Полуфабрикат не найден' : 'Продукт не найден');
-      }
+      const { rows } = await pool.query(SQL_PRODUCT, [refId]);
+      if (!rows.length) throw new ApiError(404, 'Продукт не найден');
       const row = rows[0];
       what = {
         name: row.name,
-        kind: sourceType === 'semi' ? 'вложенная заготовка цеха' : 'продукт номенклатуры',
+        kind: 'продукт номенклатуры',
         unitCode: row.unitCode ?? null,
         context: row.context ?? null,
         field,
@@ -76,7 +66,7 @@ aiRouter.post(
     } else {
       what = {
         name: reqStr(body, 'name'),
-        kind: sourceType === 'semi' ? 'вложенная заготовка цеха' : 'продукт номенклатуры',
+        kind: 'продукт номенклатуры',
         unitCode: optText(body.unitCode),
         context: optText(body.context),
         field,

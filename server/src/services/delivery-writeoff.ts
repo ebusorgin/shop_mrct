@@ -1,10 +1,10 @@
 /**
  * Ручное списание склада по доставке магазинам.
  *
- * Заказы магазинов на дату состоят из фасовок техкарт. Для каждой фасовки берём её вес/объём
- * (qty_base), количество упаковок из заказа и делим на выход порции техкарты — получаем число
- * порций. Дальше expandCard раскрывает рецепт в чистое сырьё (с учётом полуфабрикатов и выхода),
- * и со склада списываются продукты по средней себестоимости.
+ * Заказы магазинов на дату состоят из фасовок узлов карты. Для каждой фасовки берём её вес/объём
+ * (qty_base) и количество упаковок — получаем количество в единице узла. Дальше граф карты
+ * раскрывает рецепт в чистое сырьё (с учётом полуфабрикатов и потерь), и со склада списываются
+ * продукты по средней себестоимости.
  *
  * Списание фиксируется в store_delivery_writeoffs: повторно на ту же дату/магазин кнопка
  * не сработает. Пока это единственный, ручной способ — автоматику не включаем.
@@ -13,7 +13,7 @@ import { PoolClient } from 'pg';
 import { pool, tx } from '../db';
 import { ApiError } from '../http';
 import { applyMovement } from './stock';
-import { expandCard } from './expansion';
+import { expandNodeNeedTx } from './map-production';
 import { auditTx, type Actor } from './audit';
 
 const round2 = (n: number): number => Math.round((n + Number.EPSILON) * 100) / 100;
@@ -85,9 +85,8 @@ interface OrderRow {
   docNo: string | null;
   qty: number;
   qtyBase: number;
-  cardId: number;
+  nodeId: number;
   cardName: string;
-  portionQty: number;
 }
 
 function dateParam(date: string): string {
@@ -127,15 +126,15 @@ async function loadOrderRows(client: PoolClient, date: string, storeId: number |
     `select o.id as "orderId", o.store_id as "storeId", s.code as "storeCode", s.name as "storeName",
             o.doc_no::text as "docNo",
             i.qty, pk.qty_base::float8 as "qtyBase",
-            tc.id as "cardId", tc.name as "cardName", tc.portion_qty::float8 as "portionQty"
+            n.id as "nodeId", coalesce(pk.title, n.name) as "cardName"
        from store_orders o
        join stores s on s.id = o.store_id
        join store_order_items i on i.order_id = o.id
-       join product_packagings pk on pk.id = i.packaging_id
-       join tech_cards tc on tc.id = pk.card_id
+       join prod_packagings pk on pk.id = i.packaging_id
+       join prod_nodes n on n.id = pk.node_id
       where o.delivery_date = $1::date
         and ($2::int is null or o.store_id = $2)
-      order by s.code, o.id, tc.name`,
+      order by s.code, o.id, n.name`,
     [date, storeId]
   );
   return rows;
@@ -158,17 +157,16 @@ async function buildNeeds(
     );
   }
 
-  const byCard = new Map<number, { name: string; portions: number }>();
+  const byNode = new Map<number, { name: string; out: number }>();
   const orders = new Map<number, WriteoffOrder>();
   for (const r of rows) {
-    if (!(r.portionQty > 0)) throw new ApiError(400, `В техкарте «${r.cardName}» не задан выход порции`);
-    const portions = (r.qty * r.qtyBase) / r.portionQty;
-    if (!(portions > 0)) {
-      throw new ApiError(400, `Не удалось посчитать порции для «${r.cardName}»: проверьте вес фасовки`);
+    const out = r.qty * r.qtyBase;
+    if (!(out > 0)) {
+      throw new ApiError(400, `Не удалось посчитать количество для «${r.cardName}»: проверьте вес фасовки`);
     }
-    const card = byCard.get(r.cardId) ?? { name: r.cardName, portions: 0 };
-    card.portions += portions;
-    byCard.set(r.cardId, card);
+    const node = byNode.get(r.nodeId) ?? { name: r.cardName, out: 0 };
+    node.out += out;
+    byNode.set(r.nodeId, node);
 
     let order = orders.get(r.orderId);
     if (!order) {
@@ -186,13 +184,13 @@ async function buildNeeds(
   }
 
   const need = new Map<number, number>();
-  for (const [cardId, info] of byCard) {
+  for (const [nodeId, info] of byNode) {
     let raw: { productId: number; qty: number }[];
     try {
-      raw = await expandCard(client, cardId, round3(info.portions));
+      raw = await expandNodeNeedTx(client, nodeId, round3(info.out));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      throw new ApiError(400, `Не удалось раскрыть техкарту «${info.name}»: ${msg}`);
+      throw new ApiError(400, `Не удалось раскрыть рецепт «${info.name}»: ${msg}`);
     }
     for (const n of raw) need.set(n.productId, (need.get(n.productId) ?? 0) + n.qty);
   }

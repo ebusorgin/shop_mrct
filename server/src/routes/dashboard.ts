@@ -17,7 +17,7 @@ dashboardRouter.get(
       pool.query(`
         select coalesce(sum(cost_total), 0)::float8 as "todayCost",
                count(*) filter (where status = 'posted')::int as "todayBatches"
-          from production_batches where batch_date = current_date`),
+          from map_batches where created_at::date = current_date`),
       pool.query(`
         select p.name, u.code as "unitCode", s.qty::float8 as qty, p.min_stock::float8 as "minStock"
           from stock s
@@ -27,11 +27,10 @@ dashboardRouter.get(
          order by s.qty - p.min_stock
          limit 20`),
       pool.query(`
-        select b.id, tc.name as "cardName", b.portions,
-               to_char(b.batch_date, 'YYYY-MM-DD') as "batchDate", b.status,
+        select b.id, b.output_name as "cardName", b.qty as portions,
+               to_char(b.created_at::date, 'YYYY-MM-DD') as "batchDate", b.status,
                b.cost_total::float8 as "costTotal"
-          from production_batches b
-          join tech_cards tc on tc.id = b.card_id
+          from map_batches b
          order by b.id desc limit 10`),
       pool.query(`
         select count(*)::int as cnt, coalesce(sum(i.qty * i.price), 0)::float8 as total

@@ -30,6 +30,7 @@ interface VPackaging {
   priceBasis: 'unit' | 'portion' | 'piece';
   cost: string;
   available: boolean;
+  tareProductIds?: number[];
 }
 
 interface VNode {
@@ -122,6 +123,8 @@ interface Wire {
   mx: number;
   my: number;
   label: string;
+  /** Цвет входящей связи = цвет блока, в который она входит. */
+  color: string;
 }
 
 interface Highlight {
@@ -145,6 +148,42 @@ const num = (v: string | number | null | undefined): number => {
   return Number.isFinite(n) ? n : 0;
 };
 
+/** #rrggbb из настроек каталога; null — цвета нет. */
+function hexColor(value: string | null | undefined): string | null {
+  const m = /^#?([0-9a-f]{6})$/i.exec((value ?? '').trim());
+  return m ? `#${m[1].toLowerCase()}` : null;
+}
+
+function tint(hex: string, alpha: number): string {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return '';
+  const n = parseInt(m[1], 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
+/** Затемнить цвет для линии: тот же оттенок, но читаемый на светлом фоне. */
+function shade(hex: string, factor: number): string {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  const r = Math.round(((n >> 16) & 255) * factor);
+  const g = Math.round(((n >> 8) & 255) * factor);
+  const b = Math.round((n & 255) * factor);
+  return `rgb(${r}, ${g}, ${b})`;
+}
+
+/** Тёмный или белый текст поверх цвета каталога — по яркости. */
+function inkOn(hex: string): string {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return '#ffffff';
+  const n = parseInt(m[1], 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return lum > 0.62 ? '#1f2d1e' : '#ffffff';
+}
+
 /**
  * Единая карта производства: один глобальный граф.
  * Сырьё — общие узлы слева; результаты — общие узлы справа.
@@ -162,48 +201,73 @@ const num = (v: string | number | null | undefined): number => {
       <section class="workspace">
         <aside class="raw-panel" [class.drop-target]="!!dragGhost()">
           <div class="raw-head">
-            <b>Сырьё</b>
-            <span class="raw-count">{{ filteredProducts().length }}</span>
+            <button type="button" class="raw-tab" [class.on]="panel() === 'raw'" (click)="panel.set('raw')">Сырьё</button>
+            <button type="button" class="raw-tab" [class.on]="panel() === 'recipes'" (click)="panel.set('recipes')">Рецептуры</button>
+            <span class="raw-count">{{ panel() === 'raw' ? filteredProducts().length : recipes().length }}</span>
           </div>
-          <div class="raw-search">
-            <input [ngModel]="query()" (ngModelChange)="query.set($event)" placeholder="Поиск по названию…" />
-            @if (query()) { <button type="button" class="raw-clear" (click)="query.set('')" title="Очистить">✕</button> }
-          </div>
-          <select class="raw-cat" [ngModel]="rawCat()" (ngModelChange)="rawCat.set($event)" title="Фильтр по каталогу">
-            <option value="">Все каталоги</option>
-            @for (c of rawCats(); track c) { <option [value]="c">{{ c }}</option> }
-          </select>
-          <label class="raw-filter">
-            <input type="checkbox" [ngModel]="onlyUnused()" (ngModelChange)="onlyUnused.set($event)" />
-            не использованные
-          </label>
-          <div class="raw-list">
-            @if (loading()) {
-              <div class="raw-empty">Загрузка…</div>
-            } @else {
-              @for (p of filteredProducts(); track p.id) {
-                <button type="button" class="raw-item" [class.on-map]="onMapRefIds().has(p.id)"
-                        (pointerdown)="onRawDown(p, $event)">
-                  <span class="raw-dot"></span>
-                  <span class="raw-name" [title]="p.name">{{ p.name }}</span>
-                  <span class="raw-unit">{{ p.unitCode }}</span>
+          @if (panel() === 'recipes') {
+            <div class="raw-search">
+              <input [ngModel]="recipeQuery()" (ngModelChange)="recipeQuery.set($event)" placeholder="Поиск рецептуры…" />
+              @if (recipeQuery()) { <button type="button" class="raw-clear" (click)="recipeQuery.set('')" title="Очистить">✕</button> }
+            </div>
+            <div class="raw-list">
+              @for (r of recipes(); track r.uid) {
+                <button type="button" class="raw-item recipe-item"
+                        [class.on-map]="selected().kind === 'node' && selected().uid === r.uid"
+                        (click)="selected.set({ kind: 'node', uid: r.uid })">
+                  <span class="raw-name" [title]="r.name">{{ r.name }}</span>
+                  <span class="kind-badge" [class.state]="r.kind === 'state'">{{ r.kindLabel }}</span>
+                  <span class="raw-unit">{{ r.packs }}</span>
+                  @if (r.warning) { <span class="recipe-warn" [title]="r.warning">!</span> }
                 </button>
               } @empty {
-                <div class="raw-empty">Сырьё не найдено</div>
+                <div class="raw-empty">Рецептуры не найдены</div>
               }
-            }
-          </div>
-          <div class="raw-hint">Тяните сырьё на схему · клик по зелёному — подсветить карточку</div>
-          @if (dragGhost(); as g) {
-            <div class="raw-drop" [class.warn]="!g.canDelete">
-              {{ g.canDelete ? 'Отпустите, чтобы убрать «' + g.name + '» со стола' : '«' + g.name + '» участвует в операциях — сначала отвяжите' }}
             </div>
+            <div class="raw-hint">Клик — открыть состав и фасовки. «!» — партия не равна сумме нетто.</div>
+          } @else {
+            <div class="raw-search">
+              <input [ngModel]="query()" (ngModelChange)="query.set($event)" placeholder="Поиск по названию…" />
+              @if (query()) { <button type="button" class="raw-clear" (click)="query.set('')" title="Очистить">✕</button> }
+            </div>
+            <select class="raw-cat" [ngModel]="rawCat()" (ngModelChange)="rawCat.set($event)" title="Фильтр по каталогу">
+              <option value="">Все каталоги</option>
+              @for (c of rawCats(); track c) { <option [value]="c">{{ c }}</option> }
+            </select>
+            <label class="raw-filter">
+              <input type="checkbox" [ngModel]="onlyUnused()" (ngModelChange)="onlyUnused.set($event)" />
+              не использованные
+            </label>
+            <div class="raw-list">
+              @if (loading()) {
+                <div class="raw-empty">Загрузка…</div>
+              } @else {
+                @for (p of filteredProducts(); track p.id) {
+                  <button type="button" class="raw-item" [class.on-map]="onMapRefIds().has(p.id)"
+                          (pointerdown)="onRawDown(p, $event)">
+                    <span class="raw-dot"></span>
+                    <span class="raw-name" [title]="p.name">{{ p.name }}</span>
+                    <span class="raw-unit">{{ p.unitCode }}</span>
+                  </button>
+                } @empty {
+                  <div class="raw-empty">Сырьё не найдено</div>
+                }
+              }
+            </div>
+            <div class="raw-hint">Тяните сырьё на схему · клик по зелёному — подсветить карточку</div>
+            @if (dragGhost(); as g) {
+              <div class="raw-drop" [class.warn]="!g.canDelete">
+                {{ g.canDelete ? 'Отпустите, чтобы убрать «' + g.name + '» со стола' : '«' + g.name + '» участвует в операциях — сначала отвяжите' }}
+              </div>
+            }
           }
         </aside>
         <div class="canvas-shell">
           <div class="canvas-bar">
             <button type="button" class="tool accent" (click)="createOpCenter()">＋ Операция</button>
-            <button type="button" class="tool" (click)="autoLayout()">Разложить</button>
+            <button type="button" class="tool accent" [disabled]="layouting()" (click)="aiLayout()">
+              {{ layouting() ? 'ИИ раскладывает…' : '✨ Разложить ИИ' }}
+            </button>
             <span class="bar-divider"></span>
             <div class="zoom">
               <button type="button" (click)="zoomBy(1 / 1.2)" title="Уменьшить">−</button>
@@ -240,10 +304,22 @@ const num = (v: string | number | null | undefined): number => {
                 [style.width.px]="canvasWidth()"
                 [style.height.px]="canvasH()"
               >
+                @if (cloudsVisible()) {
+                  @for (c of rawClouds(); track c.key) {
+                    <div class="raw-cloud"
+                         [style.left.px]="c.x"
+                         [style.top.px]="c.y"
+                         [style.width.px]="c.w"
+                         [style.height.px]="c.h">
+                      <span class="raw-cloud-label">{{ c.label }} · {{ c.count }}</span>
+                    </div>
+                  }
+                }
+
                 <svg class="wires" [attr.width]="canvasWidth()" [attr.height]="canvasH()">
                   @for (w of wires(); track w.id) {
                     <g [class.dim]="isWireDim(w.id)" [class.lit]="isWireLit(w.id)">
-                      <path class="wire" [class.out]="w.kind === 'output'" [attr.d]="w.d" />
+                      <path class="wire" [class.out]="w.kind === 'output'" [style.--wire-color]="w.color" [attr.d]="w.d" />
                       @if (w.kind === 'input') {
                         <path class="wire-hit" [attr.d]="w.d" (click)="openEdgeEditor(w, $event)">
                           <title>Нажмите, чтобы задать потери на связи</title>
@@ -272,6 +348,11 @@ const num = (v: string | number | null | undefined): number => {
                     [attr.data-op-uid]="b.op.uid"
                     [class.sel]="selected().kind === 'op' && selected().uid === b.op.uid"
                     [class.sell]="blockSell(b.op)"
+                    [class.has-packs]="blockHasPacks(b.op)"
+                    [style.--card-accent]="blockAccent(b.op)"
+                    [style.--card-border]="blockBorder(b.op)"
+                    [style.--card-bg]="blockBg(b.op)"
+                    [style.--card-ink]="blockInk(b.op)"
                     [class.target]="opTarget() === b.op.uid"
                     [class.dim]="isOpDim(b.op.uid)"
                     [class.lit]="isOpLit(b.op.uid)"
@@ -289,6 +370,9 @@ const num = (v: string | number | null | undefined): number => {
                         <span [title]="planTitle(b.op)">{{ planShort(b.op) }}</span>
                         <span [title]="laborLabel(b.op)">{{ laborShort(b.op) }}</span>
                         <span [title]="'Входов операции: ' + b.op.inputs.length">{{ b.op.inputs.length }} вх</span>
+                        @if (opCalc(b.op.uid)?.warnings?.length) {
+                          <span class="op-warn" [title]="opCalc(b.op.uid)?.warnings?.join('; ')">!</span>
+                        }
                       </div>
                     </div>
                     <div class="mb-main">
@@ -337,6 +421,11 @@ const num = (v: string | number | null | undefined): number => {
                     class="node"
                     [class.product]="n.kind === 'product'"
                     [class.state]="n.kind !== 'product'"
+                    [class.has-packs]="nodeHasPacks(n)"
+                    [style.--card-accent]="nodeAccent(n)"
+                    [style.--card-border]="nodeBorder(n)"
+                    [style.--card-bg]="nodeBg(n)"
+                    [style.--card-ink]="nodeInk(n)"
                     [class.sel]="selected().kind === 'node' && selected().uid === n.uid"
                     [class.dim]="isNodeDim(n.uid)"
                     [class.lit]="isNodeLit(n.uid)"
@@ -604,7 +693,7 @@ const num = (v: string | number | null | undefined): number => {
           в массе (входит в вес продукта)
         </label>
         <div class="edge-net">{{ edgeNetText(e) }}</div>
-        <button type="button" class="mini danger" (click)="removeInput(e.opUid, e.nodeUid); edgeEdit.set(null)">Удалить связь</button>
+        <button type="button" class="mini danger" (click)="removeInputAndClose(e.opUid, e.nodeUid)">Удалить связь</button>
       </div>
     }
 
@@ -790,7 +879,11 @@ const num = (v: string | number | null | undefined): number => {
       .canvas.panning { cursor: grabbing; }
       .scene { position: absolute; left: 0; top: 0; transform-origin: top left; }
       .wires { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; }
-      .wire { fill: none; stroke: #b9ac95; stroke-width: 2; }
+      .wire {
+        fill: none; stroke: var(--wire-color, #b9ac95); stroke-width: 2;
+        transition: stroke .24s ease, stroke-width .24s ease, opacity .24s ease;
+      }
+      .wires g { transition: opacity .24s ease, filter .24s ease; }
       /* широкая невидимая зона, чтобы по проводу было удобно попасть кликом */
       .wire-hit { fill: none; stroke: transparent; stroke-width: 16; pointer-events: stroke; cursor: pointer; }
       .wire-hit:hover { stroke: rgba(47, 125, 91, .16); }
@@ -804,7 +897,9 @@ const num = (v: string | number | null | undefined): number => {
         position: absolute; width: 236px; height: 92px; padding: 9px 12px;
         background: #fff; border: 1px solid var(--line); border-left: 5px solid var(--blue);
         border-radius: 12px; box-shadow: 0 5px 16px rgba(60, 48, 30, .07);
-        cursor: grab; user-select: none; transition: box-shadow .12s, border-color .12s;
+        cursor: grab; user-select: none;
+        transition: opacity .24s ease, filter .24s ease, box-shadow .24s ease,
+                    border-color .24s ease, background-color .24s ease;
       }
       .node:hover { box-shadow: 0 8px 22px rgba(60, 48, 30, .12); }
       .node.dish { border-left-color: var(--orange); }
@@ -819,17 +914,22 @@ const num = (v: string | number | null | undefined): number => {
         100% { box-shadow: 0 5px 16px rgba(60, 48, 30, .07); }
       }
 
-      .node-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
+      .node-head { display: flex; align-items: flex-start; gap: 7px; min-width: 0; }
       .kind {
         font-size: calc(9px * min(var(--fs, 1), 1.15)); font-weight: 800; letter-spacing: .06em; text-transform: uppercase;
         padding: 2px 5px; border-radius: 4px; background: #f0ece2; color: #6f6352; flex: none;
+        margin-top: 2px;
       }
       .kind.product { background: var(--blue-soft); color: #33639c; }
       .kind.dish { background: var(--orange-soft); color: #9a5b1d; }
       .kind.state { background: #f1ece1; color: #6f6352; }
       .kind.output { background: #dff2e7; color: #236b4c; }
-      .node-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(13.5px * var(--fs, 1)); font-weight: 500; color: var(--ink); }
-      .node-body { display: flex; align-items: center; gap: 6px; margin-top: 10px; }
+      .node-name {
+        display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+        overflow: hidden; text-overflow: ellipsis; white-space: normal; word-break: break-word;
+        font-size: calc(16px * var(--fs, 1)); font-weight: 600; line-height: 1.1; color: var(--ink);
+      }
+      .node-body { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
       .qty {
         width: 84px; padding: 5px 7px; font-size: 12px; color: var(--ink);
         border: 1px solid var(--line); border-radius: 7px; background: #fffdf8;
@@ -916,6 +1016,18 @@ const num = (v: string | number | null | undefined): number => {
       .dock-hint { font-size: 10.5px; color: var(--muted); white-space: nowrap; }
 
       /* ---------- левая панель сырья ---------- */
+      .raw-cloud {
+        position: absolute; pointer-events: none; z-index: 0;
+        border: 1px dashed #cbbfa8; border-radius: 26px;
+        background: radial-gradient(120% 80% at 30% 20%, rgba(255, 252, 244, .95), rgba(246, 240, 227, .62));
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .55);
+      }
+      .raw-cloud-label {
+        position: absolute; top: 2px; left: 16px;
+        max-width: calc(100% - 32px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        font-size: 20px; font-weight: 800; line-height: 1; letter-spacing: .04em; text-transform: uppercase;
+        color: #8a7a5c; background: rgba(255, 253, 247, .9); padding: 3px 12px; border-radius: 999px;
+      }
       .raw-panel {
         flex: 0 0 236px; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
         background: var(--card); border: 1px solid var(--line); border-radius: 16px;
@@ -936,6 +1048,19 @@ const num = (v: string | number | null | undefined): number => {
       }
       .raw-head { display: flex; align-items: center; gap: 8px; padding: 11px 12px 7px; }
       .raw-head b { font-size: 10.5px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+      .raw-tab {
+        border: 0; background: transparent; cursor: pointer; padding: 3px 5px 4px;
+        font-size: 10.5px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase;
+        color: var(--muted); border-bottom: 2px solid transparent;
+      }
+      .raw-tab.on { color: var(--ink); border-bottom-color: var(--ink); }
+      .recipe-item { gap: 6px; }
+      .kind-badge {
+        flex: 0 0 auto; font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 6px;
+        background: #eef3ea; color: #3d5a2e; white-space: nowrap;
+      }
+      .kind-badge.state { background: #f1ece2; color: #7a5b2e; }
+      .recipe-warn { color: var(--red); font-weight: 800; flex: 0 0 auto; }
       .raw-count {
         margin-left: auto; font-size: 11px; font-weight: 700; color: var(--muted);
         padding: 2px 7px; border-radius: 999px; background: #f3efe6;
@@ -1124,9 +1249,15 @@ const num = (v: string | number | null | undefined): number => {
     
 
       /* ===== единая карта производства ===== */
-      .node.dim, .op.dim, g.dim { opacity: .16; filter: grayscale(1); }
+      .node.has-packs {
+        border-color: var(--card-border, #b7dcc8);
+        border-left-color: var(--card-accent, var(--green));
+        background: linear-gradient(180deg, var(--card-bg, #f4fbf7) 0%, #fffdf8 78%);
+      }
+      .node.dim, .op.dim, g.dim { opacity: .2; filter: grayscale(.8); }
       .node.lit, .op.lit { box-shadow: 0 0 0 2px rgba(47, 125, 91, .35), 0 8px 22px rgba(60, 48, 30, .12); }
-      g.lit .wire { stroke: #7fae92; }
+      /* подсвеченная цепочка сохраняет цвет своей карточки, только линия толще */
+      g.lit .wire { stroke: var(--wire-color, #7fae92); stroke-width: 2.8; }
       .node.output { cursor: pointer; }
       .node-portion { margin-top: 4px; font-size: calc(10px * var(--fs, 1)); color: var(--muted); }
       .wire-label {
@@ -1154,7 +1285,9 @@ const num = (v: string | number | null | undefined): number => {
         position: absolute; width: 250px; height: 142px; padding: 0; display: flex;
         background: #fff; border: 1px solid var(--line); border-left: 5px solid var(--orange);
         border-radius: 12px; box-shadow: 0 5px 16px rgba(120, 80, 20, .09);
-        cursor: grab; user-select: none; transition: box-shadow .12s, border-color .12s;
+        cursor: grab; user-select: none;
+        transition: opacity .24s ease, filter .24s ease, box-shadow .24s ease,
+                    border-color .24s ease, background-color .24s ease;
         overflow: visible;
       }
       .map-block:hover { box-shadow: 0 8px 22px rgba(120, 80, 20, .15); }
@@ -1164,14 +1297,10 @@ const num = (v: string | number | null | undefined): number => {
       /* карточка-витрина: каталог + цена каждой фасовки */
       .map-block.sell {
         height: auto; min-height: 142px;
-        border-color: #b7dcc8; border-left-color: var(--green);
-        background: linear-gradient(180deg, #f5fcf8 0%, #e8f5ee 100%);
         box-shadow: 0 6px 18px rgba(47, 125, 91, .16);
       }
       .map-block.sell:hover { box-shadow: 0 9px 24px rgba(47, 125, 91, .24); }
-      .map-block.sell .mb-result { border-top-color: #bcdcc9; }
-      .map-block.sell .mb-qty { color: var(--green); }
-      .mb-shop { margin-top: 5px; padding-top: 5px; border-top: 1px dashed #bcdcc9; }
+      .mb-shop { margin-top: 5px; padding-top: 5px; border-top: 1px dashed var(--card-border, #bcdcc9); }
       .mb-cat {
         display: inline-block; font-size: calc(9.5px * var(--fs, 1)); font-weight: 600; letter-spacing: .08em;
         text-transform: uppercase; color: #fff; background: var(--green);
@@ -1190,7 +1319,7 @@ const num = (v: string | number | null | undefined): number => {
       }
       .pack-port:hover { background: var(--green-soft); transform: translateY(-50%) scale(1.25); }
       .map-block.target { border-color: var(--green); background: #eef8f1; }
-      .map-block.dim { opacity: .16; filter: grayscale(1); }
+      .map-block.dim { opacity: .2; filter: grayscale(.8); }
       .map-block.lit { box-shadow: 0 0 0 2px rgba(47, 125, 91, .35), 0 8px 22px rgba(60, 48, 30, .12); }
       .map-block .port.in { left: -8px; top: 50%; transform: translateY(-50%); }
       .map-block .port.out { right: -8px; }
@@ -1209,22 +1338,45 @@ const num = (v: string | number | null | undefined): number => {
       .mb-vname {
         writing-mode: vertical-rl; transform: rotate(180deg);
         flex: 1; min-height: 0; max-height: 100%;
-        font-size: calc(11px * min(var(--fs, 1), 1.1)); font-weight: 500; letter-spacing: 0; color: var(--ink);
+        font-size: calc(12px * min(var(--fs, 1), 1.1)); font-weight: 600; letter-spacing: 0; color: var(--ink);
         white-space: nowrap; overflow: hidden;
+      }
+      .op-warn {
+        color: var(--red); font-weight: 900; padding: 0 2px;
+        text-shadow: 0 0 8px rgba(190, 60, 40, .18);
       }
       .mb-stats {
         flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 1px;
         font-size: calc(9px * var(--fs, 1)); font-weight: 500; line-height: 1.15; color: #8a6a3a; white-space: nowrap;
       }
-      .map-block.sell .mb-stats { color: var(--green); }
+      /* карточки с фасовками окрашены по цвету своего каталога */
+      .map-block.has-packs {
+        border-color: var(--card-border, #b7dcc8);
+        border-left-color: var(--card-accent, var(--green));
+        background: linear-gradient(180deg, var(--card-bg, #f5fcf8) 0%, #fffdf8 78%);
+      }
+      .map-block.has-packs .mb-rail {
+        border-right-color: var(--card-border, #bcdcc9);
+        background: linear-gradient(90deg, var(--card-bg, #e8f5ee), #fffdf8);
+      }
+      .map-block.has-packs .mb-result { border-top-color: var(--card-border, #bcdcc9); }
+      .map-block.has-packs .mb-cat {
+        background: var(--card-accent, var(--green));
+        color: var(--card-ink, #fff);
+      }
       .mb-main { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 8px 11px 8px 9px; }
       .mb-main > .mb-result:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
       .mb-result {
-        display: flex; align-items: center; gap: 6px; margin-top: 6px; padding-top: 5px;
+        display: flex; align-items: flex-start; gap: 6px; margin-top: 5px; padding-top: 4px;
         border-top: 1px dashed #e8dfcd;
       }
-      .mb-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(13.5px * var(--fs, 1)); font-weight: 500; color: var(--ink); }
-      .mb-qty { font-size: calc(12.5px * var(--fs, 1)); font-weight: 600; white-space: nowrap; }
+      .mb-name {
+        flex: 1; min-width: 0; display: -webkit-box; -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2; overflow: hidden; text-overflow: ellipsis;
+        white-space: normal; word-break: break-word;
+        font-size: calc(16px * var(--fs, 1)); font-weight: 600; line-height: 1.1; color: var(--ink);
+      }
+      .mb-qty { font-size: calc(12.5px * var(--fs, 1)); font-weight: 600; white-space: nowrap; margin-top: 1px; }
       .mb-portion { margin-top: 2px; font-size: calc(10.5px * var(--fs, 1)); color: var(--muted); }
       .mb-need { margin-top: 2px; font-size: calc(10px * var(--fs, 1)); font-weight: 600; color: #8a6a1f; }
       .node-need { margin-top: 3px; font-size: calc(9.5px * var(--fs, 1)); font-weight: 600; color: #8a6a1f; }
@@ -1310,8 +1462,19 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
   nodes = signal<VNode[]>([]);
   ops = signal<VOp[]>([]);
   selected = signal<Selection>({ kind: 'none' });
+  /** Наведение: временная подсветка цепочки. */
   hovered = signal<number | null>(null);
+  /** Клик по блоку закрепляет подсветку цепочки до повторного клика. */
+  pinnedRoot = signal<number | null>(null);
+  activeRoot = computed(() => this.pinnedRoot() ?? this.hovered());
   query = signal('');
+  /** Левая панель: сырьё или список рецептур. */
+  panel = signal<'raw' | 'recipes'>('raw');
+  recipeQuery = signal('');
+  /** ИИ-раскладка выполняется. */
+  layouting = signal(false);
+  /** Показывать облака категорий после ИИ-раскладки. */
+  cloudsVisible = signal(false);
   /** Перетаскивание сырья из левой панели на стол (pointer-based, без HTML5 DnD). */
   rawDrag = signal<{ p: Product; x: number; y: number; sx: number; sy: number; moved: boolean } | null>(null);
   /** Редактор конкретной связи: количество и потери %. */
@@ -1360,6 +1523,8 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
   private nextNodeUid = 1;
   private nextOpUid = 1;
   private nextPackUid = 1;
+  /** Прошлый одиночный клик — для распознавания двойного. */
+  private lastMapClick: { kind: 'node' | 'op'; uid: number; at: number } | null = null;
 
   calc = computed<ProductionMapCalc>(() =>
     calcProductionMap(
@@ -1410,6 +1575,52 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
     return s.kind === 'op' ? this.ops().find((o) => o.uid === s.uid) ?? null : null;
   });
 
+  /** Облака сырья по категориям — рамка вокруг сгруппированных карточек. */
+  rawClouds = computed(() => {
+    const byId = new Map(this.products().map((p) => [p.id, p]));
+    const groups = new Map<string, VNode[]>();
+    for (const n of this.nodes()) {
+      if (n.kind !== 'product' || n.refId == null) continue;
+      const category = (byId.get(n.refId)?.category ?? '').trim() || 'прочее';
+      const arr = groups.get(category) ?? [];
+      arr.push(n);
+      groups.set(category, arr);
+    }
+    return [...groups.entries()]
+      .map(([label, list]) => {
+        const xs = list.map((n) => n.x);
+        const ys = list.map((n) => n.y);
+        const x = Math.min(...xs) - 18;
+        const y = Math.min(...ys) - 34;
+        const w = Math.max(...xs) - Math.min(...xs) + 236 + 36;
+        const h = Math.max(...ys) - Math.min(...ys) + 92 + 34;
+        return { key: label, label, x, y, w, h, count: list.length };
+      })
+      .sort((a, b) => a.label.localeCompare(b.label, 'ru'));
+  });
+
+  /** Список всех рецептур (заготовки и блюда) для левой панели. */
+  recipes = computed(() => {
+    const q = this.recipeQuery().trim().toLowerCase();
+    const calc = this.calc();
+    return this.nodes()
+      .filter((n) => n.kind !== 'product')
+      .filter((n) => !q || n.name.toLowerCase().includes(q))
+      .map((n) => {
+        const op = this.producerByOutput().get(n.uid);
+        const warnings = op ? calc.ops[op.uid]?.warnings ?? [] : [];
+        return {
+          uid: n.uid,
+          name: n.name,
+          kind: n.kind,
+          kindLabel: n.kind === 'state' ? 'заготовка' : 'блюдо',
+          packs: n.packagings.length,
+          warning: warnings.length ? warnings[0] : '',
+        };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+  });
+
   /** выход-узел каждой операции: операция и её результат — один визуальный блок */
   producerByOutput = computed(() => {
     const map = new Map<number, VOp>();
@@ -1439,7 +1650,7 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
   summaryResult = computed(() => {
     const n = this.selectedNode();
     const out = this.selectedOut();
-    const uid = this.hovered() ?? (out ? out.uid : n && n.kind !== 'product' ? n.uid : null);
+    const uid = this.activeRoot() ?? (out ? out.uid : n && n.kind !== 'product' ? n.uid : null);
     if (uid == null) return null;
     const node = this.nodes().find((x) => x.uid === uid);
     if (!node || node.kind === 'product') return null;
@@ -1460,7 +1671,7 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
   /** Сколько каждого узла нужно на одну порцию подсвеченного результата (потери — в обратную сторону). */
   hoverNeed = computed<Map<number, number>>(() => {
     const need = new Map<number, number>();
-    const rootUid = this.hovered();
+    const rootUid = this.activeRoot();
     if (rootUid == null) return need;
     const root = this.nodes().find((n) => n.uid === rootUid);
     if (!root || root.kind === 'product') return need;
@@ -1493,7 +1704,7 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
   });
 
   blockNeed(op: VOp): number | null {
-    if (op.outputUid === this.hovered()) return null;
+    if (op.outputUid === this.activeRoot()) return null;
     return this.hoverNeed().get(op.outputUid) ?? null;
   }
 
@@ -1505,16 +1716,16 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
   }
 
   nodeNeedText(n: VNode): string {
-    if (n.uid === this.hovered()) return '';
+    if (n.uid === this.activeRoot()) return '';
     const v = this.hoverNeed().get(n.uid);
     return v == null ? '' : fmtQty(v, n.unitCode);
   }
 
   highlight = computed<Highlight | null>(() => {
-    const root = this.hovered();
+    const root = this.activeRoot();
     if (root == null) return null;
     const rootNode = this.nodes().find((n) => n.uid === root);
-    if (!rootNode || (rootNode.kind !== 'state' && rootNode.kind !== 'output')) return null;
+    if (!rootNode) return null;
 
     const producer = new Map<number, VOp>();
     for (const op of this.ops()) producer.set(op.outputUid, op);
@@ -1536,7 +1747,25 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
       }
     };
 
-    visitUp(root);
+    /**
+     * Сырьё: подсвечиваем все блоки, где оно используется — прямо и через
+     * промежуточные заготовки/блюда, вниз по цепочке.
+     */
+    const visitDown = (uid: number): void => {
+      if (nodesSet.has(uid)) return;
+      nodesSet.add(uid);
+      for (const op of this.ops()) {
+        if (opsSet.has(op.uid)) continue;
+        if (!op.inputs.some((i) => i.nodeUid === uid)) continue;
+        opsSet.add(op.uid);
+        nodesSet.add(op.outputUid);
+        wiresSet.add(`i${op.uid}-${uid}`);
+        visitDown(op.outputUid);
+      }
+    };
+
+    if (rootNode.kind === 'product') visitDown(root);
+    else visitUp(root);
     return { nodes: nodesSet, ops: opsSet, wires: wiresSet };
   });
 
@@ -1557,6 +1786,8 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
         const qty = num(input.qty);
         const loss = num(input.lossPct);
         const lossTxt = loss > 0 ? ` −${Math.round(loss * 10) / 10}%` : '';
+        const outNode = byUid.get(op.outputUid) ?? null;
+        const accent = this.accentOf(outNode);
         out.push({
           id: `i${op.uid}-${input.nodeUid}`,
           d: this.wireD(x1, y1, x2, y2),
@@ -1567,6 +1798,8 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
           my: (y1 + y2) / 2,
           // на связи показываем только коэффициент потерь
           label: loss > 0 ? lossTxt.trim() : '',
+          // без фасовок у блока — его штатный оранжевый
+          color: accent ? shade(accent, 0.72) : '#c97b2e',
         });
       }
     }
@@ -1574,6 +1807,12 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
   });
 
   ngOnInit(): void {
+    try {
+      // Облака категорий — часть дефолтного вида карты.
+      this.cloudsVisible.set(localStorage.getItem('map.clouds') !== '0');
+    } catch {
+      this.cloudsVisible.set(true);
+    }
     this.reload();
   }
 
@@ -1625,6 +1864,7 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
             priceBasis: p.priceBasis,
             cost: p.cost ? String(p.cost) : '',
             available: p.available !== false,
+            tareProductIds: p.tareProductIds ?? [],
           })),
         }));
         const ops: VOp[] = m.ops.map((o) => ({
@@ -1651,11 +1891,13 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
         ) + 1;
         this.selected.set({ kind: 'none' });
         this.hovered.set(null);
+        this.pinnedRoot.set(null);
         if (nodes.length) {
           // Раскладываем автоматически только «пустую» карту без сохранённых позиций,
           // иначе уважаем расстановку, с которой карту сохранили.
           const needsLayout = ops.length > 0 && ops.every((o) => !o.x && !o.y);
-          if (needsLayout) setTimeout(() => this.autoLayout(), 60);
+          // По умолчанию сырьё сразу собирается кустами по категориям.
+          if (needsLayout) setTimeout(() => this.compactLayout(false), 60);
           else setTimeout(() => this.fitView(), 60);
         }
         finish();
@@ -1721,6 +1963,34 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
     if (!out || out.kind === 'product' || !out.packagings.length || out.catalogId == null) return false;
     return out.packagings.every((p) => this.packPriceOk(p));
   }
+
+  private outOf(op: VOp): VNode | null {
+    return this.nodes().find((n) => n.uid === op.outputUid) ?? null;
+  }
+
+  private accentOf(node: VNode | null): string {
+    if (!node || node.kind === 'product' || !node.packagings.length) return '';
+    const catalog = this.catalogs().find((c) => c.id === node.catalogId);
+    return hexColor(catalog?.color) ?? '#2f7d5b';
+  }
+
+  blockHasPacks(op: VOp): boolean {
+    const out = this.outOf(op);
+    return !!out && out.kind !== 'product' && out.packagings.length > 0;
+  }
+  nodeHasPacks(node: VNode): boolean {
+    return node.kind !== 'product' && node.packagings.length > 0;
+  }
+
+  blockAccent(op: VOp): string { return this.accentOf(this.outOf(op)); }
+  blockBg(op: VOp): string { return tint(this.blockAccent(op), 0.13); }
+  blockBorder(op: VOp): string { return tint(this.blockAccent(op), 0.45); }
+  blockInk(op: VOp): string { return inkOn(this.blockAccent(op)); }
+
+  nodeAccent(node: VNode): string { return this.accentOf(node); }
+  nodeBg(node: VNode): string { return tint(this.nodeAccent(node), 0.13); }
+  nodeBorder(node: VNode): string { return tint(this.nodeAccent(node), 0.45); }
+  nodeInk(node: VNode): string { return inkOn(this.nodeAccent(node)); }
 
   /** У фасовки задана цена — обязательное поле. */
   packPriceOk(p: VPackaging | null | undefined): boolean {
@@ -1969,7 +2239,8 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
   }
 
   onNodeEnter(n: VNode): void {
-    if (n.kind === 'state' || n.kind === 'output') this.hovered.set(n.uid);
+    // Сырьё тоже подсвечивает цепочку — вниз, где оно используется.
+    this.hovered.set(n.uid);
   }
 
   onNodeLeave(n: VNode): void {
@@ -1991,41 +2262,19 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
           return;
         }
       }
-      // техкарта: нетто-ингредиенты должны точно давать партию N
-      if (num(op.planQty) > 0) {
-        const plan = this.planInOutput(op);
-        if (plan == null) {
-          this.selected.set({ kind: 'op', uid: op.uid });
-          this.toast.show(`«${op.name}»: единица партии не совпадает с единицей результата`, 'warn', 3400);
-          return;
-        }
-        const net = this.netInOutput(op);
-        if (net == null) {
-          this.selected.set({ kind: 'op', uid: op.uid });
-          this.toast.show(`«${op.name}»: ингредиенты нельзя привести к единице результата`, 'warn', 3400);
-          return;
-        }
-        if (Math.abs(plan - net) > 0.01) {
-          const unit = this.units().find((u) => u.id === this.outUnitId(op))?.code ?? '';
-          this.selected.set({ kind: 'op', uid: op.uid });
-          this.toast.show(
-            `«${op.name}»: сумма ингредиентов ${fmtQty(net, unit)} не равна партии ${fmtQty(plan, unit)}`,
-            'warn',
-            3600
-          );
-          return;
-        }
-      }
+      // Расхождение партии и суммы нетто не блокирует сохранение:
+      // оно показывается предупреждением в карточке операции.
     }
     for (const n of this.nodes()) {
       if (n.kind === 'product' || !n.packagings.length) continue;
-      const noPrice = n.packagings.find((p) => !this.packPriceOk(p));
+      const hasAvailable = n.packagings.some((p) => p.available);
+      const noPrice = n.packagings.find((p) => p.available && !this.packPriceOk(p));
       if (noPrice) {
         this.selected.set({ kind: 'node', uid: n.uid });
         this.toast.show(`Укажите цену фасовки «${this.packLabel(n, noPrice)}» у «${n.name || 'результата'}»`, 'warn', 3200);
         return;
       }
-      if (n.catalogId == null) {
+      if (hasAvailable && n.catalogId == null) {
         this.selected.set({ kind: 'node', uid: n.uid });
         this.toast.show(`Выберите каталог для «${n.name || 'результата'}»`, 'warn', 3200);
         return;
@@ -2048,6 +2297,7 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
         price: n.kind === 'product' ? 0 : num(n.price),
         note: n.note,
         packagings: n.kind === 'product' ? [] : n.packagings.map((p) => ({
+          uid: p.uid,
           name: p.name,
           qtyBase: num(p.qtyBase),
           minOrder: Math.max(1, Math.round(num(p.minOrder) || 1)),
@@ -2056,6 +2306,7 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
           priceBasis: p.priceBasis,
           cost: num(p.cost),
           available: p.available,
+          tareProductIds: p.tareProductIds ?? [],
         })),
       })),
       ops: this.ops().map((o) => ({
@@ -2074,9 +2325,16 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
     };
     this.saving.set(true);
     this.api.saveProductionMap(body).subscribe({
-      next: () => {
+      next: (r) => {
         this.saving.set(false);
-        this.toast.show('Карта производства сохранена', 'ok', 2000);
+        const n = r.warnings?.length ?? 0;
+        this.toast.show(
+          n
+            ? `Карта сохранена. Предупреждений: ${n} — партия не равна сумме нетто`
+            : 'Карта производства сохранена',
+          n ? 'warn' : 'ok',
+          n ? 4200 : 2000
+        );
         this.reload();
       },
       error: (e) => {
@@ -2094,6 +2352,7 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
     this.ops.set([]);
     this.selected.set({ kind: 'none' });
     this.hovered.set(null);
+    this.pinnedRoot.set(null);
     this.nextNodeUid = 1;
     this.nextOpUid = 1;
     this.save();
@@ -2512,7 +2771,7 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
       this.moving.set(null);
       this.dragGhost.set(null);
       if (!mv.moved) {
-        this.selected.set({ kind: mv.kind, uid: mv.uid });
+        this.onMapClick(mv.kind, mv.uid);
         return;
       }
       // Бросок карточки сырья обратно в левый список — убираем её со стола.
@@ -2529,6 +2788,7 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
           } else {
             this.nodes.update((list) => list.filter((x) => x.uid !== n.uid));
             this.hovered.set(null);
+            if (this.pinnedRoot() === n.uid) this.pinnedRoot.set(null);
             this.toast.show(`«${n.name}» убрано со стола`, 'info', 1600);
           }
         }
@@ -2586,11 +2846,23 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
     this.selected.set({ kind: 'op', uid: opUid });
   }
 
-  removeInput(opUid: number, nodeUid: number, ev?: Event): void {
+  removeInput(opUid: number, nodeUid: number, ev?: Event): boolean {
     ev?.stopPropagation();
+    const op = this.ops().find((o) => o.uid === opUid);
+    const input = this.nodes().find((n) => n.uid === nodeUid);
+    const out = op ? this.nodes().find((n) => n.uid === op.outputUid) : null;
+    const from = input?.name || `позиция #${nodeUid}`;
+    const to = out?.name || (op?.name ? `операция «${op.name}»` : 'блок');
+    if (!confirm(`Удалить связь «${from}» → «${to}»?`)) return false;
     this.ops.update((list) =>
       list.map((o) => (o.uid === opUid ? { ...o, inputs: o.inputs.filter((i) => i.nodeUid !== nodeUid) } : o))
     );
+    return true;
+  }
+
+  /** Удаление из редактора связи: закрываем панель только после подтверждения. */
+  removeInputAndClose(opUid: number, nodeUid: number): void {
+    if (this.removeInput(opUid, nodeUid)) this.edgeEdit.set(null);
   }
 
   private createsCycle(sourceNodeUid: number, targetOpUid: number): boolean {
@@ -2623,6 +2895,7 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
     this.nodes.update((list) => list.filter((n) => n.uid !== uid));
     if (this.selected().uid === uid) this.selected.set({ kind: 'none' });
     if (this.hovered() === uid) this.hovered.set(null);
+    if (this.pinnedRoot() === uid) this.pinnedRoot.set(null);
   }
 
   deleteOp(uid: number): void {
@@ -2636,6 +2909,7 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
     this.nodes.update((list) => list.filter((n) => n.uid !== op.outputUid));
     if (this.selected().uid === uid) this.selected.set({ kind: 'none' });
     if (this.hovered() === op.outputUid) this.hovered.set(null);
+    if (this.pinnedRoot() === op.outputUid) this.pinnedRoot.set(null);
   }
 
   // ---------- меню ----------
@@ -2690,7 +2964,44 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
     this.panning.set(true);
     this.panStart = { sx: ev.clientX, sy: ev.clientY, px: this.pan().x, py: this.pan().y };
     if (this.selected().kind !== 'none') this.selected.set({ kind: 'none' });
+    this.pinnedRoot.set(null);
+    this.hovered.set(null);
     ev.preventDefault();
+  }
+
+  /**
+   * Клик по блоку: первый — закрепить подсветку цепочки, повторный — снять.
+   * Двойной клик открывает панель настроек.
+   */
+  private onMapClick(kind: 'node' | 'op', uid: number): void {
+    const now = Date.now();
+    const last = this.lastMapClick;
+    const isDouble = !!last && last.kind === kind && last.uid === uid && now - last.at < 320;
+    if (isDouble) {
+      this.lastMapClick = null;
+      this.selected.set({ kind, uid });
+      return;
+    }
+    this.lastMapClick = { kind, uid, at: now };
+
+    const node = kind === 'node' ? this.nodes().find((n) => n.uid === uid) : null;
+    const op = kind === 'op' ? this.ops().find((o) => o.uid === uid) : null;
+    // Сырьё тоже можно закрепить: подсветятся все блоки, где оно используется.
+    const root = kind === 'op' ? op?.outputUid ?? null : node ? uid : null;
+
+    if (root == null) {
+      this.pinnedRoot.set(null);
+      this.hovered.set(null);
+      return;
+    }
+    if (this.pinnedRoot() === root) {
+      this.pinnedRoot.set(null);
+      this.hovered.set(null);
+      this.lastMapClick = null;
+      return;
+    }
+    this.pinnedRoot.set(root);
+    this.hovered.set(root);
   }
 
   onNodeDown(n: VNode, ev: PointerEvent): void {
@@ -2709,6 +3020,99 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
     const c = this.toContent(ev.clientX, ev.clientY);
     this.moving.set({ kind: 'op', uid: op.uid, offX: c.x - op.x, offY: c.y - op.y, sx: ev.clientX, sy: ev.clientY, origX: op.x, origY: op.y, moved: false });
     ev.preventDefault();
+  }
+
+  // ---------- раскладка ----------
+  private layoutBody(): { nodes: unknown[]; ops: unknown[] } {
+    return {
+      nodes: this.nodes().map((n) => ({ uid: n.uid, kind: n.kind, refId: n.refId, name: n.name })),
+      ops: this.ops().map((o) => ({
+        uid: o.uid,
+        outputUid: o.outputUid,
+        inputs: o.inputs.map((i) => ({ nodeUid: i.nodeUid })),
+      })),
+    };
+  }
+
+  private applyLayout(plan: {
+    nodes: { uid: number; x: number; y: number }[];
+    ops: { uid: number; x: number; y: number }[];
+    summary: string;
+    ai: boolean;
+  }, announce: boolean): void {
+    const nodes = new Map(plan.nodes.map((p) => [p.uid, p] as const));
+    const ops = new Map(plan.ops.map((p) => [p.uid, p] as const));
+    this.nodes.update((list) =>
+      list.map((n) => {
+        const p = nodes.get(n.uid);
+        return p ? { ...n, x: p.x, y: p.y } : n;
+      })
+    );
+    this.ops.update((list) =>
+      list.map((o) => {
+        const p = ops.get(o.uid);
+        return p ? { ...o, x: p.x, y: p.y } : o;
+      })
+    );
+    this.cloudsVisible.set(true);
+    try {
+      localStorage.setItem('map.clouds', '1');
+    } catch {
+      /* приватный режим */
+    }
+    setTimeout(() => {
+      this.relaxAgainstWires();
+      this.fitView();
+    }, 0);
+    if (announce) {
+      this.toast.show(
+        `${plan.ai ? 'ИИ разложил' : 'Разложено компактно'}: ${plan.summary}. Нажмите «Сохранить», чтобы закрепить.`,
+        'ok',
+        4200
+      );
+    }
+  }
+
+  /** Компактная раскладка по умолчанию: сырьё кустами по категориям. */
+  compactLayout(announce = false): void {
+    if (this.layouting()) return;
+    if (!this.nodes().length || !this.ops().length) return;
+    this.layouting.set(true);
+    this.api.aiLayoutMap$(this.layoutBody(), false).subscribe({
+      next: (plan) => {
+        this.layouting.set(false);
+        this.applyLayout(plan, announce);
+      },
+      error: () => {
+        this.layouting.set(false);
+        this.autoLayout();
+      },
+    });
+  }
+
+  /** Кнопка «Разложить ИИ»: модель выбирает композицию облаков и этапов. */
+  aiLayout(): void {
+    if (this.layouting()) return;
+    if (!this.nodes().length || !this.ops().length) {
+      this.toast.show('Сначала добавьте сырьё и операции', 'warn', 2200);
+      return;
+    }
+    this.layouting.set(true);
+    this.api.aiLayoutMap$(this.layoutBody(), true).subscribe({
+      next: (plan) => {
+        this.layouting.set(false);
+        this.applyLayout(plan, true);
+      },
+      error: (e) => {
+        this.layouting.set(false);
+        this.autoLayout();
+        this.toast.show(
+          `ИИ недоступен (${this.errText(e)}) — применена базовая раскладка`,
+          'warn',
+          4200
+        );
+      },
+    });
   }
 
   // ---------- авто-раскладка ----------

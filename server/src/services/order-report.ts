@@ -29,9 +29,13 @@ export type Dimension = 'mass' | 'volume' | 'count';
 export interface ReportLine {
   /** id фасовки — стабильный ключ строки для ручного порядка (в печать не выводится). */
   packagingId: number;
+  /** id рецептуры (узла карты производства) — для быстрого перехода в редактор. */
+  nodeId: number;
   name: string;
   unit: ReportUnit;
   qty: number;
+  /** Количество упаковок в заказе — то, что редактируется и хранится в строке заказа. */
+  packQty: number;
   price: number;
   vatRate: number;
   net: number;
@@ -68,6 +72,8 @@ export type ReportPriceMode = 'sale' | 'cost';
 interface ReportRow {
   orderId: number;
   packagingId: number;
+  /** id рецептуры — строки отчёта ссылаются на карточку производства. */
+  nodeId: number;
   /** Сквозной номер отчёта из последовательности; null — старый заказ до введения нумерации. */
   docNo: string | null;
   deliveryDate: string;
@@ -135,20 +141,22 @@ export async function orderReport(
     `select o.id as "orderId",
             o.doc_no as "docNo",
             i.packaging_id as "packagingId",
+            tc.id as "nodeId",
             to_char(o.delivery_date, 'YYYY-MM-DD') as "deliveryDate",
             o.updated_at as "savedAt",
             s.id as "storeId", s.code as "storeCode", s.name as "storeName",
             s.address as "storeAddress", s.pib as "storePib",
             s.mbr as "storeMbr", s.account_no as "storeAccount",
-            tc.name as "cardName", tc.name_sr as "cardNameSr",
+            coalesce(pk.title, tc.name) as "cardName",
+            coalesce(pk.title_sr, nullif(tc.name_sr, ''), '') as "cardNameSr",
             i.qty, pk.qty_base::float8 as "qtyBase", pk.price::float8 as price, pk.cost::float8 as cost,
             pk.price_basis as "priceBasis", u.dimension
        from store_orders o
        join stores s on s.id = o.store_id
        join store_order_items i on i.order_id = o.id
-       join product_packagings pk on pk.id = i.packaging_id
-       join tech_cards tc on tc.id = pk.card_id
-       join units u on u.id = tc.portion_unit_id
+       join prod_packagings pk on pk.id = i.packaging_id
+       join prod_nodes tc on tc.id = pk.node_id
+       join units u on u.id = tc.unit_id
       where o.delivery_date = $1::date
         and ($2::int is null or o.store_id = $2)
       order by s.code,
@@ -196,9 +204,11 @@ export async function orderReport(
     const weightKg = r.dimension === 'count' ? 0 : Math.round(r.qty * r.qtyBase) / 1000;
     doc.lines.push({
       packagingId: r.packagingId,
+      nodeId: r.nodeId,
       name: r.cardNameSr || r.cardName,
       unit,
       qty,
+      packQty: r.qty,
       price,
       vatRate: rate,
       net,

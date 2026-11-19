@@ -75,37 +75,24 @@ productsRouter.get(
   wrap(async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) throw new ApiError(400, 'Некорректный id');
-    const { rows: semis } = await pool.query(
-      `select sp.id, sp.name,
-              si.qty_per_output::float8 as qty,
-              si.yield_pct::float8 as "yieldPct",
-              pu.code as "unitCode",
-              sp.out_qty::float8 as "outQty",
-              su.code as "outUnitCode"
-         from semi_inputs si
-         join semi_products sp on sp.id = si.semi_id
-         join units su on su.id = sp.unit_id
-         join products p on p.id = si.ref_id
-         join units pu on pu.id = p.unit_id
-        where si.source_type = 'raw' and si.ref_id = $1
-        order by sp.name`,
-      [id]
-    );
     const { rows: cards } = await pool.query(
-      `select c.id, c.name,
-              tci.qty::float8 as qty,
+      `select n.id, n.name,
+              i.qty::float8 as qty,
               u.code as "unitCode",
-              c.portion_qty::float8 as "portionQty",
-              cu.code as "portionUnitCode"
-         from tech_card_items tci
-         join tech_cards c on c.id = tci.card_id
-         join units u on u.id = tci.unit_id
-         join units cu on cu.id = c.portion_unit_id
-        where tci.source_type = 'raw' and tci.ref_id = $1
-        order by c.name`,
+              n.portion_qty::float8 as "portionQty",
+              nu.code as "portionUnitCode"
+         from prod_op_inputs i
+         join prod_ops o on o.id = i.op_id
+         join prod_nodes n on n.id = o.output_node_id and not n.archived
+         join prod_nodes pn on pn.id = i.node_id
+         join units u on u.id = pn.unit_id
+         join units nu on nu.id = n.unit_id
+        where pn.kind = 'product' and pn.ref_id = $1
+        order by n.name`,
       [id]
     );
-    res.json({ semis, cards });
+    // Форма ответа сохранена для страницы склада: «полуфабрикаты» теперь часть карты.
+    res.json({ semis: [], cards });
   })
 );
 

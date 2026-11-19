@@ -322,9 +322,9 @@ export async function storeStats(storeId: number): Promise<StoreStats> {
          select o.delivery_date, sum(${LINE_NET}) as net
            from store_orders o
            join store_order_items i on i.order_id = o.id
-           join product_packagings pk on pk.id = i.packaging_id
-           join tech_cards tc on tc.id = pk.card_id
-           join units u on u.id = tc.portion_unit_id
+           join prod_packagings pk on pk.id = i.packaging_id
+           join prod_nodes tc on tc.id = pk.node_id
+           join units u on u.id = tc.unit_id
           where o.store_id = $1
           group by o.delivery_date
        )
@@ -343,9 +343,9 @@ export async function storeStats(storeId: number): Promise<StoreStats> {
          select o.delivery_date, sum(${LINE_NET}) as net
            from store_orders o
            join store_order_items i on i.order_id = o.id
-           join product_packagings pk on pk.id = i.packaging_id
-           join tech_cards tc on tc.id = pk.card_id
-           join units u on u.id = tc.portion_unit_id
+           join prod_packagings pk on pk.id = i.packaging_id
+           join prod_nodes tc on tc.id = pk.node_id
+           join units u on u.id = tc.unit_id
           where o.store_id = $1
           group by o.delivery_date
        ), by_month as (
@@ -370,9 +370,9 @@ export async function storeStats(storeId: number): Promise<StoreStats> {
               sum(${LINE_NET})::float8 as net
          from store_orders o
          join store_order_items i on i.order_id = o.id
-         join product_packagings pk on pk.id = i.packaging_id
-         join tech_cards tc on tc.id = pk.card_id
-         join units u on u.id = tc.portion_unit_id
+         join prod_packagings pk on pk.id = i.packaging_id
+         join prod_nodes tc on tc.id = pk.node_id
+         join units u on u.id = tc.unit_id
         where o.store_id = $1
         group by tc.id, tc.name, tc.name_sr, o.delivery_date
         order by tc.id, o.delivery_date`,
@@ -394,9 +394,9 @@ export async function storeStats(storeId: number): Promise<StoreStats> {
                 sum(${LINE_NET}) as net
            from store_orders o
            join store_order_items i on i.order_id = o.id
-           join product_packagings pk on pk.id = i.packaging_id
-           join tech_cards tc on tc.id = pk.card_id
-           join units u on u.id = tc.portion_unit_id
+           join prod_packagings pk on pk.id = i.packaging_id
+           join prod_nodes tc on tc.id = pk.node_id
+           join units u on u.id = tc.unit_id
           where o.store_id = $1
           group by o.id, o.delivery_date
        )

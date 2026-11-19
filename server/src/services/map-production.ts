@@ -148,6 +148,30 @@ export interface MapProduceResult {
   items: { productId: number; name: string; unitCode: string; qty: number; unitCost: number; cost: number }[];
 }
 
+/** Потребность в сырье в уже открытой транзакции (для списаний и сверок). */
+export async function expandNodeNeedTx(
+  client: PoolClient,
+  nodeId: number,
+  requiredOut: number
+): Promise<{ productId: number; qty: number }[]> {
+  const g = await loadGraph(client);
+  const producer = g.producerByOut.get(nodeId);
+  if (!producer) throw new ApiError(409, 'Для результата нет операции-производителя');
+  const units = await loadUnits(client);
+  const conv = await loadProductConv(client);
+  const need = new Map<number, number>();
+  await expand(g, producer, requiredOut, need, 0, units, conv);
+  return [...need.entries()].map(([productId, qty]) => ({ productId, qty: round3(qty) }));
+}
+
+/** Потребность в сырье для выпуска `requiredOut` единиц результата узла (для сверок). */
+export async function expandNodeNeed(
+  nodeId: number,
+  requiredOut: number
+): Promise<{ productId: number; qty: number }[]> {
+  return tx((client) => expandNodeNeedTx(client, nodeId, requiredOut));
+}
+
 /** Выпуск партии: списать сырьё по развёрнутому составу с потерями и сохранить снимок. */
 export async function produceMapBatch(
   opId: number,

@@ -370,14 +370,39 @@ settingsRouter.get(
   '/raw-categories',
   wrap(async (_req, res) => {
     const { rows } = await pool.query(
-      `select pc.id, pc.name, pc.icon, pc.color,
+      `select pc.id, pc.name, pc.icon, pc.color, pc.protected, pc.position,
               count(p.id) filter (where p.active)::int as "productCount"
          from product_categories pc
          left join products p on lower(btrim(p.category)) = pc.name
-        group by pc.id, pc.name, pc.icon, pc.color
-        order by pc.name`
+        group by pc.id, pc.name, pc.icon, pc.color, pc.protected, pc.position
+        order by pc.position, pc.name`
     );
     res.json(rows);
+  })
+);
+
+/** Порядок категорий склада: массив id сверху вниз. */
+settingsRouter.put(
+  '/raw-categories/order',
+  wrap(async (req, res) => {
+    const ids = orderIds(req.body?.ids);
+    await tx(async (client) => {
+      const { rows } = await client.query(
+        'select id from product_categories where id = any($1::int[])',
+        [ids]
+      );
+      if (rows.length !== ids.length) throw new ApiError(400, 'Часть категорий не найдена');
+      for (let i = 0; i < ids.length; i++) {
+        await client.query('update product_categories set position = $2 where id = $1', [ids[i], i + 1]);
+      }
+    });
+    await audit(req.user, {
+      action: 'update',
+      entity: 'setting',
+      title: 'Порядок категорий склада',
+      details: { positions: ids.length },
+    });
+    res.json({ ok: true });
   })
 );
 
@@ -394,8 +419,9 @@ settingsRouter.post(
       if (busy.length) throw new ApiError(409, `Иконка ${icon} уже используется категорией «${busy[0].name}»`);
     }
     const { rows } = await pool.query(
-      `insert into product_categories (name, icon, color) values ($1, $2, $3)
-       on conflict (name) do nothing returning id, name, icon, color`,
+      `insert into product_categories (name, icon, color, position)
+       values ($1, $2, $3, coalesce((select max(position) + 1 from product_categories), 1))
+       on conflict (name) do nothing returning id, name, icon, color, position`,
       [name, icon, color]
     );
     if (!rows.length) return res.status(409).json({ error: 'Уже существует' });
@@ -409,11 +435,17 @@ settingsRouter.patch(
   '/raw-categories/:id',
   wrap(async (req, res) => {
     const id = Number(req.params.id);
-    const { rows: cur } = await pool.query('select name, icon, color from product_categories where id = $1', [id]);
+    const { rows: cur } = await pool.query(
+      'select name, icon, color, protected from product_categories where id = $1',
+      [id]
+    );
     if (!cur.length) throw new ApiError(404, 'Категория не найдена');
     const has = (field: string) => Object.prototype.hasOwnProperty.call(req.body ?? {}, field);
     const name = has('name') ? reqStr(req.body, 'name').toLowerCase().trim() : (cur[0].name as string);
     if (!name || name === 'прочее') return res.status(400).json({ error: 'Некорректное имя' });
+    if (cur[0].protected && name !== cur[0].name) {
+      throw new ApiError(409, 'Системную категорию нельзя переименовать');
+    }
     const icon = has('icon') ? catalogIcon(req.body.icon) : (cur[0].icon as string);
     const color = has('color') ? catalogColor(req.body.color) : (cur[0].color as string);
     if (icon) {
@@ -442,8 +474,14 @@ settingsRouter.delete(
   wrap(async (req, res) => {
     const id = Number(req.params.id);
     await tx(async (client) => {
-      const { rows: cur } = await client.query('select name from product_categories where id = $1', [id]);
+      const { rows: cur } = await client.query(
+        'select name, protected from product_categories where id = $1',
+        [id]
+      );
       if (!cur.length) return;
+      if (cur[0].protected) {
+        throw new ApiError(409, 'Системную категорию нельзя удалить');
+      }
       await client.query("update products set category = 'прочее' where lower(btrim(category)) = $1", [cur[0].name]);
       await client.query('delete from product_categories where id = $1', [id]);
     });
@@ -482,18 +520,58 @@ function catalogColor(v: unknown): string {
   return /^#[0-9a-f]{6}$/i.test(s) ? s.toLowerCase() : '';
 }
 
+/** Массив id для ручной сортировки: целые положительные, без повторов. */
+function orderIds(raw: unknown): number[] {
+  if (!Array.isArray(raw) || !raw.length || raw.length > 500) {
+    throw new ApiError(400, 'ids: нужен непустой массив идентификаторов');
+  }
+  const ids = raw.map((v) => Number(v));
+  if (ids.some((id) => !Number.isInteger(id) || id <= 0)) {
+    throw new ApiError(400, 'ids: идентификаторы должны быть целыми положительными');
+  }
+  if (new Set(ids).size !== ids.length) {
+    throw new ApiError(400, 'ids: повторяющиеся идентификаторы');
+  }
+  return ids;
+}
+
 /** Список каталогов продукции с количеством продуктов. */
 settingsRouter.get(
   '/product-catalogs',
   wrap(async (_req, res) => {
     const { rows } = await pool.query(
-      `select pc.id, pc.name, pc.icon, pc.color, count(tc.id)::int as "cardCount"
+      `select pc.id, pc.name, pc.icon, pc.color, pc.protected, pc.position, count(n.id)::int as "cardCount"
          from product_catalogs pc
-         left join tech_cards tc on tc.catalog_id = pc.id
-        group by pc.id, pc.name, pc.position, pc.icon, pc.color
+         left join prod_nodes n on n.catalog_id = pc.id and not n.archived and n.kind <> 'product'
+        group by pc.id, pc.name, pc.position, pc.icon, pc.color, pc.protected
         order by pc.position, pc.name`
     );
     res.json(rows);
+  })
+);
+
+/** Порядок каталогов продукции: массив id сверху вниз. */
+settingsRouter.put(
+  '/product-catalogs/order',
+  wrap(async (req, res) => {
+    const ids = orderIds(req.body?.ids);
+    await tx(async (client) => {
+      const { rows } = await client.query(
+        'select id from product_catalogs where id = any($1::int[])',
+        [ids]
+      );
+      if (rows.length !== ids.length) throw new ApiError(400, 'Часть каталогов не найдена');
+      for (let i = 0; i < ids.length; i++) {
+        await client.query('update product_catalogs set position = $2 where id = $1', [ids[i], i + 1]);
+      }
+    });
+    await audit(req.user, {
+      action: 'update',
+      entity: 'setting',
+      title: 'Порядок каталогов продукции',
+      details: { positions: ids.length },
+    });
+    res.json({ ok: true });
   })
 );
 
@@ -532,11 +610,17 @@ settingsRouter.patch(
   '/product-catalogs/:id',
   wrap(async (req, res) => {
     const id = Number(req.params.id);
-    const { rows: cur } = await pool.query('select name, icon, color from product_catalogs where id = $1', [id]);
+    const { rows: cur } = await pool.query(
+      'select name, icon, color, protected from product_catalogs where id = $1',
+      [id]
+    );
     if (!cur.length) throw new ApiError(404, 'Каталог не найден');
     const has = (field: string) => Object.prototype.hasOwnProperty.call(req.body ?? {}, field);
     const name = has('name') ? reqStr(req.body, 'name').toLowerCase().trim() : cur[0].name;
     if (!name) return res.status(400).json({ error: 'Некорректное имя' });
+    if (cur[0].protected && name !== cur[0].name) {
+      throw new ApiError(409, 'Системный каталог нельзя переименовать');
+    }
     const icon = has('icon') ? catalogIcon(req.body.icon) : cur[0].icon;
     const color = has('color') ? catalogColor(req.body.color) : cur[0].color;
     if (icon) {
@@ -565,6 +649,13 @@ settingsRouter.delete(
   '/product-catalogs/:id',
   wrap(async (req, res) => {
     const id = Number(req.params.id);
+    const { rows: cur } = await pool.query(
+      'select name, protected from product_catalogs where id = $1',
+      [id]
+    );
+    if (cur.length && cur[0].protected) {
+      throw new ApiError(409, 'Системный каталог нельзя удалить');
+    }
     const { rows } = await pool.query('delete from product_catalogs where id = $1 returning id, name', [id]);
     if (!rows.length) return res.json({ ok: true });
     await audit(req.user, { action: 'delete', entity: 'setting', entityId: `prodcat:${id}`, title: `Каталог продукции «${rows[0].name}» удалён` });

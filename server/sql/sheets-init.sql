@@ -42,6 +42,7 @@ alter table google_sheet_manual_links alter column card_id drop not null;
 -- при чтении переводим его в базовую фасовку техкарты.
 alter table google_sheet_manual_links add column if not exists packaging_id int;
 
--- 0 — links строк хранят id техкарт (старый формат), 1 — id фасовок.
+-- 0 — links строк хранят id техкарт (старый формат), 1 — id фасовок,
+-- 2 — id фасовок карты производства (prod_packagings) после миграции.
 -- Старые связи читаются через фасовку по умолчанию и заменяются при следующей синхронизации.
 alter table google_sheets add column if not exists links_version int not null default 0;

@@ -207,6 +207,9 @@ export function calcProductionMap(
       const plan = rawPlan > 0 ? converted ?? rawPlan : 0;
       const outputQty = plan > 0 ? plan : mass;
       if (plan > 0 && Math.abs(plan - mass) > 0.01) {
+        opWarnings.push(
+          `партия ${round3(plan)} ≠ сумма ${round3(mass)} ${outNode.unitCode}`
+        );
       }
       nodeCalc.set(outNode.uid, {
         producedQty: outputQty,

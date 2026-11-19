@@ -5,12 +5,16 @@ import { ApiError, reqInt, reqNum, reqObject, wrap } from '../http';
 import { assertBaseUnit, loadProductConv, loadUnits, toBaseCross } from '../services/expansion';
 import { auditTx } from '../services/audit';
 import { produceMapBatch, reverseMapBatch, shipMapOutput } from '../services/map-production';
+import { saveMap, type SaveNode, type SaveOp } from '../services/map-save';
+import { aiLayout, type LayoutNode, type LayoutOp } from '../services/map-layout';
 
 export const productionMapRouter = Router();
 
 type NodeKind = 'product' | 'state' | 'output';
 
 interface PackagingDto {
+  /** id существующей фасовки; undefined — новая */
+  uid?: number;
   name: string;
   qtyBase: number;
   minOrder: number;
@@ -19,6 +23,8 @@ interface PackagingDto {
   priceBasis: 'unit' | 'portion' | 'piece';
   cost: number;
   available: boolean;
+  /** Тара со склада: несколько позиций категории «упаковка» без повторов. */
+  tareProductIds: number[];
 }
 
 interface NodeDto {
@@ -106,7 +112,17 @@ function parseBody(body: Record<string, unknown>): { nodes: NodeDto[]; ops: OpDt
       }
       const isDefault = p.isDefault === true && !defaultSeen;
       if (isDefault) defaultSeen = true;
+      const uidRaw = p.uid == null || p.uid === '' ? null : reqInt(p, 'uid');
+      const tareProductIds: number[] = [];
+      for (const value of Array.isArray(p.tareProductIds) ? p.tareProductIds : []) {
+        const id = Number(value);
+        if (!Number.isInteger(id) || id <= 0) {
+          throw new ApiError(400, 'tareProductIds: ожидается массив id позиций склада');
+        }
+        if (!tareProductIds.includes(id)) tareProductIds.push(id);
+      }
       return {
+        uid: uidRaw == null || uidRaw <= 0 ? undefined : uidRaw,
         name: typeof p.name === 'string' ? p.name.trim().slice(0, 200) : '',
         qtyBase,
         minOrder,
@@ -115,15 +131,16 @@ function parseBody(body: Record<string, unknown>): { nodes: NodeDto[]; ops: OpDt
         priceBasis: priceBasis as PackagingDto['priceBasis'],
         cost,
         available: p.available !== false,
+        tareProductIds,
       };
     });
     if (packagings.length && !defaultSeen) packagings[0].isDefault = true;
     if (packagings.length && kind !== 'product') {
-      if (packagings.some((p) => !(p.price > 0))) {
-        throw new ApiError(400, 'Укажите цену для каждой фасовки');
+      if (packagings.some((p) => p.available && !(p.price > 0))) {
+        throw new ApiError(400, 'Укажите цену для каждой доступной фасовки');
       }
-      if (catalogId == null) {
-        throw new ApiError(400, 'Выберите каталог для результата с фасовкой');
+      if (packagings.some((p) => p.available) && catalogId == null) {
+        throw new ApiError(400, 'Выберите каталог для результата с доступной фасовкой');
       }
     }
 
@@ -239,12 +256,19 @@ function validateShape(nodes: NodeDto[], ops: OpDto[]): void {
   };
   for (const op of ops) visit(op.uid);
 
+  const names = new Set<string>();
   for (const n of nodes) {
     if (n.kind === 'product') {
       if (!n.refId) throw new ApiError(400, `У сырья «${n.name || n.uid}» не выбрана позиция номенклатуры`);
-    } else if (n.refId != null) {
+      continue;
+    }
+    if (n.refId != null) {
       throw new ApiError(400, 'У состояния и блюда не должно быть ссылки на сырьё');
     }
+    const key = n.name.trim().toLowerCase();
+    if (!key) throw new ApiError(400, 'У рецептуры должно быть название');
+    if (names.has(key)) throw new ApiError(400, `Название «${n.name}» повторяется`);
+    names.add(key);
   }
 }
 
@@ -265,62 +289,6 @@ async function resolveRefs(client: PoolClient, nodes: NodeDto[]): Promise<void> 
   for (const unitId of unitIds) await assertBaseUnit(client, unitId, 'Карта производства');
 }
 
-async function replaceMap(client: PoolClient, nodes: NodeDto[], ops: OpDto[]): Promise<void> {
-  await client.query('delete from prod_packagings');
-  await client.query('delete from prod_op_inputs');
-  await client.query('delete from prod_ops');
-  await client.query('delete from prod_nodes');
-
-  const nodeIdByUid = new Map<number, number>();
-  for (let i = 0; i < nodes.length; i++) {
-    const n = nodes[i];
-    const { rows } = await client.query(
-      `insert into prod_nodes (kind, ref_id, name, name_en, name_sr, catalog_id, unit_id, x, y, position, portion_qty, price, note)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) returning id`,
-      [n.kind, n.refId, n.name, n.nameEn, n.nameSr, n.catalogId, n.unitId, n.x, n.y, i, n.portionQty, n.price, n.note]
-    );
-    nodeIdByUid.set(n.uid, Number(rows[0].id));
-  }
-
-  for (const n of nodes) {
-    if (n.kind === 'product') continue;
-    const nodeId = nodeIdByUid.get(n.uid)!;
-    for (let j = 0; j < n.packagings.length; j++) {
-      const p = n.packagings[j];
-      await client.query(
-        `insert into prod_packagings (node_id, name, qty_base, min_order, is_default, price, price_basis, cost, available, position)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-        [nodeId, p.name, p.qtyBase, p.minOrder, p.isDefault, p.price, p.priceBasis, p.cost, p.available, j]
-      );
-    }
-  }
-
-  const opIdByUid = new Map<number, number>();
-  for (let i = 0; i < ops.length; i++) {
-    const o = ops[i];
-    const outputNodeId = nodeIdByUid.get(o.outputUid);
-    if (!outputNodeId) throw new ApiError(400, 'Выход операции не найден');
-    const { rows } = await client.query(
-      `insert into prod_ops (name, yield_pct, plan_qty, plan_unit_id, labor_hours, output_node_id, note, x, y, position)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning id`,
-      [o.name, o.yieldPct, o.planQty, o.planUnitId, o.laborHours, outputNodeId, o.note, o.x, o.y, i]
-    );
-    opIdByUid.set(o.uid, Number(rows[0].id));
-  }
-
-  for (const o of ops) {
-    const opId = opIdByUid.get(o.uid)!;
-    for (const input of o.inputs) {
-      const nodeId = nodeIdByUid.get(input.nodeUid);
-      if (!nodeId) throw new ApiError(400, 'Вход операции не найден');
-      await client.query(
-        'insert into prod_op_inputs (op_id, node_id, qty, in_mass, loss_pct) values ($1,$2,$3,$4,$5)',
-        [opId, nodeId, input.qty, input.inMass, input.lossPct]
-      );
-    }
-  }
-}
-
 const NODES_SQL = `
   select n.id, n.kind, n.ref_id as "refId",
          coalesce(nullif(btrim(n.name), ''), p.name, '') as name,
@@ -331,6 +299,7 @@ const NODES_SQL = `
     from prod_nodes n
     left join products p on n.kind = 'product' and p.id = n.ref_id
     left join units u on u.id = n.unit_id
+   where not n.archived
    order by n.position, n.id`;
 
 productionMapRouter.get(
@@ -341,7 +310,9 @@ productionMapRouter.get(
       `select o.id, o.name, o.yield_pct::float8 as "yieldPct", o.plan_qty::float8 as "planQty", o.plan_unit_id as "planUnitId",
               o.labor_hours::float8 as "laborHours",
               o.output_node_id as "outputNodeId", o.note, o.x::float8 as x, o.y::float8 as y
-         from prod_ops o order by o.position, o.id`
+         from prod_ops o
+         join prod_nodes n on n.id = o.output_node_id and not n.archived
+        order by o.position, o.id`
     );
     const { rows: inputs } = await pool.query(
       'select op_id as "opId", node_id as "nodeId", qty::float8 as qty, in_mass as "inMass", loss_pct::float8 as "lossPct" from prod_op_inputs order by id'
@@ -350,8 +321,18 @@ productionMapRouter.get(
       `select id, node_id as "nodeId", name, qty_base::float8 as "qtyBase", min_order as "minOrder",
               is_default as "isDefault", price::float8 as price, price_basis as "priceBasis",
               cost::float8 as cost, available
-         from prod_packagings order by position, id`
+         from prod_packagings where not archived order by position, id`
     );
+    const { rows: tareRows } = await pool.query(
+      'select packaging_id as "packagingId", product_id as "productId" from prod_packaging_tare order by packaging_id, position, product_id'
+    );
+    const tareByPack = new Map<number, number[]>();
+    for (const t of tareRows) {
+      const key = Number(t.packagingId);
+      const list = tareByPack.get(key) ?? [];
+      list.push(Number(t.productId));
+      tareByPack.set(key, list);
+    }
     const packsByNode = new Map<number, Record<string, unknown>[]>();
     for (const p of packs) {
       const arr = packsByNode.get(Number(p.nodeId)) ?? [];
@@ -365,6 +346,7 @@ productionMapRouter.get(
         priceBasis: String(p.priceBasis),
         cost: Number(p.cost),
         available: p.available !== false,
+        tareProductIds: tareByPack.get(Number(p.id)) ?? [],
       });
       packsByNode.set(Number(p.nodeId), arr);
     }
@@ -390,8 +372,25 @@ productionMapRouter.get(
   })
 );
 
-/** Техкарта операции: нетто-ингредиенты должны ровно давать партию N (в единице результата). */
-async function validatePlanBalance(client: PoolClient, nodes: NodeDto[], ops: OpDto[]): Promise<void> {
+export interface BalanceWarning {
+  opUid: number;
+  opName: string;
+  plan: number;
+  net: number;
+  diff: number;
+}
+
+/**
+ * Техкарта операции: нетто-ингредиенты в норме должны давать партию N.
+ * Для импортированных рецептур допускаем расхождение (уварка/очистка в старой
+ * модели) — это предупреждение, а не отказ сохранения.
+ */
+async function validatePlanBalance(
+  client: PoolClient,
+  nodes: NodeDto[],
+  ops: OpDto[]
+): Promise<BalanceWarning[]> {
+  const warnings: BalanceWarning[] = [];
   const units = await loadUnits(client);
   const prodConv = await loadProductConv(client);
   const byUid = new Map(nodes.map((n) => [n.uid, n] as const));
@@ -419,17 +418,23 @@ async function validatePlanBalance(client: PoolClient, nodes: NodeDto[], ops: Op
       try {
         m = toBaseCross(input.qty, src.unitId, out.unitId, units, conv);
       } catch {
-        throw new ApiError(400, `«${op.name}»: ингредиенты нельзя привести к единице результата`);
+        // штучный вход без коэффициента (например, яйца в граммовом салате)
+        // в массу не входит — рецепт всё равно сохраняем
+        continue;
       }
       net += m;
     }
     if (Math.abs(plan - net) > 0.01) {
-      throw new ApiError(
-        400,
-        `«${op.name}»: сумма ингредиентов ${round3(net)} не равна партии ${round3(plan)}`
-      );
+      warnings.push({
+        opUid: op.uid,
+        opName: op.name,
+        plan: round3(plan),
+        net: round3(net),
+        diff: round3(plan - net),
+      });
     }
   }
+  return warnings;
 }
 
 productionMapRouter.put(
@@ -439,6 +444,7 @@ productionMapRouter.put(
     validateShape(nodes, ops);
     const expected = req.body?.version == null ? null : Number(req.body.version);
     let nextVersion = 1;
+    let warnings: BalanceWarning[] = [];
     await tx(async (client) => {
       const { rows: meta } = await client.query('select version from map_meta where id = 1 for update');
       const current = Number(meta[0]?.version ?? 1);
@@ -446,8 +452,8 @@ productionMapRouter.put(
         throw new ApiError(409, 'Карту изменил другой пользователь — обновите страницу и повторите');
       }
       await resolveRefs(client, nodes);
-      await validatePlanBalance(client, nodes, ops);
-      await replaceMap(client, nodes, ops);
+      warnings = await validatePlanBalance(client, nodes, ops);
+      await saveMap(client, nodes as SaveNode[], ops as SaveOp[]);
       const { rows: upd } = await client.query(
         'update map_meta set version = version + 1, updated_at = now() where id = 1 returning version'
       );
@@ -456,10 +462,10 @@ productionMapRouter.put(
         action: 'update',
         entity: 'production_map',
         title: 'Карта производства',
-        details: { nodes: nodes.length, ops: ops.length },
+        details: { nodes: nodes.length, ops: ops.length, warnings: warnings.length },
       });
     });
-    res.json({ ok: true, version: nextVersion });
+    res.json({ ok: true, version: nextVersion, warnings });
   })
 );
 
@@ -469,6 +475,61 @@ function qtyArg(raw: unknown): number | null {
   if (!Number.isFinite(n) || n <= 0) throw new ApiError(400, 'Количество — положительное число');
   return n;
 }
+
+/** ИИ-раскладка текущей схемы: облака сырья по категориям, компактные этапы. */
+productionMapRouter.post(
+  '/ai-layout',
+  wrap(async (req, res) => {
+    const body = reqObject(req.body ?? {});
+    const rawNodes = Array.isArray(body.nodes) ? body.nodes : [];
+    const rawOps = Array.isArray(body.ops) ? body.ops : [];
+    const nodes: LayoutNode[] = rawNodes.map((raw) => {
+      const n = reqObject(raw);
+      const kind = String(n.kind);
+      if (kind !== 'product' && kind !== 'state' && kind !== 'output') {
+        throw new ApiError(400, 'kind узла: product|state|output');
+      }
+      return {
+        uid: reqInt(n, 'uid'),
+        kind: kind as LayoutNode['kind'],
+        refId: n.refId == null || n.refId === '' ? null : reqInt(n, 'refId'),
+        name: typeof n.name === 'string' ? n.name : '',
+      };
+    });
+    const ops: LayoutOp[] = rawOps.map((raw) => {
+      const o = reqObject(raw);
+      return {
+        uid: reqInt(o, 'uid'),
+        outputUid: reqInt(o, 'outputUid'),
+        inputs: (Array.isArray(o.inputs) ? o.inputs : []).map((ri) => ({
+          nodeUid: reqInt(reqObject(ri), 'nodeUid'),
+        })),
+      };
+    });
+    res.json(await aiLayout(nodes, ops, body.ai !== false));
+  })
+);
+
+/** Активные фасовки карты — для ручного сопоставления строк Google-таблицы. */
+productionMapRouter.get(
+  '/packagings',
+  wrap(async (_req, res) => {
+    const { rows } = await pool.query(`
+      select pk.id, n.id as "nodeId", n.name as "nodeName", pk.title,
+             coalesce(pk.title, n.name) as name,
+             pk.qty_base::float8 as "qtyBase", pk.min_order as "minOrder",
+             pk.available, pk.price::float8 as price,
+             u.code as "unitCode", n.unit_id as "unitId",
+             cc.name as "catalogName"
+        from prod_packagings pk
+        join prod_nodes n on n.id = pk.node_id
+        join units u on u.id = n.unit_id
+        left join product_catalogs cc on cc.id = n.catalog_id
+       where not pk.archived and not n.archived
+       order by cc.position nulls last, cc.name nulls last, n.name, pk.qty_base`);
+    res.json(rows);
+  })
+);
 
 /** Выпуск партии по операции: списание сырья обратным разворотом состава. */
 productionMapRouter.post(

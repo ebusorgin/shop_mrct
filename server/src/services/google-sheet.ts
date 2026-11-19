@@ -275,12 +275,13 @@ interface Matchers {
 /** Индексы для сопоставления: полное название (техкарта + фасовка), базовое и фасовки по id. */
 async function loadMatchers(): Promise<Matchers> {
   const { rows } = await pool.query<Omit<PackagingRef, 'qtyBase'> & { qtyBase: number }>(
-    `select pk.id, pk.card_id as "cardId", tc.name as "cardName", pk.name as "packagingName",
+    `select pk.id, pk.node_id as "cardId", tc.name as "cardName", pk.name as "packagingName",
             pk.qty_base::float8 as "qtyBase", pk.is_default as "isDefault",
             u.code as "unitCode", u.dimension
-       from product_packagings pk
-       join tech_cards tc on tc.id = pk.card_id
-       join units u on u.id = tc.portion_unit_id`
+       from prod_packagings pk
+       join prod_nodes tc on tc.id = pk.node_id
+       join units u on u.id = tc.unit_id
+      where not pk.archived and not tc.archived`
   );
   const exactSale = new Map<string, number>();
   const exactCardPick = new Map<string, { id: number; rank: number }>();
@@ -346,7 +347,7 @@ function autoLinks(rows: string[][], matchers: Matchers): (number | null)[] {
 
 /** Ручные связи поверх автоподбора + производные поля и общий список непознанного. */
 async function applyOverridesToSheet(sheet: GoogleSheet, matchers: Matchers): Promise<void> {
-  const overrides = await manualOverrides(matchers.defaultByCard);
+  const overrides = await manualOverrides();
   const unmatched = new Set<string>();
   for (const tab of sheet.tabs) {
     applyOverrides(tab, overrides.get(tab.name), matchers.nameById);
@@ -363,18 +364,17 @@ type ManualOverrides = Map<string, Map<string, number | null>>;
  * Ручные решения: лист -> (нормализованное название строки -> id фасовки | null).
  * Старые связи хранили card_id — переводим их в фасовку по умолчанию этой техкарты.
  */
-async function manualOverrides(defaultByCard: Map<number, number>): Promise<ManualOverrides> {
+async function manualOverrides(): Promise<ManualOverrides> {
   const { rows } = await sheetsPool.query<{
-    tab_name: string; row_name: string; card_id: number | null; packaging_id: number | null;
+    tab_name: string; row_name: string; packaging_id: number | null;
   }>(
-    'select tab_name, row_name, card_id, packaging_id from google_sheet_manual_links where spreadsheet_id = $1',
+    'select tab_name, row_name, packaging_id from google_sheet_manual_links where spreadsheet_id = $1',
     [GOOGLE_SHEET_ID]
   );
   const byTab: ManualOverrides = new Map();
   for (const row of rows) {
     const map = byTab.get(row.tab_name) ?? new Map<string, number | null>();
-    const target = row.packaging_id ?? (row.card_id === null ? null : defaultByCard.get(row.card_id) ?? null);
-    map.set(row.row_name, target);
+    map.set(row.row_name, row.packaging_id);
     byTab.set(row.tab_name, map);
   }
   return byTab;
@@ -486,10 +486,11 @@ export async function setSheetRowLink(
   }
 
   const { rows: packagings } = await pool.query<{ cardName: string; qtyBase: number; unitCode: string }>(
-    `select tc.name as "cardName", pk.qty_base::float8 as "qtyBase", u.code as "unitCode"
-       from product_packagings pk
-       join tech_cards tc on tc.id = pk.card_id
-       join units u on u.id = tc.portion_unit_id
+    `select coalesce(pk.title, tc.name) as "cardName", pk.qty_base::float8 as "qtyBase",
+            u.code as "unitCode"
+       from prod_packagings pk
+       join prod_nodes tc on tc.id = pk.node_id
+       join units u on u.id = tc.unit_id
       where pk.id = $1`,
     [packagingId]
   );

@@ -15,6 +15,8 @@
     "groupStock": "Stock",
     "groupOther": "More",
     "constructor": "Production map",
+    "productionMap": "Production map",
+    "recipes": "Recipes",
     "stock": "Stock",
     "semis": "Semi-finished",
     "cards": "Tech cards",

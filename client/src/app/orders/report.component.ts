@@ -1,11 +1,13 @@
 import { ChangeDetectionStrategy, Component, DestroyRef, OnInit, computed, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { finalize } from 'rxjs';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { ApiService } from '../core/api.service';
 import { httpErr } from '../core/format';
 import { OrderReport, ReportDoc, ReportLine } from '../core/models';
 import { DeliveryWriteoffComponent } from './delivery-writeoff.component';
+import { RecipesComponent } from '../pages/recipes.component';
 
 /** Сербское число: точка — тысячи, запятая — дробная часть (45.505,00). */
 function grouped(value: number, decimals: number): string {
@@ -13,6 +15,13 @@ function grouped(value: number, decimals: number): string {
   const [int, frac] = fixed.split('.');
   const head = int.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
   return `${value < 0 ? '-' : ''}${head}${decimals ? ',' + frac : ''}`;
+}
+
+/** Сегодняшняя дата в локальной зоне как YYYY-MM-DD. */
+function isoToday(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 /**
@@ -23,7 +32,7 @@ function grouped(value: number, decimals: number): string {
 @Component({
   selector: 'app-order-report',
   standalone: true,
-  imports: [RouterLink, FormsModule, DeliveryWriteoffComponent],
+  imports: [RouterLink, FormsModule, DeliveryWriteoffComponent, RecipesComponent],
   templateUrl: './report.component.html',
   styleUrl: './report.component.css',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -63,6 +72,29 @@ export class OrderReportComponent implements OnInit {
   orderSaving = signal(false);
   /** Окно ручного списания склада по доставке (офис). */
   woOpen = signal(false);
+  /** Рецептура, открытая в редакторе поверх отчёта (офис). */
+  editNodeId = signal<number | null>(null);
+  /** Окно правки количества упаковок (офис). */
+  qtyEdit = signal<{
+    orderId: number;
+    packagingId: number;
+    name: string;
+    unit: ReportLine['unit'];
+    /** Сколько единиц документа в одной упаковке — для подсказки и предпросмотра. */
+    perPack: number;
+    current: number;
+    left: number;
+    top: number | null;
+    bottom: number | null;
+  } | null>(null);
+  qtyDraft = signal(1);
+  qtySaving = signal(false);
+  qtyErr = signal('');
+  /** Скачивание zip-архива с PDF-документами даты. */
+  pdfBusy = signal(false);
+  pdfErr = signal('');
+  /** Прошлая доставка — история: количество в таких заказах не редактируется. */
+  readonly qtyLocked = computed(() => !this.date || this.date < isoToday());
   orderNote = signal('');
 
   documents = computed(() => this.report()?.documents ?? []);
@@ -141,6 +173,126 @@ export class OrderReportComponent implements OnInit {
 
   print(): void {
     window.print();
+  }
+
+  /** Скачать документы даты: один — PDF, несколько — zip-архив. */
+  downloadZip(): void {
+    if (!this.date || this.pdfBusy() || !this.documents().length) return;
+    this.pdfBusy.set(true);
+    this.pdfErr.set('');
+    this.api.downloadOrderReportFile$(this.date, this.storeId, this.priceMode(), this.vatRate()).pipe(
+      takeUntilDestroyed(this.destroyRef),
+      finalize(() => this.pdfBusy.set(false)),
+    ).subscribe({
+      next: (resp) => {
+        const blob = resp.body;
+        if (!blob) {
+          this.pdfErr.set('Сервер вернул пустой файл');
+          return;
+        }
+        // Имя берём из Content-Disposition: сервер сам решает, PDF это или zip.
+        const header = resp.headers.get('Content-Disposition') ?? '';
+        const match = header.match(/filename="?([^";]+)"?/);
+        const fallback = this.documents().length === 1
+          ? `Otpremnica-${this.documents()[0].number}.pdf`
+          : `otpremnice-${this.date}.zip`;
+        const name = match ? match[1] : fallback;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = name;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+      },
+      error: (e) => {
+        const status = (e as { status?: number })?.status;
+        this.pdfErr.set(`Не удалось сформировать документы${status ? ` (${status})` : ''}`);
+      },
+    });
+  }
+
+  /** ✎ рядом со строкой: редактор рецептуры поверх отчёта. */
+  editRecipe(nodeId: number): void {
+    if (!nodeId) return;
+    this.editNodeId.set(nodeId);
+  }
+
+  /** Редактор закрыт — пересобираем отчёт: цены и названия могли измениться. */
+  closeRecipeEditor(): void {
+    this.editNodeId.set(null);
+    this.load();
+  }
+
+  // ── правка количества в заказе ────────────────────────────────────────
+  /** Клик по количеству: окошко с числом упаковок и предпросмотром документа. */
+  openQtyEditor(ev: MouseEvent, doc: ReportDoc, line: ReportLine): void {
+    if (this.storeMode || this.qtyLocked()) return;
+    const el = ev.currentTarget as HTMLElement;
+    const rect = el.getBoundingClientRect();
+    const width = 250;
+    const perPack = line.packQty > 0 ? line.qty / line.packQty : line.qty;
+    const openUp = rect.bottom + 230 > window.innerHeight;
+    this.qtyErr.set('');
+    this.qtyDraft.set(line.packQty);
+    this.qtyEdit.set({
+      orderId: doc.orderId,
+      packagingId: line.packagingId,
+      name: line.name,
+      unit: line.unit,
+      perPack,
+      current: line.packQty,
+      left: Math.max(8, Math.min(rect.left - 60, window.innerWidth - width - 8)),
+      top: openUp ? null : rect.bottom + 4,
+      bottom: openUp ? window.innerHeight - rect.top + 4 : null,
+    });
+  }
+
+  closeQtyEditor(): void {
+    this.qtyEdit.set(null);
+    this.qtyErr.set('');
+  }
+
+  /** Количество в документе для ещё не сохранённого числа упаковок. */
+  qtyPreview(packs: number): string {
+    const q = this.qtyEdit();
+    if (!q || !Number.isFinite(packs)) return '—';
+    const decimals = q.unit === 'kg' || q.unit === 'l' ? 3 : 0;
+    const value = Math.round(packs * q.perPack * 10 ** decimals) / 10 ** decimals;
+    return grouped(value, decimals);
+  }
+
+  unitFull(unit: ReportLine['unit']): string {
+    if (unit === 'kg') return 'кг';
+    if (unit === 'l') return 'л';
+    if (unit === 'kom') return 'шт';
+    return 'порц.';
+  }
+
+  saveQty(): void {
+    const q = this.qtyEdit();
+    if (!q || this.qtySaving()) return;
+    const qty = Number(this.qtyDraft());
+    if (!Number.isInteger(qty) || qty < 1 || qty > 999) {
+      this.qtyErr.set('Количество упаковок — целое число от 1 до 999');
+      return;
+    }
+    if (qty === q.current) {
+      this.closeQtyEditor();
+      return;
+    }
+    this.qtySaving.set(true);
+    this.qtyErr.set('');
+    this.api.setReportLineQty$(q.orderId, q.packagingId, qty).pipe(
+      takeUntilDestroyed(this.destroyRef),
+      finalize(() => this.qtySaving.set(false)),
+    ).subscribe({
+      next: () => {
+        this.qtyEdit.set(null);
+        this.orderNote.set(`Количество «${q.name}» изменено: ${qty} уп. — заказ перезаписан`);
+        this.load();
+      },
+      error: (e) => this.qtyErr.set(`Не удалось сохранить: ${httpErr(e)}`),
+    });
   }
 
   // ── ручной порядок строк ──────────────────────────────────────────────

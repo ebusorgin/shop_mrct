@@ -9,10 +9,7 @@ import { productsRouter } from './routes/products';
 import { stockRouter } from './routes/stock';
 import { waybillsRouter } from './routes/waybills';
 import { importRouter } from './routes/import';
-import { semisRouter } from './routes/semis';
-import { cardsRouter } from './routes/cards';
 import { productionMapRouter } from './routes/production-map';
-import { batchesRouter } from './routes/batches';
 import { dashboardRouter } from './routes/dashboard';
 import { pointsRouter } from './routes/points';
 import { suppliersRouter } from './routes/suppliers';
@@ -23,6 +20,7 @@ import { storeRouter } from './routes/store';
 import { settingsRouter } from './routes/settings';
 import { aiRouter } from './routes/ai';
 import { requireAdmin, requireAuth, requireOffice } from './services/auth';
+import { requireMapMigrated } from './services/map-migration';
 
 export function createApp(): express.Express {
   const app = express();
@@ -36,6 +34,8 @@ export function createApp(): express.Express {
   app.use('/api/auth', authRouter);
   // всё остальное API — только с действующей сессией
   app.use('/api', requireAuth);
+  // заказы живут на фасовках карты: без миграции отвечаем понятной ошибкой
+  app.use(['/api/store/order-catalog', '/api/store/orders', '/api/orders'], requireMapMigrated);
   // страница своего магазина — только для магазинных сотрудников
   app.use('/api/store', storeRouter);
   // офисные разделы: магазинному сотруднику закрыты (он видит только свою точку)
@@ -44,11 +44,8 @@ export function createApp(): express.Express {
   app.use('/api/stock', requireOffice, stockRouter);
   app.use('/api/waybills', requireOffice, waybillsRouter);
   app.use('/api/import', requireOffice, importRouter);
-  app.use('/api/semis', requireOffice, semisRouter);
-  app.use('/api/cards', requireOffice, cardsRouter);
-  // единая карта производства: общий граф сырьё -> операции -> блюда
+  // единая карта производства: общий граф сырьё -> операции -> рецептуры
   app.use('/api/production-map', requireOffice, productionMapRouter);
-  app.use('/api/batches', requireOffice, batchesRouter);
   app.use('/api/dashboard', requireOffice, dashboardRouter);
   // торговые точки: справочник магазинов
   app.use('/api/points', requireOffice, pointsRouter);

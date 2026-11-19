@@ -48,18 +48,20 @@ storeRouter.get(
   requireStore,
   wrap(async (_req, res) => {
     const { rows } = await pool.query(`
-      select pk.id, tc.id as "cardId", tc.name as "cardName",
-             tc.name_en as "cardNameEn", tc.name_sr as "cardNameSr", tc.note,
+      select pk.id, n.id as "cardId",
+             coalesce(pk.title, n.name) as "cardName",
+             coalesce(pk.title_en, n.name_en) as "cardNameEn",
+             coalesce(pk.title_sr, n.name_sr) as "cardNameSr", n.note,
              pk.qty_base::float8 as "qtyBase", pk.min_order as "minOrder",
-             pu.code as "unitCode",
-             tc.catalog_id as "catalogId", cc.name as "catalogName",
+             u.code as "unitCode",
+             n.catalog_id as "catalogId", cc.name as "catalogName",
              cc.icon as "catalogIcon", cc.color as "catalogColor"
-        from product_packagings pk
-        join tech_cards tc on tc.id = pk.card_id
-        join units pu on pu.id = tc.portion_unit_id
-        left join product_catalogs cc on cc.id = tc.catalog_id
-       where pk.available
-       order by cc.position nulls last, cc.name nulls last, tc.name, pk.qty_base`);
+        from prod_packagings pk
+        join prod_nodes n on n.id = pk.node_id
+        join units u on u.id = n.unit_id
+        left join product_catalogs cc on cc.id = n.catalog_id
+       where pk.available and not pk.archived and not n.archived
+       order by cc.position nulls last, cc.name nulls last, n.name, pk.qty_base`);
     res.json(
       rows.map(({ cardName, cardNameEn, cardNameSr, packagingName, qtyBase, unitCode, ...rest }) => {
         const packaging = packagingWeight(qtyBase, unitCode);
@@ -195,7 +197,7 @@ storeRouter.put(
 
     const ids = items.map((item) => item.packagingId);
     const { rows: available } = await pool.query<{ id: number }>(
-      'select id from product_packagings where available and id = any ($1::int[])',
+      'select id from prod_packagings where available and not archived and id = any ($1::int[])',
       [ids]
     );
     if (available.length !== ids.length) {
@@ -219,7 +221,7 @@ storeRouter.put(
       // Повторная проверка внутри транзакции: фасовку могли снять с продажи
       // или удалить между предварительной проверкой и вставкой строк.
       const { rows: availableInTx } = await client.query<{ id: number }>(
-        'select id from product_packagings where available and id = any($1::int[]) for share',
+        'select id from prod_packagings where available and not archived and id = any($1::int[]) for share',
         [ids]
       );
       if (availableInTx.length !== ids.length) {

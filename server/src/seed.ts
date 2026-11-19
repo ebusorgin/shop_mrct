@@ -114,100 +114,100 @@ async function seed(): Promise<void> {
     return rows[0].id;
   }
 
-  // ---- полуфабрикаты ----
-  // name, [kind, базовый вход], выход %, добавки [kind, вход, qty на 1 баз. ед. выхода]; kind: raw|semi
-  const semis: [string, ['raw' | 'semi', string], number, ['raw' | 'semi', string, number][]][] = [
-    ['Картофель варёный', ['raw', 'Картофель'], 90, []],
-    ['Картофель резаный', ['raw', 'Картофель'], 95, []],
-    ['Свёкла варёная', ['raw', 'Свёкла'], 80, []],
-    ['Морковь чищенная', ['raw', 'Морковь'], 85, []],
-    ['Лук чищенный', ['raw', 'Лук репчатый'], 88, []],
-    ['Капуста шиникованная', ['raw', 'Капуста белокочанная'], 92, []],
-    // вложенный полуфабрикат: делается из ДРУГИХ полуфабрикатов + сырьё
-    ['Зажарка борщовая', ['semi', 'Свёкла варёная'], 85, [
-      ['semi', 'Морковь чищенная', 0.6],
-      ['semi', 'Лук чищенный', 0.4],
-      ['raw', 'Масло растительное', 0.1],
-    ]],
-  ];
-  const semiByName = async (name: string): Promise<number> =>
-    (await pool.query('select id from semi_products where name = $1', [name])).rows[0].id;
-  const resolve = async (kind: 'raw' | 'semi', name: string) =>
-    kind === 'raw' ? { st: 'raw', id: await pid(name) } : { st: 'semi', id: await semiByName(name) };
-
-  for (const [name, baseRef, yieldPct, additives] of semis) {
-    const { rows } = await pool.query(
-      `insert into semi_products (name, unit_id, note) values ($1, $2, 'Демо-заготовка')
-       on conflict (name) do nothing returning id`,
-      [name, uG] // выход считаем в грамма относительно базового продукта (кг -> г)
-    );
-    let sid = rows[0]?.id;
-    if (!sid) sid = (await pool.query('select id from semi_products where name = $1', [name])).rows[0].id;
-    const { rows: exists } = await pool.query('select 1 from semi_inputs where semi_id = $1 limit 1', [sid]);
-    if (exists.length) continue;
-    const b = await resolve(baseRef[0], baseRef[1]);
-    // партия = 1 баз. ед. выхода, поэтому количество ядрового входа = 1 ÷ выход после обработки
-    await pool.query(
-      `insert into semi_inputs (semi_id, source_type, ref_id, qty_per_output, yield_pct) values ($1,$2,$3,$4,$5)`,
-      [sid, b.st, b.id, +(100 / yieldPct).toFixed(6), yieldPct]
-    );
-    for (const [kind, addName, qpo] of additives) {
-      const a = await resolve(kind, addName);
-      await pool.query(
-        `insert into semi_inputs (semi_id, source_type, ref_id, qty_per_output) values ($1,$2,$3,$4)`,
-        [sid, a.st, a.id, qpo]
-      );
-    }
-  }
-
-  // ---- техкарта «Борщ (порция 400 г)» ----
-  const semiId = async (name: string) =>
-    (await pool.query('select id from semi_products where name = $1', [name])).rows[0].id;
-
-  const { rows: borschtExists } = await pool.query('select 1 from tech_cards where name = $1', ['Борщ (порция)']);
-  if (!borschtExists.length) {
+  // ---- демо-граф карты производства: сырьё -> заготовки -> борщ ----
+  const { rows: mapExists } = await pool.query('select 1 from prod_nodes limit 1');
+  if (!mapExists.length) {
     await tx(async (client) => {
-      const { rows } = await client.query(
-        `insert into tech_cards (name, portion_qty, portion_unit_id, note)
-         values ('Борщ (порция)', 400, $1, 'Демо-продукт из ТЗ') returning id`,
+      const rawNode = async (name: string): Promise<number> => {
+        const p = await client.query('select id, unit_id from products where name = $1', [name]);
+        if (!p.rows.length) throw new Error(`Seed: продукт «${name}» не найден`);
+        const productId = Number(p.rows[0].id);
+        const existing = await client.query(
+          "select id from prod_nodes where kind = 'product' and ref_id = $1 limit 1",
+          [productId]
+        );
+        if (existing.rows.length) return Number(existing.rows[0].id);
+        const ins = await client.query(
+          `insert into prod_nodes (kind, ref_id, name, unit_id, portion_qty, price, note)
+           values ('product', $1, $2, $3, 0, 0, '') returning id`,
+          [productId, name, p.rows[0].unit_id]
+        );
+        return Number(ins.rows[0].id);
+      };
+
+      const stateNode = async (
+        name: string,
+        inputName: string,
+        qty: number,
+        lossPct: number
+      ): Promise<number> => {
+        const input = await rawNode(inputName);
+        const node = await client.query(
+          `insert into prod_nodes (kind, name, unit_id, portion_qty, price, note)
+           values ('state', $1, $2, 1000, 0, 'Демо-заготовка') returning id`,
+          [name, uG]
+        );
+        const nodeId = Number(node.rows[0].id);
+        const op = await client.query(
+          `insert into prod_ops (name, plan_qty, plan_unit_id, output_node_id, note, position)
+           values ('производство', 1000, $1, $2, '', 0) returning id`,
+          [uG, nodeId]
+        );
+        await client.query(
+          `insert into prod_op_inputs (op_id, node_id, qty, in_mass, loss_pct)
+           values ($1,$2,$3,true,$4)`,
+          [op.rows[0].id, input, qty, lossPct]
+        );
+        return nodeId;
+      };
+
+      const beet = await stateNode('Свёкла варёная', 'Свёкла', 1000, 20);
+      const potato = await stateNode('Картофель варёный', 'Картофель', 1000, 10);
+      const cabbage = await stateNode('Капуста шинкованная', 'Капуста белокочанная', 500, 8);
+
+      const dish = await client.query(
+        `insert into prod_nodes (kind, name, unit_id, portion_qty, price, note)
+         values ('output', 'Борщ (порция)', $1, 400, 0, 'Демо-продукт из ТЗ') returning id`,
         [uG]
       );
-      const cardId = rows[0].id as number;
-      const items: ['raw' | 'semi', string, number, number][] = [
-        // type, ref name, qty per portion, unit id
-        ['raw', 'Говядина на кости', 120, uG],
-        ['raw', 'Вода', 700, uMl],
-        ['semi', 'Свёкла варёная', 70, uG],
-        ['semi', 'Капуста шиникованная', 90, uG],
-        ['semi', 'Картофель варёный', 110, uG],
-        ['semi', 'Морковь чищенная', 30, uG],
-        ['semi', 'Лук чищенный', 30, uG],
-        ['raw', 'Помидоры', 60, uG],
-        ['raw', 'Перец болгарский', 30, uG],
-        ['raw', 'Чеснок', 4, uG],
-        ['raw', 'Масло растительное', 8, uMl],
-        ['raw', 'Томатная паста', 8, uG],
-        ['raw', 'Соль', 4, uG],
-        ['raw', 'Сахар', 2, uG],
-        ['raw', 'Уксус 9%', 3, uMl],
-        ['raw', 'Лавровый лист', 0.1, uPcs],
-        ['raw', 'Перец чёрный горошком', 0.25, uG],
-        ['raw', 'Укроп свежий', 4, uG],
-        ['raw', 'Сметана', 30, uG],
+      const dishId = Number(dish.rows[0].id);
+      const op = await client.query(
+        `insert into prod_ops (name, plan_qty, plan_unit_id, output_node_id, note, position)
+         values ('сборка', 400, $1, $2, '', 0) returning id`,
+        [uG, dishId]
+      );
+      const inputs: [number, number, number | null][] = [
+        [await rawNode('Говядина на кости'), 120, null],
+        [await rawNode('Вода'), 700, null],
+        [beet, 70, null],
+        [cabbage, 90, null],
+        [potato, 110, null],
+        [await rawNode('Морковь'), 30, null],
+        [await rawNode('Лук репчатый'), 30, null],
+        [await rawNode('Помидоры'), 60, null],
+        [await rawNode('Перец болгарский'), 30, null],
+        [await rawNode('Чеснок'), 4, null],
+        [await rawNode('Масло растительное'), 8, null],
+        [await rawNode('Томатная паста'), 8, null],
+        [await rawNode('Соль'), 4, null],
+        [await rawNode('Сахар'), 2, null],
+        [await rawNode('Уксус 9%'), 3, null],
+        [await rawNode('Лавровый лист'), 0.1, null],
+        [await rawNode('Перец чёрный горошком'), 0.25, null],
+        [await rawNode('Укроп свежий'), 4, null],
+        [await rawNode('Сметана'), 30, null],
       ];
-      let pos = 0;
-      for (const [type, refName, qty, unitId] of items) {
-        const refId = type === 'raw' ? await pidVia(client, refName) : await semiId(refName);
+      for (const [nodeId, qty, loss] of inputs) {
         await client.query(
-          `insert into tech_card_items (card_id, source_type, ref_id, qty, unit_id, position)
-           values ($1,$2,$3,$4,$5,$6)`,
-          [cardId, type, refId, qty, unitId, pos++]
+          `insert into prod_op_inputs (op_id, node_id, qty, in_mass, loss_pct)
+           values ($1,$2,$3,true,$4)`,
+          [op.rows[0].id, nodeId, qty, loss]
         );
       }
     });
   }
 
-  console.log('[seed] демо-данные загружены: склад + полуфабрикаты + продукт «Борщ»');
+  console.log('[seed] демо-данные загружены: склад + карта производства «Борщ»');
   await pool.end();
 }
 

@@ -27,7 +27,15 @@
     </svg>
     Печать / PDF
   </button>
+  @if (!storeMode && date) {
+    <button type="button" class="btn" (click)="downloadZip()"
+            [disabled]="loading() || pdfBusy() || !documents().length"
+            title="Скачать документы даты в PDF; если документов несколько — одним zip-архивом">
+      {{ pdfBusy() ? 'Формируем PDF…' : '⬇ Скачать PDF' }}
+    </button>
+  }
 </div>
+@if (pdfErr()) { <div class="err no-print" role="alert">{{ pdfErr() }}</div> }
 
 @if (!storeMode) {
   <details class="report-settings no-print">
@@ -197,10 +205,21 @@
                   <span class="drag-grip no-print" draggable="true" title="Перетащите строку, чтобы изменить порядок"
                         (dragstart)="onLineDragStart(doc, $index, $event)" (dragend)="onLineDragEnd()">⋮⋮</span>
                 }
-                {{ line.name }}
+                <span class="line-name">{{ line.name }}</span>
+                @if (!storeMode) {
+                  <button type="button" class="line-edit no-print" (click)="editRecipe(line.nodeId)"
+                          title="Редактировать рецептуру" aria-label="Редактировать рецептуру">✎</button>
+                }
               </td>
               <td class="center" [title]="line.unit === 'porcija' ? 'porcija' : line.unit">{{ unitLabel(line.unit) }}</td>
-              <td class="center">{{ qty(line) }}</td>
+              <td class="center">
+                @if (storeMode || qtyLocked()) {
+                  <span [title]="qtyLocked() && !storeMode ? 'Прошлый заказ — количество не меняется' : ''">{{ qty(line) }}</span>
+                } @else {
+                  <button type="button" class="qty-edit" (click)="openQtyEditor($event, doc, line)"
+                          title="Изменить количество упаковок в заказе">{{ qty(line) }}</button>
+                }
+              </td>
               <td class="money">{{ money(line.price) }}</td>
               <td class="center">{{ line.vatRate }}</td>
               <td class="money">{{ money(line.vat) }}</td>
@@ -240,4 +259,37 @@
     [scopeLabel]="storeId === undefined ? 'все магазины' : 'один магазин'"
     (closed)="woOpen.set(false)"
   />
+}
+
+@if (editNodeId() != null) {
+  <app-recipes [embedded]="true" [embedNodeId]="editNodeId()" (editorClosed)="closeRecipeEditor()" />
+}
+
+@if (qtyEdit(); as q) {
+  <div class="qty-pop-backdrop" (click)="closeQtyEditor()"></div>
+  <div class="qty-pop" role="dialog" aria-label="Количество в заказе"
+       [style.top]="q.top != null ? q.top + 'px' : null"
+       [style.bottom]="q.bottom != null ? q.bottom + 'px' : null"
+       [style.left.px]="q.left">
+    <div class="qty-pop-head">
+      <span>Количество в заказе</span>
+      <button type="button" class="qx" (click)="closeQtyEditor()" aria-label="Закрыть">✕</button>
+    </div>
+    <div class="qty-pop-name">{{ q.name }}</div>
+    <label class="qty-pop-field">Упаковок
+      <input type="number" min="1" max="999" step="1" [ngModel]="qtyDraft()"
+             (ngModelChange)="qtyDraft.set($event)" (keydown.enter)="saveQty()" />
+    </label>
+    <div class="qty-pop-hint">
+      В документе: <b>{{ qtyPreview(+qtyDraft()) }} {{ unitFull(q.unit) }}</b>
+      · 1 уп. = {{ qtyPreview(1) }} {{ unitFull(q.unit) }}
+    </div>
+    @if (qtyErr()) { <div class="qty-pop-err" role="alert">{{ qtyErr() }}</div> }
+    <div class="qty-pop-actions">
+      <button type="button" class="btn sm primary" [disabled]="qtySaving()" (click)="saveQty()">
+        {{ qtySaving() ? 'Сохраняю…' : 'Сохранить' }}
+      </button>
+      <button type="button" class="btn sm" [disabled]="qtySaving()" (click)="closeQtyEditor()">Отмена</button>
+    </div>
+  </div>
 }

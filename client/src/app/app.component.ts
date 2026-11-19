@@ -133,9 +133,8 @@ export class AppComponent {
       titleKey: 'nav.groupStock',
       items: [
         { path: 'stock', icon: '🏬', labelKey: 'nav.stock' },
-        { path: 'semis', icon: '🔪', labelKey: 'nav.semis' },
-        { path: 'cards', icon: '📐', labelKey: 'nav.cards' },
-        { path: 'map', icon: '🍲', labelKey: 'nav.constructor' },
+        { path: 'map', icon: '🍲', labelKey: 'nav.productionMap' },
+        { path: 'recipes', icon: '📖', labelKey: 'nav.recipes' },
         { path: 'orders', icon: '🧾', labelKey: 'nav.orders' },
       ],
     },

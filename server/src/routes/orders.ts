@@ -5,11 +5,14 @@
  *                             свежие даты доставки первыми.
  */
 import { Router } from 'express';
+import type { Request } from 'express';
+import { ZipArchive } from 'archiver';
 import { pool } from '../db';
 import { ApiError, wrap } from '../http';
 import { audit } from '../services/audit';
 import { orderArchive } from '../services/order-archive';
 import { orderReport, VAT_RATE } from '../services/order-report';
+import { createReportPdf } from '../services/order-report-pdf';
 import {
   deliveryWriteoffPreview,
   deliveryWriteoffStatus,
@@ -25,32 +28,84 @@ ordersRouter.get(
   })
 );
 
+/** Общие параметры отчёта: дата, магазин, база цены и ставка PDV. */
+function parseReportQuery(req: Request): {
+  date: string;
+  storeId: number | null;
+  priceMode: 'sale' | 'cost';
+  vatRate: number;
+} {
+  const date = typeof req.query.date === 'string' ? req.query.date : '';
+  const parsed = new Date(`${date}T00:00:00Z`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) {
+    throw new ApiError(400, 'date: требуется дата в формате YYYY-MM-DD');
+  }
+  const rawStore = req.query.storeId;
+  const storeId = rawStore === undefined || rawStore === '' ? null : Number(rawStore);
+  if (storeId !== null && (!Number.isInteger(storeId) || storeId <= 0)) {
+    throw new ApiError(400, 'storeId: требуется целое положительное число');
+  }
+  const rawPrice = req.query.price;
+  if (rawPrice !== undefined && rawPrice !== 'sale' && rawPrice !== 'cost') {
+    throw new ApiError(400, 'price: ожидается sale или cost');
+  }
+  const rawVat = req.query.vat;
+  let vatRate = VAT_RATE;
+  if (rawVat !== undefined && rawVat !== '') {
+    const n = Number(rawVat);
+    if (!Number.isFinite(n) || n < 0 || n > 100) throw new ApiError(400, 'vat: ожидается число 0…100');
+    vatRate = n;
+  }
+  return { date, storeId, priceMode: rawPrice === 'cost' ? 'cost' : 'sale', vatRate };
+}
+
 /** Предпросмотр отчёта-отгрузки: ?date=YYYY-MM-DD&storeId=&price=sale|cost (без storeId — все магазины). */
 ordersRouter.get(
   '/report',
   wrap(async (req, res) => {
-    const date = typeof req.query.date === 'string' ? req.query.date : '';
-    const parsed = new Date(`${date}T00:00:00Z`);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) {
-      throw new ApiError(400, 'date: требуется дата в формате YYYY-MM-DD');
+    const { date, storeId, priceMode, vatRate } = parseReportQuery(req);
+    res.json(await orderReport(date, storeId, priceMode, vatRate));
+  })
+);
+
+/**
+ * GET /api/orders/report/pdf — документы даты в PDF.
+ * Один документ отдаётся как PDF; несколько — zip-архивом по файлу на магазин.
+ * Параметры те же, что у отчёта.
+ */
+ordersRouter.get(
+  '/report/pdf',
+  wrap(async (req, res) => {
+    const { date, storeId, priceMode, vatRate } = parseReportQuery(req);
+    const { documents } = await orderReport(date, storeId, priceMode, vatRate);
+    if (!documents.length) throw new ApiError(404, 'За эту дату нет документов');
+
+    res.setHeader('Cache-Control', 'no-store');
+    if (documents.length === 1) {
+      // Единственный документ — прямо PDF, без лишней упаковки в архив.
+      const doc = documents[0];
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="Otpremnica-${doc.number}.pdf"`);
+      const pdf = createReportPdf(doc);
+      pdf.pipe(res);
+      pdf.end();
+      return;
     }
-    const rawStore = req.query.storeId;
-    const storeId = rawStore === undefined || rawStore === '' ? null : Number(rawStore);
-    if (storeId !== null && (!Number.isInteger(storeId) || storeId <= 0)) {
-      throw new ApiError(400, 'storeId: требуется целое положительное число');
+
+    const fileName = storeId == null ? `otpremnice-${date}.zip` : `otpremnica-${date}-store${storeId}.zip`;
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+
+    const archive = new ZipArchive({ zlib: { level: 9 } });
+    archive.on('warning', () => undefined);
+    archive.on('error', (e: Error) => res.destroy(e));
+    archive.pipe(res);
+    for (const doc of documents) {
+      const pdf = createReportPdf(doc);
+      archive.append(pdf, { name: `Otpremnica-${doc.number}.pdf` });
+      pdf.end();
     }
-    const rawPrice = req.query.price;
-    if (rawPrice !== undefined && rawPrice !== 'sale' && rawPrice !== 'cost') {
-      throw new ApiError(400, 'price: ожидается sale или cost');
-    }
-    const rawVat = req.query.vat;
-    let vatRate = VAT_RATE;
-    if (rawVat !== undefined && rawVat !== '') {
-      const n = Number(rawVat);
-      if (!Number.isFinite(n) || n < 0 || n > 100) throw new ApiError(400, 'vat: ожидается число 0…100');
-      vatRate = n;
-    }
-    res.json(await orderReport(date, storeId, rawPrice === 'cost' ? 'cost' : 'sale', vatRate));
+    await archive.finalize();
   })
 );
 
@@ -102,6 +157,60 @@ ordersRouter.put(
       details: { positions: final.length },
     });
     res.json({ ok: true, packagingIds: final });
+  })
+);
+
+/**
+ * PUT /api/orders/report/line — изменить количество позиции прямо в заказе.
+ * Body: { orderId, packagingId, qty } — qty в упаковках (целое 1…999).
+ * Офис правит ошибку магазина: строка заказа перезаписывается, отчёт
+ * пересчитывается заново на клиенте.
+ */
+ordersRouter.put(
+  '/report/line',
+  wrap(async (req, res) => {
+    const raw = (req.body ?? {}) as Record<string, unknown>;
+    const orderId = Number(raw.orderId);
+    const packagingId = Number(raw.packagingId);
+    const qty = Number(raw.qty);
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      throw new ApiError(400, 'orderId: требуется целое положительное число');
+    }
+    if (!Number.isInteger(packagingId) || packagingId <= 0) {
+      throw new ApiError(400, 'packagingId: требуется целое положительное число');
+    }
+    if (!Number.isInteger(qty) || qty < 1 || qty > 999) {
+      throw new ApiError(400, 'qty: количество упаковок — целое число от 1 до 999');
+    }
+
+    const { rows: orderRows } = await pool.query<{ id: number; past: boolean }>(
+      'select id, delivery_date < current_date as past from store_orders where id = $1',
+      [orderId]
+    );
+    if (!orderRows.length) throw new ApiError(404, 'Заказ не найден');
+    // Прошлые доставки — история: количество в них не меняется.
+    if (orderRows[0].past) {
+      throw new ApiError(409, 'Нельзя менять количество в прошлом заказе');
+    }
+
+    const upd = await pool.query(
+      'update store_order_items set qty = $3 where order_id = $1 and packaging_id = $2',
+      [orderId, packagingId, qty]
+    );
+    if (!upd.rowCount) throw new ApiError(404, 'Позиции нет в этом заказе');
+
+    await pool.query(
+      'update store_orders set updated_at = now(), updated_by = $2 where id = $1',
+      [orderId, req.user?.id ?? null]
+    );
+    await audit(req.user, {
+      action: 'update',
+      entity: 'store_order',
+      entityId: orderId,
+      title: 'Количество позиции отчёта-отгрузки',
+      details: { packagingId, qty },
+    });
+    res.json({ ok: true, orderId, packagingId, qty });
   })
 );
 

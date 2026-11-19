@@ -328,9 +328,13 @@ export type ReportUnit = 'kg' | 'l' | 'kom' | 'porcija';
 export interface ReportLine {
   /** id фасовки — ключ для ручного порядка строк. */
   packagingId: number;
+  /** id рецептуры — для кнопки «редактировать рецептуру» рядом со строкой. */
+  nodeId: number;
   name: string;
   unit: ReportUnit;
   qty: number;
+  /** Количество упаковок в заказе — редактируется в отчёте офисом. */
+  packQty: number;
   price: number;
   vatRate: number;
   net: number;
@@ -806,6 +810,10 @@ export interface RawCategory {
   /** Фоновый цвет #rrggbb; '' — без цвета. */
   color?: string;
   productCount: number;
+  /** Системная категория: удаление и переименование запрещены. */
+  protected?: boolean;
+  /** Ручной порядок в списке настроек. */
+  position?: number;
 }
 
 /** Каталог готовой продукции (product_catalogs). */
@@ -818,6 +826,9 @@ export interface ProductCatalog {
   color?: string;
   /** Сколько продуктов привязано (только в списке настроек). */
   cardCount?: number;
+  /** Системный каталог: удаление и переименование запрещены. */
+  protected?: boolean;
+  position?: number;
 }
 
 /** Ссылка на позицию номенклатуры (products) для привязки к категории сырья. */
@@ -985,6 +996,8 @@ export interface MapPackaging {
   priceBasis: 'unit' | 'portion' | 'piece';
   cost: number;
   available: boolean;
+  /** Тара со склада: несколько позиций категории «упаковка» без повторов. */
+  tareProductIds: number[];
 }
 
 export interface MapNode {

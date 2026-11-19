@@ -65,7 +65,7 @@ export async function orderArchive(storeId: number | null): Promise<OrderArchive
                          'priceBasis', coalesce(i.basis_snapshot, pk.price_basis),
                          'dimension', coalesce(i.dimension_snapshot, u.dimension),
                          'price', coalesce(i.price_snapshot, pk.price)::float8,
-                         'catalogId', n.catalog_id,
+                         'catalogId', tc.catalog_id,
                          'catalogName', c.name,
                          'catalogIcon', c.icon,
                          'catalogColor', c.color

@@ -753,8 +753,14 @@ export interface GptSettings {
 export interface AppSettings {
   gpt: GptSettings;
   defaults: GptSettings;
+  currency: CurrencySettings;
   openai: { keyConfigured: boolean; model: string };
   proxy: { scheme: string; host: string; port: number; reachable: boolean };
+}
+
+/** Значок валюты из настроек: «дин.» по умолчанию. */
+export interface CurrencySettings {
+  symbol: string;
 }
 
 /** Результат кнопки «Проверить связь»: настоящий запрос к модели текущим транспортом. */

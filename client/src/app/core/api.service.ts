@@ -293,6 +293,11 @@ export class ApiService {
 
   // ---- настройки CRM (только админ) ----
   settings$(): Observable<M.AppSettings> { return this.http.get<M.AppSettings>(`${this.base}/settings`); }
+  /** Значок валюты нужен всем ролям: суммы есть и в заказе магазина. */
+  loadCurrency$(): Observable<M.CurrencySettings> { return this.http.get<M.CurrencySettings>(`${this.base}/currency`); }
+  saveCurrency$(symbol: string): Observable<M.CurrencySettings> {
+    return this.http.put<M.CurrencySettings>(`${this.base}/settings/currency`, { symbol });
+  }
   saveGptSettings$(body: M.GptSettings): Observable<{ ok: boolean; gpt: M.GptSettings }> {
     return this.http.patch<{ ok: boolean; gpt: M.GptSettings }>(`${this.base}/settings/gpt`, body);
   }

@@ -16,12 +16,16 @@ import {
   type DeliveryRule,
 } from '../services/delivery-rule';
 import {
+  CURRENCY_DEFAULTS,
   CUTOFF_MAX_HOURS,
+  currencySettings,
   deliverySettings,
   GPT_DEFAULTS,
   gptSettings,
+  normalizeCurrencySymbol,
   normalizeProxyUrl,
   proxyTarget,
+  saveCurrencySettings,
   saveDeliverySettings,
   saveGptSettings,
   tcpProbe,
@@ -293,9 +297,27 @@ settingsRouter.get(
     res.json({
       gpt,
       defaults: GPT_DEFAULTS,
+      currency: await currencySettings(),
       openai: { keyConfigured: Boolean(config.openaiKey), model: config.openaiModel },
       proxy: { ...target, reachable: await tcpProbe(target.host, target.port) },
     });
+  })
+);
+
+/** Значок валюты: «дин.» по умолчанию, меняется в настройках и сразу виден во всех суммах. */
+settingsRouter.put(
+  '/currency',
+  wrap(async (req, res) => {
+    const before = await currencySettings();
+    const next = await saveCurrencySettings({ symbol: normalizeCurrencySymbol((req.body ?? {}).symbol) }, req.user);
+    await audit(req.user, {
+      action: 'update',
+      entity: 'setting',
+      entityId: 'currency',
+      title: `Значок валюты: «${next.symbol}»`,
+      details: { from: before, to: next },
+    });
+    res.json(next);
   })
 );
 

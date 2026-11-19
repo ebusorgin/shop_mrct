@@ -7,6 +7,7 @@ import { ApiService } from '../core/api.service';
 import { LogService } from '../core/log.service';
 import { Product, Unit, Waybill, WaybillShort, ImportParseResult, ImportItem, ImportDiscount } from '../core/models';
 import { cents, fmtCost, fmtDateTime, fmtMoney, fmtQty, httpErr, today, trim } from '../core/format';
+import { currencySymbol } from '../core/currency';
 
 interface DraftItem {
   productId: number | null;
@@ -533,7 +534,7 @@ type ImpLineState = 'fix' | 'check' | 'new' | 'ready';
             <select class="m-unit" [(ngModel)]="it.unitId" aria-label="Единица">
               @for (u of units(); track u.id) { <option [ngValue]="u.id">{{ u.code }}</option> }
             </select>
-            <input class="m-price" type="number" [(ngModel)]="it.price" placeholder="Цена ₽" aria-label="Цена" />
+            <input class="m-price" type="number" [(ngModel)]="it.price" [placeholder]="'Цена, ' + cur()" aria-label="Цена" />
             <button class="btn sm danger m-del" (click)="removeItem($index)">✕</button>
           </div>
         }
@@ -758,7 +759,7 @@ type ImpLineState = 'fix' | 'check' | 'new' | 'ready';
               </div>
               <div class="rc-money" title="Итог строки: нетто + PDV">
                 <span class="rc-money-l">к оплате</span>
-                <b>{{ trim(c((it.qty ?? 0) * (it.price ?? 0) * (1 + (it.vatRate ?? 0) / 100))) }} ₽</b>
+                <b>{{ trim(c((it.qty ?? 0) * (it.price ?? 0) * (1 + (it.vatRate ?? 0) / 100))) }} {{ cur() }}</b>
                 <small>нетто {{ trim(c((it.qty ?? 0) * (it.price ?? 0))) }}@if (it.vatRate) { · PDV {{ trim(c((it.qty ?? 0) * (it.price ?? 0) * it.vatRate / 100)) }} } @else { · без PDV }</small>
               </div>
               <button class="rc-x" type="button" title="Убрать строку" (click)="removeImp(row.idx)">✕</button>
@@ -783,13 +784,13 @@ type ImpLineState = 'fix' | 'check' | 'new' | 'ready';
                   @if (it.docPricePrinted != null) {
                     <span class="rc-inline">
                       <input type="number" step="any" [(ngModel)]="it.docPricePrinted" (ngModelChange)="onDocPriceEdit(it)" [title]="priceTitle" aria-label="Цена как в документе" />
-                      <span class="rc-cur">₽/{{ it.docUnitPrinted || unitCodeOf(it.unitId) || 'ед.' }}</span>
+                      <span class="rc-cur">{{ cur() }}/{{ it.docUnitPrinted || unitCodeOf(it.unitId) || 'ед.' }}</span>
                     </span>
                     <small class="rc-hint">на склад {{ baseCostReadout(it) }}</small>
                   } @else {
                     <span class="rc-inline">
                       <input type="number" step="any" [(ngModel)]="it.price" (ngModelChange)="onPriceEdit(it)" [title]="priceTitle" placeholder="цена/баз." aria-label="Цена без PDV" />
-                      <span class="rc-cur">₽/{{ unitCodeOf(it.unitId) || 'ед.' }}</span>
+                      <span class="rc-cur">{{ cur() }}/{{ unitCodeOf(it.unitId) || 'ед.' }}</span>
                     </span>
                     <small class="rc-hint">{{ priceHint(it) || 'В документе цена не напечатана — введите цену за базовую единицу' }}</small>
                   }
@@ -799,7 +800,7 @@ type ImpLineState = 'fix' | 'check' | 'new' | 'ready';
                   <span class="rc-label">Сумма без PDV <em>главная цифра</em></span>
                   <span class="rc-inline">
                     <input type="number" step="any" [(ngModel)]="it.lineSum" (ngModelChange)="onSumEdit(it)" aria-label="Сумма строки в документе" title="Сумма строки без PDV — деньги этой позиции. Правится вместе с ценой: меняете сумму — пересчитается цена, меняете цену — пересчитается сумма" />
-                    <span class="rc-cur">₽</span>
+                    <span class="rc-cur">{{ cur() }}</span>
                   </span>
                   <small class="rc-hint" [class.bad]="lineMismatch(it)">
                     @if (lineMismatch(it)) { не сходится с документом — сверьте с фото }
@@ -817,7 +818,7 @@ type ImpLineState = 'fix' | 'check' | 'new' | 'ready';
                   <small class="rc-hint">
                     @if (it.vatSuspect) { ⚠ прочитан неуверенно — сверьте с фото }
                     @else if (it.vatInferred) { ⚠ выведен по итогам — проверьте ставку }
-                    @else if (it.vatRate) { +{{ trim(c((it.qty ?? 0) * (it.price ?? 0) * it.vatRate / 100)) }} ₽ к нетто }
+                    @else if (it.vatRate) { +{{ trim(c((it.qty ?? 0) * (it.price ?? 0) * it.vatRate / 100)) }} {{ cur() }} к нетто }
                     @else { без налога }
                   </small>
                 </label>
@@ -1050,6 +1051,8 @@ export class WaybillsComponent implements OnInit {
   fmtQty = fmtQty;
   fmtCost = fmtCost;
   trim = trim;
+  /** Значок валюты из настроек (по умолчанию «дин.»): ₽ в суммах быть не должно. */
+  cur = currencySymbol;
   /** Момент приёмки/отмены — общий форматтер даты-времени. */
   fmtWhen = fmtDateTime;
   c = cents; // округление денег до копеек в формулах шаблона
@@ -1705,7 +1708,7 @@ export class WaybillsComponent implements OnInit {
     return `${human}${printed}`;
   }
 
-  /** Подсказка под ценой: цена за базовую единицу показывается за удобную (₽/кг, ₽/л). */
+  /** Подсказка под ценой: цена за базовую единицу показывается за удобную (дин./кг, дин./л). */
   priceHint(it: ImpDraft): string {
     if (it.price == null) return '';
     const code = this.unitCodeOf(it.unitId);
@@ -1720,11 +1723,11 @@ export class WaybillsComponent implements OnInit {
   /** Цену берут из документа и правят ею; ниже — производная себестоимость за базовую единицу склада. */
   readonly priceTitle = 'Цена как напечатана в накладной (за единицу документа). Поправьте, если OCR ошибся — деньги строки и себестоимость на склад пересчитаются';
 
-  /** Себестоимость за базовую единицу склада (₽/г, ₽/мл, ₽/шт) — то, что реально приходуется. */
+  /** Себестоимость за базовую единицу склада (дин./г, дин./мл, дин./шт) — то, что реально приходуется. */
   baseCostReadout(it: ImpDraft): string {
     if (it.price == null) return '—';
     const code = this.unitCodeOf(it.unitId);
-    return `${trim(it.price)} ₽/${code || 'ед.'}`;
+    return `${trim(it.price)} ${currencySymbol()}/${code || 'ед.'}`;
   }
 
   /** Правка денег строки (и количества): цена за базовую = деньги ÷ количество, сумма не «уплывает». */

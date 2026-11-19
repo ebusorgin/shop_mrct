@@ -4,6 +4,8 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { TranslatePipe, TranslateDirective } from '@ngx-translate/core';
 import { AuthService } from './core/auth.service';
 import { LangService, AppLang } from './core/lang.service';
+import { ApiService } from './core/api.service';
+import { setCurrencySymbol } from './core/currency';
 import { ToastComponent } from './shared/toast.component';
 
 @Component({
@@ -85,12 +87,21 @@ export class AppComponent {
   langSvc = inject(LangService);
   private router = inject(Router);
   private destroyRef = inject(DestroyRef);
+  private api = inject(ApiService);
 
   readonly langs: AppLang[] = ['ru', 'en', 'sr'];
 
   constructor() {
     effect(() => {
       document.documentElement.classList.toggle('menu-lock', this.menu());
+    });
+    // Значок валюты из настроек: по умолчанию динар, после входа подтягиваем сохранённый.
+    effect(() => {
+      if (!this.auth.user()) return;
+      this.api.loadCurrency$().pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+        next: (c) => setCurrencySymbol(c.symbol),
+        error: () => undefined,
+      });
     });
     this.router.events
       .pipe(takeUntilDestroyed(this.destroyRef))

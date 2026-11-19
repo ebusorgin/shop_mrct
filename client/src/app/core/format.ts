@@ -1,3 +1,5 @@
+import { currencySymbol } from './currency';
+
 /** Форматирование количества из БАЗОВЫХ единиц (г/мл/шт) в читаемые: кг/л — только отображение. */
 export function fmtQty(baseQty: number, unitCode: string, signed = false): string {
   const abs = Math.abs(baseQty);
@@ -33,8 +35,9 @@ export function cents(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+/** Деньги: «1 250,00 дин.» — значок берётся из настроек, по умолчанию сербский динар. */
 export function fmtMoney(n: number): string {
-  return `${trim(cents(n))} ₽`;
+  return `${trim(cents(n))} ${currencySymbol()}`;
 }
 
 /** Цена за базовую единицу -> цена за удобную для чтения единицу (только отображение). */
@@ -43,7 +46,7 @@ export function fmtCost(baseCost: number, unitCode: string): string {
   let suffix = unitCode;
   if (unitCode === 'г' && baseCost * 1000 < 10000) { per = baseCost * 1000; suffix = 'кг'; }
   if (unitCode === 'мл' && baseCost * 1000 < 10000) { per = baseCost * 1000; suffix = 'л'; }
-  return `${trim(per)} ₽/${suffix}`;
+  return `${trim(per)} ${currencySymbol()}/${suffix}`;
 }
 
 export function today(): string {

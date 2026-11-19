@@ -7,7 +7,8 @@ import { TranslatePipe } from '@ngx-translate/core';
 import { ApiService } from '../core/api.service';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 import { AppSettings, DeliveryRule, GoogleSheet, GptTestResult, LabelItem, OrderHistoryResult, PointCard, ProductCatalog, RawCategory } from '../core/models';
-import { fmtQty, httpErr } from '../core/format';
+import { fmtQty, httpErr, trim } from '../core/format';
+import { CURRENCY_PRESETS, setCurrencySymbol } from '../core/currency';
 import { packagingLabel } from '../core/packaging-label';
 import { PasswordFormComponent } from '../shared/password-form.component';
 import { PickOption, PickerComponent } from '../shared/picker.component';
@@ -50,7 +51,7 @@ function isoDateLabel(value: string): string {
 }
 
 /** Разделы верхнего меню настроек. */
-type SettingsTab = 'delivery' | 'gpt' | 'categories' | 'catalogs' | 'excel' | 'labels' | 'audit';
+type SettingsTab = 'delivery' | 'currency' | 'gpt' | 'categories' | 'catalogs' | 'excel' | 'labels' | 'audit';
 
 /** Тот же признак, что считает сервер: чем именно дата покрыта правилом. */
 type RuleKind = 'week' | 'month' | 'both';
@@ -547,6 +548,39 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
       }
     </section>
 
+    <!-- ВАЛЮТА -->
+    <div id="settings-panel-currency" class="panel settings-section" role="tabpanel"
+         aria-labelledby="settings-tab-currency" [hidden]="settingsTab() !== 'currency'">
+      <h3>💱 Валюта</h3>
+      <p class="muted" style="font-size:12px; margin:0 0 14px; max-width:720px; line-height:1.55">
+        Значок после сумм во всей CRM: склад, накладные, «Умный приход», заказы и отчёты.
+        Документы бизнеса — в сербских динарах, поэтому по умолчанию «дин.».
+      </p>
+      <div class="row" style="align-items:flex-end; gap:12px; flex-wrap:wrap">
+        <label class="f" style="max-width:220px">
+          Значок валюты
+          <input [ngModel]="currencyDraft()" (ngModelChange)="currencyDraft.set($event)"
+                 maxlength="6" [disabled]="currencySaving()" placeholder="дин." aria-label="Значок валюты" />
+        </label>
+        <div class="row" style="gap:6px">
+          @for (p of currencyPresets; track p) {
+            <button type="button" class="btn sm" [class.primary]="currencyDraft().trim() === p"
+                    (click)="currencyDraft.set(p)" [disabled]="currencySaving()">{{ p }}</button>
+          }
+        </div>
+        <button class="btn primary" (click)="saveCurrency()"
+                [disabled]="currencySaving() || !currencyDraft().trim()">
+          {{ currencySaving() ? 'Сохраняем…' : 'Сохранить' }}
+        </button>
+      </div>
+      <div class="muted" style="font-size:12px; margin-top:10px">
+        Пример: <b>{{ trim(12879.55) }} {{ currencyDraft().trim() || 'дин.' }}</b> — так сумма
+        появится в таблицах и карточках.
+      </div>
+      @if (currencyErr()) { <div class="err" style="margin-top:10px" role="alert">{{ currencyErr() }}</div> }
+      @else if (currencyMsg()) { <div class="ok-msg" style="margin-top:10px" role="status">{{ currencyMsg() }}</div> }
+    </div>
+
     <!-- GPT -->
     <div id="settings-panel-gpt" class="panel settings-section" role="tabpanel"
          aria-labelledby="settings-tab-gpt" [hidden]="settingsTab() !== 'gpt'">
@@ -978,6 +1012,7 @@ export class SettingsComponent implements OnInit {
 
   readonly settingsTabs: TabItem[] = [
     { id: 'delivery', label: 'Доставки', icon: '📅', buttonId: 'settings-tab-delivery', panelId: 'settings-panel-delivery' },
+    { id: 'currency', label: 'Валюта', icon: '💱', buttonId: 'settings-tab-currency', panelId: 'settings-panel-currency' },
     { id: 'gpt', label: 'GPT и прокси', icon: '🤖', buttonId: 'settings-tab-gpt', panelId: 'settings-panel-gpt' },
     { id: 'categories', label: 'Категории склада', icon: '📦', buttonId: 'settings-tab-categories', panelId: 'settings-panel-categories' },
     { id: 'catalogs', label: 'Каталоги продукции', icon: '🥗', buttonId: 'settings-tab-catalogs', panelId: 'settings-panel-catalogs' },
@@ -1516,6 +1551,16 @@ export class SettingsComponent implements OnInit {
   viaProxy = false;
   proxyUrl = '';
 
+  // ---- валюта ----
+  /** Черновик значка: сохраняется кнопкой, пресеты подставляются кликом. */
+  readonly currencyDraft = signal('дин.');
+  readonly currencySaving = signal(false);
+  readonly currencyErr = signal('');
+  readonly currencyMsg = signal('');
+  readonly currencyPresets = CURRENCY_PRESETS;
+  /** Пример суммы в шаблоне: тот же формат, что в таблицах. */
+  readonly trim = trim;
+
   // ---- категории номенклатуры ----
   cats = signal<RawCategory[]>([]);
   catsErr = signal('');
@@ -1733,8 +1778,30 @@ export class SettingsComponent implements OnInit {
         this.viaProxy = s.gpt.viaProxy;
         this.proxyUrl = s.gpt.proxyUrl;
         this.test.set(null);
+        if (s.currency?.symbol) {
+          this.currencyDraft.set(s.currency.symbol);
+          setCurrencySymbol(s.currency.symbol);
+        }
       },
       error: (e: unknown) => this.err.set(httpErr(e)),
+    });
+  }
+
+  /** Значок валюты: сохраняется в настройках и сразу применяется ко всем суммам. */
+  saveCurrency(): void {
+    const symbol = this.currencyDraft().replace(/\s+/g, ' ').trim();
+    if (!symbol || this.currencySaving()) return;
+    this.currencySaving.set(true);
+    this.currencyErr.set('');
+    this.currencyMsg.set('');
+    this.api.saveCurrency$(symbol).subscribe({
+      next: (r) => {
+        this.currencySaving.set(false);
+        this.currencyDraft.set(r.symbol);
+        setCurrencySymbol(r.symbol);
+        this.currencyMsg.set(`Сохранено: суммы теперь с «${r.symbol}»`);
+      },
+      error: (e: unknown) => { this.currencySaving.set(false); this.currencyErr.set(httpErr(e)); },
     });
   }
 

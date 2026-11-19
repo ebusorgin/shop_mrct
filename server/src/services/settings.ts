@@ -15,6 +15,44 @@ import type { Actor } from './audit';
 
 export const GPT_KEY = 'gpt';
 
+// ---------- валюта ----------
+
+export const CURRENCY_KEY = 'currency';
+
+export interface CurrencySettings {
+  /** Значок валюты в интерфейсе: «дин.», RSD, €. Печатается после суммы: «1 250,00 дин.». */
+  symbol: string;
+}
+
+/** Динар — валюта документов и каталога; ₽ в этом бизнесе не используется. */
+export const CURRENCY_DEFAULTS: CurrencySettings = { symbol: 'дин.' };
+
+/** Значок не должен ломать вёрстку: 1–6 знаков, без переводов строк и пустоты. */
+export function normalizeCurrencySymbol(raw: unknown): string {
+  const s = String(raw ?? '').replace(/\s+/g, ' ').trim();
+  if (!s) return CURRENCY_DEFAULTS.symbol;
+  if (s.length > 6) throw new ApiError(400, 'Значок валюты — не больше 6 символов');
+  return s;
+}
+
+export async function currencySettings(): Promise<CurrencySettings> {
+  const { rows } = await pool.query('select value from app_settings where key = $1', [CURRENCY_KEY]);
+  const raw = (rows[0]?.value ?? {}) as Partial<CurrencySettings>;
+  const symbol = typeof raw.symbol === 'string' ? raw.symbol.trim() : '';
+  return { symbol: symbol ? symbol.slice(0, 6) : CURRENCY_DEFAULTS.symbol };
+}
+
+export async function saveCurrencySettings(next: CurrencySettings, actor: Actor): Promise<CurrencySettings> {
+  await pool.query(
+    `insert into app_settings (key, value, updated_at, updated_by)
+     values ($1, $2::jsonb, now(), $3)
+     on conflict (key) do update
+        set value = excluded.value, updated_at = now(), updated_by = excluded.updated_by`,
+    [CURRENCY_KEY, JSON.stringify(next), actor?.login ?? 'system']
+  );
+  return next;
+}
+
 // ---------- приём заказов магазина ----------
 
 export const DELIVERY_KEY = 'delivery';

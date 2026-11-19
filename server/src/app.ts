@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import * as fs from 'fs';
 import * as path from 'path';
-import { errHandler } from './http';
+import { errHandler, wrap } from './http';
 import { config } from './config';
 import { metaRouter } from './routes/meta';
 import { productsRouter } from './routes/products';
@@ -22,6 +22,7 @@ import { aiRouter } from './routes/ai';
 import { requireAdmin, requireAuth, requireOffice } from './services/auth';
 import { requireMapMigrated } from './services/map-migration';
 import { qoderCliVersion } from './services/qoder-cli';
+import { currencySettings } from './services/settings';
 
 export function createApp(): express.Express {
   const app = express();
@@ -40,6 +41,10 @@ export function createApp(): express.Express {
   app.use('/api/auth', authRouter);
   // всё остальное API — только с действующей сессией
   app.use('/api', requireAuth);
+  // значок валюты нужен и офису, и магазинам: сумма заказа видна обеим ролям
+  app.get('/api/currency', wrap(async (_req, res) => {
+    res.json(await currencySettings());
+  }));
   // заказы живут на фасовках карты: без миграции отвечаем понятной ошибкой
   app.use(['/api/store/order-catalog', '/api/store/orders', '/api/orders'], requireMapMigrated);
   // страница своего магазина — только для магазинных сотрудников

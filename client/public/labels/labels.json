@@ -1,0 +1,141 @@
+{
+ "updatedAt": "2026-11-20",
+ "items": [
+  {
+   "file": "kiseli-kupus-80x80.pdf",
+   "title": "Kiseli kupus",
+   "original": "80X80mm_kiseli_kupus.pdf",
+   "dimensions": "80×80 мм",
+   "group": "Капуста",
+   "sizeMb": 7.1
+  },
+  {
+   "file": "domaci-kotleti-cream-100x120.pdf",
+   "title": "Domaći kotleti (cream)",
+   "original": "Domaci_kotleti_cream_100x120mm.pdf",
+   "dimensions": "100×120 мм",
+   "group": "Котлеты и сырники",
+   "sizeMb": 2.8
+  },
+  {
+   "file": "pileci-kotleti-cream-100x120.pdf",
+   "title": "Pileći kotleti (cream)",
+   "original": "Pileci_kotleti_cream_100x120mm.pdf",
+   "dimensions": "100×120 мм",
+   "group": "Котлеты и сырники",
+   "sizeMb": 2.8
+  },
+  {
+   "file": "syrniki-brown-100x120.pdf",
+   "title": "Syrniki (brown)",
+   "original": "Syrniki_brown_100x120mm.pdf",
+   "dimensions": "100×120 мм",
+   "group": "Котлеты и сырники",
+   "sizeMb": 2.7
+  },
+  {
+   "file": "syrniki-cream-100x120.pdf",
+   "title": "Syrniki (cream)",
+   "original": "Syrniki_cream_100x120mm.pdf",
+   "dimensions": "100×120 мм",
+   "group": "Котлеты и сырники",
+   "sizeMb": 2.8
+  },
+  {
+   "file": "syrniki-raisins-plum-100x120.pdf",
+   "title": "Syrniki sa suvim grožđem i šljivom",
+   "original": "Syrniki_raisins_plum_100x120mm.pdf",
+   "dimensions": "100×120 мм",
+   "group": "Котлеты и сырники",
+   "sizeMb": 2.8
+  },
+  {
+   "file": "kupus-kimci-160x50.pdf",
+   "title": "Kupus kimči",
+   "original": "KUPUS_kimci_160x50mm.pdf",
+   "dimensions": "160×50 мм",
+   "group": "Салаты и закуски",
+   "sizeMb": 4
+  },
+  {
+   "file": "kupus-so-svekloj-160x50.pdf",
+   "title": "Kupus so svekloj",
+   "original": "KUPUS_so_svekloj_160x50mm.pdf",
+   "dimensions": "160×50 мм",
+   "group": "Салаты и закуски",
+   "sizeMb": 4.2
+  },
+  {
+   "file": "pecurke-160x50.pdf",
+   "title": "Pecurke",
+   "original": "PECURKE_160x50mm.pdf",
+   "dimensions": "160×50 мм",
+   "group": "Салаты и закуски",
+   "sizeMb": 3.6
+  },
+  {
+   "file": "sargarepa-160x50.pdf",
+   "title": "Šargarepa",
+   "original": "ŠARGAREPA_160x50mm.pdf",
+   "dimensions": "160×50 мм",
+   "group": "Салаты и закуски",
+   "sizeMb": 3.3
+  },
+  {
+   "file": "sargarepa-luta-160x50.pdf",
+   "title": "Šargarepa luta",
+   "original": "ŠARGAREPA_LUTA_160x50mm.pdf",
+   "dimensions": "160×50 мм",
+   "group": "Салаты и закуски",
+   "sizeMb": 3.2
+  },
+  {
+   "file": "spargle-160x50.pdf",
+   "title": "Spargle",
+   "original": "SPARGLE_160x50mm.pdf",
+   "dimensions": "160×50 мм",
+   "group": "Салаты и закуски",
+   "sizeMb": 3.9
+  },
+  {
+   "file": "vtorye-blyuda-all.pdf",
+   "title": "Все вторые блюда — сводный файл",
+   "original": "Вторые блюды.pdf",
+   "dimensions": "—",
+   "group": "Сводный файл",
+   "sizeMb": 9.9
+  },
+  {
+   "file": "bors-sa-govedinom-160x50.pdf",
+   "title": "Borš sa govedinom",
+   "original": "BORS SA GOVEDINOM_160x50mm.pdf",
+   "dimensions": "160×50 мм",
+   "group": "Супы и горячее",
+   "sizeMb": 3.2
+  },
+  {
+   "file": "graska-160x50.pdf",
+   "title": "Graška",
+   "original": "GRAŠKA_160x50mm.pdf",
+   "dimensions": "160×50 мм",
+   "group": "Супы и горячее",
+   "sizeMb": 3.4
+  },
+  {
+   "file": "harco-corba-160x50.pdf",
+   "title": "Harčo čorba",
+   "original": "HARČO ČORBA__160x50mm.pdf",
+   "dimensions": "160×50 мм",
+   "group": "Супы и горячее",
+   "sizeMb": 3.4
+  },
+  {
+   "file": "soljanka-supa-160x50.pdf",
+   "title": "Soljanka supa",
+   "original": "SOLJANKA SUPA__160x50mm.pdf",
+   "dimensions": "160×50 мм",
+   "group": "Супы и горячее",
+   "sizeMb": 3.4
+  }
+ ]
+}

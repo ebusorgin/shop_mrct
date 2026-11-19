@@ -371,6 +371,10 @@ export class ApiService {
       `${this.base}/settings/google-sheet/link`, { tab, row, packagingId });
   }
 
+  labelsManifest$(): Observable<M.LabelManifest> {
+    return this.http.get<M.LabelManifest>('/labels/labels.json');
+  }
+
   // ---- подсказки ИИ: спросить значение, подставить в поле (сохраняет человек) ----
   askCoefficient$(body: {
     sourceType?: 'raw' | 'semi';

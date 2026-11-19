@@ -1076,3 +1076,18 @@ export interface MapShipResult {
   qty: number;
   items: { productId: number; qty: number }[];
 }
+
+/** Наклейка/этикетка для печати из раздела «Настройки». */
+export interface LabelItem {
+  file: string;
+  title: string;
+  original: string;
+  dimensions: string;
+  group: string;
+  sizeMb: number;
+}
+
+export interface LabelManifest {
+  updatedAt: string;
+  items: LabelItem[];
+}

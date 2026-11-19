@@ -5,7 +5,8 @@ import { FormsModule } from '@angular/forms';
 import { CommonModule } from '@angular/common';
 import { TranslatePipe } from '@ngx-translate/core';
 import { ApiService } from '../core/api.service';
-import { AppSettings, DeliveryRule, GoogleSheet, GptTestResult, OrderHistoryResult, PointCard, ProductCatalog, RawCategory } from '../core/models';
+import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
+import { AppSettings, DeliveryRule, GoogleSheet, GptTestResult, LabelItem, OrderHistoryResult, PointCard, ProductCatalog, RawCategory } from '../core/models';
 import { fmtQty, httpErr } from '../core/format';
 import { packagingLabel } from '../core/packaging-label';
 import { PasswordFormComponent } from '../shared/password-form.component';
@@ -49,7 +50,7 @@ function isoDateLabel(value: string): string {
 }
 
 /** Разделы верхнего меню настроек. */
-type SettingsTab = 'delivery' | 'gpt' | 'categories' | 'catalogs' | 'excel' | 'audit';
+type SettingsTab = 'delivery' | 'gpt' | 'categories' | 'catalogs' | 'excel' | 'labels' | 'audit';
 
 /** Тот же признак, что считает сервер: чем именно дата покрыта правилом. */
 type RuleKind = 'week' | 'month' | 'both';
@@ -268,6 +269,44 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
     .link-unset { width:100%; margin-top:6px; padding:6px; border:1px solid var(--border); border-radius:8px; background:#fff; color:var(--red); font:inherit; font-size:12px; cursor:pointer; }
     .link-unset:disabled { opacity:.6; cursor:progress; }
     .sheet-unmatched { padding:8px 12px; border-bottom:1px solid var(--border); background:var(--amber-soft); color:#7a5b00; font-size:12px; line-height:1.5; }
+    /* Наклейки */
+    .labels-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+    .labels-head h2 { margin: 0; }
+    .labels-head p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+    .labels-group { margin-top: 16px; }
+    .labels-group h3 { margin: 0 0 8px; font-size: 12px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+    .labels-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+    .label-card { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 12px; background: #fff; overflow: hidden; }
+    .label-cover {
+      display: flex; flex-direction: column; align-items: center; gap: 6px;
+      padding: 18px 12px 16px; border: 0; cursor: pointer; text-align: center;
+      background: linear-gradient(180deg, #fbfaf6 0%, #f3f0e8 100%); color: var(--text);
+    }
+    .label-cover:hover { background: linear-gradient(180deg, #f6f3ea 0%, #ebe6da 100%); }
+    .label-glyph { font-size: 30px; line-height: 1; }
+    .label-name { font-size: 13px; font-weight: 700; line-height: 1.3; }
+    .label-dim { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .label-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border-top: 1px solid var(--border); }
+    .label-size { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .label-actions { display: flex; gap: 6px; }
+    .label-actions .btn, .label-modal-actions .btn { text-decoration: none; }
+    .label-backdrop { position: fixed; inset: 0; z-index: 120; background: rgba(10, 18, 32, .5); }
+    .label-modal {
+      position: fixed; z-index: 121; inset: 24px; display: flex; flex-direction: column;
+      background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+      overflow: hidden; box-shadow: 0 16px 48px rgba(10, 18, 32, .3);
+    }
+    .label-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+    .label-modal-head b { display: block; font-size: 14px; }
+    .label-modal-head span { font-size: 12px; color: var(--muted); }
+    .label-modal-actions { display: flex; align-items: center; gap: 8px; }
+    .label-modal-x { border: 0; background: transparent; color: var(--muted); font-size: 18px; line-height: 1; cursor: pointer; padding: 4px 8px; border-radius: 6px; }
+    .label-modal-x:hover { background: color-mix(in srgb, var(--panel) 70%, transparent); color: var(--text); }
+    .label-frame { flex: 1; width: 100%; border: 0; background: #fff; }
+    @media (max-width: 640px) {
+      .label-modal { inset: 8px; }
+      .label-modal-head { align-items: flex-start; flex-direction: column; }
+    }
     .excel-grid .corner { position:sticky; left:0; z-index:2; min-width:38px; width:38px; background:#f3f2f1; color:#9aa0a6; text-align:center; font-weight:400; }
     .excel-grid thead .corner { z-index:3; }
     .excel-grid .row-num { position:sticky; left:0; z-index:1; min-width:38px; width:38px; background:#f8f9fa; color:#9aa0a6; text-align:center; font-weight:400; }
@@ -856,6 +895,65 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
     </div>
 
     <!-- АУДИТ -->
+    <div id="settings-panel-labels" class="panel settings-section" role="tabpanel"
+         aria-labelledby="settings-tab-labels" [hidden]="settingsTab() !== 'labels'">
+      <div class="labels-head">
+        <div>
+          <h2>🏷️ Наклейки</h2>
+          <p>Этикетки для печати: откройте для просмотра или скачайте PDF в исходном размере.</p>
+        </div>
+        @if (labels().length) { <span class="pill gray">{{ labels().length }} файлов</span> }
+      </div>
+
+      @if (labelsLoading()) { <p class="muted">Загружаем наклейки…</p> }
+      @if (labelsErr()) { <div class="err">{{ labelsErr() }}</div> }
+
+      @for (g of labelGroups(); track g.title) {
+        <div class="labels-group">
+          <h3>{{ g.title }}</h3>
+          <div class="labels-grid">
+            @for (l of g.items; track l.file) {
+              <article class="label-card">
+                <button type="button" class="label-cover" (click)="openLabel(l)"
+                        [attr.aria-label]="'Открыть ' + l.title">
+                  <span class="label-glyph">🏷️</span>
+                  <span class="label-name">{{ l.title }}</span>
+                  <span class="label-dim">{{ l.dimensions }}</span>
+                </button>
+                <div class="label-foot">
+                  <span class="label-size">{{ l.sizeMb }} МБ</span>
+                  <div class="label-actions">
+                    <button type="button" class="btn sm" (click)="openLabel(l)">Просмотр</button>
+                    <a class="btn sm" [href]="labelUrl(l)" [attr.download]="l.original">Скачать</a>
+                  </div>
+                </div>
+              </article>
+            }
+          </div>
+        </div>
+      } @empty {
+        @if (!labelsLoading() && !labelsErr()) { <p class="muted">Наклеек пока нет.</p> }
+      }
+
+      @if (labelPreview(); as p) {
+        <div class="label-backdrop" (click)="closeLabel()"></div>
+        <div class="label-modal" role="dialog" aria-modal="true" [attr.aria-label]="'Наклейка ' + p.title">
+          <div class="label-modal-head">
+            <div>
+              <b>{{ p.title }}</b>
+              <span>{{ p.dimensions }} · {{ p.sizeMb }} МБ</span>
+            </div>
+            <div class="label-modal-actions">
+              <a class="btn sm" [href]="labelUrl(p)" [attr.download]="p.original">Скачать</a>
+              <a class="btn sm" [href]="labelUrl(p)" target="_blank" rel="noopener">В новой вкладке</a>
+              <button type="button" class="label-modal-x" (click)="closeLabel()" aria-label="Закрыть">×</button>
+            </div>
+          </div>
+          <iframe class="label-frame" [src]="labelSafeUrl(p)" [title]="p.title"></iframe>
+        </div>
+      }
+    </div>
+
     <div id="settings-panel-audit" class="panel settings-section" role="tabpanel"
          aria-labelledby="settings-tab-audit" [hidden]="settingsTab() !== 'audit'">
       <app-audit />
@@ -868,6 +966,7 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
 export class SettingsComponent implements OnInit {
   private api = inject(ApiService);
   private destroyRef = inject(DestroyRef);
+  private sanitizer = inject(DomSanitizer);
   private calendarRequest?: Subscription;
   private calendarAnchor = new Date();
   private monthFormat = new Intl.DateTimeFormat('ru-RU', { month: 'long', year: 'numeric' });
@@ -883,13 +982,59 @@ export class SettingsComponent implements OnInit {
     { id: 'categories', label: 'Категории склада', icon: '📦', buttonId: 'settings-tab-categories', panelId: 'settings-panel-categories' },
     { id: 'catalogs', label: 'Каталоги продукции', icon: '🥗', buttonId: 'settings-tab-catalogs', panelId: 'settings-panel-catalogs' },
     { id: 'excel', label: 'Синхронизация Excel', icon: '📄', buttonId: 'settings-tab-excel', panelId: 'settings-panel-excel' },
+    { id: 'labels', label: 'Наклейки', icon: '🏷️', buttonId: 'settings-tab-labels', panelId: 'settings-panel-labels' },
     { id: 'audit', label: 'Аудит', icon: '📜', buttonId: 'settings-tab-audit', panelId: 'settings-panel-audit' },
   ];
 
   openSettingsTab(id: string): void {
     const tab = id as SettingsTab;
     this.settingsTab.set(tab);
+    if (tab !== 'labels') this.labelPreview.set(null);
     if (tab === 'excel') this.loadSheet();
+    if (tab === 'labels') this.loadLabels();
+  }
+
+  // ---- наклейки на товары ----
+  readonly labels = signal<LabelItem[]>([]);
+  readonly labelsLoading = signal(false);
+  readonly labelsErr = signal('');
+  readonly labelPreview = signal<LabelItem | null>(null);
+  readonly labelGroups = computed(() => {
+    const map = new Map<string, LabelItem[]>();
+    for (const item of this.labels()) {
+      if (!map.has(item.group)) map.set(item.group, []);
+      map.get(item.group)!.push(item);
+    }
+    return [...map.entries()].map(([title, items]) => ({ title, items }));
+  });
+
+  loadLabels(): void {
+    if (this.labelsLoading() || this.labels().length) return;
+    this.labelsLoading.set(true);
+    this.labelsErr.set('');
+    this.api.labelsManifest$().pipe(
+      finalize(() => this.labelsLoading.set(false)),
+      takeUntilDestroyed(this.destroyRef),
+    ).subscribe({
+      next: (doc) => this.labels.set(doc.items ?? []),
+      error: (e) => this.labelsErr.set(`Не удалось загрузить наклейки: ${httpErr(e)}`),
+    });
+  }
+
+  labelUrl(item: LabelItem): string {
+    return `/labels/${encodeURIComponent(item.file)}`;
+  }
+
+  labelSafeUrl(item: LabelItem): SafeResourceUrl {
+    return this.sanitizer.bypassSecurityTrustResourceUrl(this.labelUrl(item));
+  }
+
+  openLabel(item: LabelItem): void {
+    this.labelPreview.set(item);
+  }
+
+  closeLabel(): void {
+    this.labelPreview.set(null);
   }
 
   // ---- синхронизация Excel: сохранённые листы Google-таблицы из отдельной базы ----

@@ -184,6 +184,9 @@
                         <span class="oi-qty">
                           <b>{{ fmtReportQty(item.reportQty, item.reportUnit) }}</b>
                           <small>{{ itemSub(item) }}</small>
+                          <small class="oi-price" [title]="fmtMoney(item.price) + ' RSD за ' + item.reportUnit">
+                            {{ fmtMoney(item.sum) }} RSD
+                          </small>
                         </span>
                       </li>
                     }

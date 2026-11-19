@@ -54,7 +54,7 @@ export async function loadSupplierRefs(client?: PoolClient): Promise<SupplierRef
     mb: String(r.mb ?? '').replace(/\D+/g, ''),
     gln: String(r.gln ?? '').replace(/\D+/g, ''),
     accounts: Array.isArray(r.accounts) ? (r.accounts as unknown[]).map((x) => String(x)) : [],
-  }));
+  })).filter((ref) => !isOwnProduction(ref));
 }
 
 const normText = (s: string): string => s.toUpperCase().replace(/Ё/g, 'Е').replace(/[^A-ZА-Я0-9]+/g, ' ').trim();
@@ -79,6 +79,18 @@ export interface SupplierMatch {
 
 /** PIB нашей компании (MIX MARKT GASTRO): на бланках стоит в блоке получателя. */
 const OWN_PIB = '114917301';
+/** MB производственной организации MIX market Gastro — она не является поставщиком. */
+const OWN_MB = '22090208';
+/** Названия собственного производства, которые нельзя заносить в справочник поставщиков. */
+const OWN_NAME_RE = /(^|\s)(PROIZVODNJA\s+)?MIX\s+MARK(?:ET|T)\s+GASTRO(\s|$)|(^|\s)МИКС\s+МАРКТ\s+ГАСТРО(\s|$)/;
+
+/** Это наше производство, а не внешний поставщик. */
+function isOwnProduction(input: { name?: string | null; pib?: string | null; mb?: string | null }): boolean {
+  const pib = String(input.pib ?? '').replace(/\D+/g, '');
+  const mb = String(input.mb ?? '').replace(/\D+/g, '');
+  if (pib === OWN_PIB || mb === OWN_MB) return true;
+  return OWN_NAME_RE.test(normText(input.name ?? ''));
+}
 
 /**
  * Поставщик по данным разбора: сначала явное название, затем PIB, GLN и банковский
@@ -150,6 +162,12 @@ export function applySupplierMatch(
   refs: SupplierRef[],
   transcript: string
 ): SupplierMatch | null {
+  // Собственное производство в поле продавца — не поставщик и не повод его создавать.
+  if (isOwnProduction({ name: doc.supplier, pib: doc.supplierPib, mb: doc.supplierMb })) {
+    doc.supplier = null;
+    doc.supplierPib = null;
+    return null;
+  }
   if (isPlaceholderSupplier(doc.supplier)) doc.supplier = null;
   const hit = matchSupplier(refs, { supplier: doc.supplier, pib: doc.supplierPib, transcript });
   if (hit) {
@@ -252,6 +270,11 @@ export async function resolveOrCreateSupplier(
 
     const name = cleanSupplierName(doc.supplier);
     if (!name) return null;
+    if (isOwnProduction({ name, pib: doc.supplierPib, mb: doc.supplierMb })) {
+      doc.supplier = null;
+      doc.supplierPib = null;
+      return null;
+    }
     const pib = String(doc.supplierPib ?? '').replace(/\D+/g, '');
     const mb = String(doc.supplierMb ?? '').replace(/\D+/g, '');
     const gln = String(doc.supplierGln ?? '').replace(/\D+/g, '');

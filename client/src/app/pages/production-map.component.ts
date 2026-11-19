@@ -195,7 +195,8 @@ function inkOn(hex: string): string {
   imports: [CommonModule, FormsModule],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <div class="page">
+    <div class="page" [class.view-only]="viewOnly">
+      @if (viewOnly) { <div class="view-banner">Справочный режим: карта только для просмотра, редактирование отключено.</div> }
       @if (err()) { <div class="err">{{ err() }} <button type="button" class="mini" (click)="reload()">Повторить</button></div> }
 
       <section class="workspace">
@@ -254,7 +255,7 @@ function inkOn(hex: string): string {
                 }
               }
             </div>
-            <div class="raw-hint">Тяните сырьё на схему · клик по зелёному — подсветить карточку</div>
+            <div class="raw-hint">{{ viewOnly ? 'Клик — подсветить карточку на схеме' : 'Тяните сырьё на схему · клик по зелёному — подсветить карточку' }}</div>
             @if (dragGhost(); as g) {
               <div class="raw-drop" [class.warn]="!g.canDelete">
                 {{ g.canDelete ? 'Отпустите, чтобы убрать «' + g.name + '» со стола' : '«' + g.name + '» участвует в операциях — сначала отвяжите' }}
@@ -777,6 +778,12 @@ function inkOn(hex: string): string {
       * { box-sizing: border-box; }
 
       .page { display: flex; flex-direction: column; gap: 12px; height: calc(100vh - 48px); min-height: 620px; }
+      .view-banner { padding:9px 14px; border:1px solid #cfe3d8; border-radius:10px; background:#eef7f1; color:#2f6b4a; font-size:13px; }
+      .view-only .canvas-bar .tool.accent, .view-only .canvas-bar .ghost, .view-only .canvas-bar .save, .view-only .canvas-bar .tool.danger { display:none; }
+      .view-only .port, .view-only .pack-port, .view-only .wire-x { display:none; }
+      .view-only .drawer input, .view-only .drawer select, .view-only .drawer textarea { pointer-events:none; background:transparent; border-color:transparent; padding-left:0; color:var(--ink); }
+      .view-only .drawer .inp-x, .view-only .drawer .prod-actions, .view-only .drawer .mini.danger, .view-only .pack-box .mini { display:none; }
+      .view-only .raw-item { cursor:pointer; }
 
       /* ---------- верхняя панель ---------- */
       .kitchen-top {
@@ -1510,6 +1517,8 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
   zoomPct = computed(() => Math.round(this.zoom() * 100));
   /** Лёгкое увеличение подписей при отдалении (карточка не упрощается). */
   textScale = computed(() => Math.min(1.35, 1 + (1 - Math.min(1, this.zoom())) * 0.35));
+  /** Справочный режим: карта только для просмотра. */
+  readonly viewOnly = true;
   readonly zoomMin = 0.2;
   readonly zoomMax = 1.5;
   sceneTransform = computed(() => `translate(${this.pan().x}px, ${this.pan().y}px) scale(${this.zoom()})`);
@@ -1913,6 +1922,7 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
 
   /** Выпуск партии: сырьё списывается со склада по составу с потерями. */
   produceOp(op: VOp): void {
+    if (this.viewOnly) return;
     if (this.producing()) return;
     const out = this.nodes().find((n) => n.uid === op.outputUid);
     const qty = this.planInOutput(op) ?? this.opCalc(op.uid)?.outputQty ?? 0;
@@ -1936,6 +1946,7 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
 
   /** Отгрузка готового: сырьё списывается обратным разворотом состава. */
   shipOp(op: VOp): void {
+    if (this.viewOnly) return;
     if (this.producing()) return;
     const out = this.nodes().find((n) => n.uid === op.outputUid);
     const qty = this.planInOutput(op) ?? this.opCalc(op.uid)?.outputQty ?? 0;
@@ -2249,6 +2260,7 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
 
   // ---------- загрузка / сохранение ----------
   save(): void {
+    if (this.viewOnly) return;
     if (this.saving()) return;
     for (const op of this.ops()) {
       if (!op.inputs.length) continue;
@@ -2347,6 +2359,7 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
   }
 
   clearMap(): void {
+    if (this.viewOnly) return;
     if (!confirm('Очистить всю карту производства?')) return;
     this.nodes.set([]);
     this.ops.set([]);
@@ -2367,10 +2380,11 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
       this.flashNode(existing.uid);
       return;
     }
-    this.toast.show('Перетащите сырьё на стол', 'info', 1600);
+    this.toast.show('Этого сырья нет на карте', 'info', 1600);
   }
 
   createOpCenter(): void {
+    if (this.viewOnly) return;
     const c = this.visibleCenter();
     this.createOpAt(c.x - BLOCK_W / 2, c.y - BLOCK_H / 2);
   }
@@ -2421,6 +2435,7 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
   // ---------- каталог ----------
   /** Начало перетаскивания сырья из левой панели; клик без движения = добавить/выбрать. */
   onRawDown(p: Product, ev: PointerEvent): void {
+    if (this.viewOnly) { if (ev.button === 0) this.onRawClick(p); return; }
     if (ev.button !== 0) return;
     if (ev.pointerType === 'mouse' || ev.pointerType === 'pen') ev.preventDefault();
     this.rawDrag.set({ p, x: ev.clientX, y: ev.clientY, sx: ev.clientX, sy: ev.clientY, moved: false });
@@ -2644,6 +2659,7 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
 
   /** Открыть редактор связи по клику на провод. */
   openEdgeEditor(w: Wire, ev: MouseEvent): void {
+    if (this.viewOnly) return;
     ev.stopPropagation();
     if (w.kind !== 'input' || w.nodeUid == null) return;
     this.edgeEdit.set({
@@ -2675,6 +2691,7 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
 
   // ---------- связи ----------
   onBlockPortDown(op: VOp, ev: PointerEvent): void {
+    if (this.viewOnly) return;
     if (ev.button !== 0) return;
     ev.stopPropagation();
     ev.preventDefault();
@@ -2686,6 +2703,7 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
 
   /** Коннектор конкретной фасовки: тянет ту же связь от результата операции. */
   onPackPortDown(op: VOp, ev: PointerEvent): void {
+    if (this.viewOnly) return;
     if (ev.button !== 0) return;
     ev.stopPropagation();
     ev.preventDefault();
@@ -2695,6 +2713,7 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
   }
 
   onPortDown(n: VNode, ev: PointerEvent): void {
+    if (this.viewOnly) return;
     if (ev.button !== 0) return;
     ev.stopPropagation();
     ev.preventDefault();
@@ -2914,6 +2933,7 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
 
   // ---------- меню ----------
   onCanvasContextMenu(ev: MouseEvent): void {
+    if (this.viewOnly) return;
     ev.preventDefault();
     const target = ev.target as HTMLElement;
     if (target.closest('.node') || target.closest('.op')) return;
@@ -3005,6 +3025,7 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
   }
 
   onNodeDown(n: VNode, ev: PointerEvent): void {
+    if (this.viewOnly) { if (ev.button === 0) this.onMapClick('node', n.uid); return; }
     if (ev.button !== 0) return;
     const t = ev.target as HTMLElement;
     if (t.closest('input') || t.closest('button') || t.closest('.port') || t.closest('.pack-port')) return;
@@ -3014,6 +3035,7 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
   }
 
   onOpDown(op: VOp, ev: PointerEvent): void {
+    if (this.viewOnly) { if (ev.button === 0) this.onMapClick('op', op.uid); return; }
     if (ev.button !== 0) return;
     const t = ev.target as HTMLElement;
     if (t.closest('input') || t.closest('button') || t.closest('.port') || t.closest('.pack-port')) return;
@@ -3092,6 +3114,7 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
 
   /** Кнопка «Разложить ИИ»: модель выбирает композицию облаков и этапов. */
   aiLayout(): void {
+    if (this.viewOnly) return;
     if (this.layouting()) return;
     if (!this.nodes().length || !this.ops().length) {
       this.toast.show('Сначала добавьте сырьё и операции', 'warn', 2200);
@@ -3356,6 +3379,7 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
 
   // ---------- пример ----------
   loadSample(): void {
+    if (this.viewOnly) return;
     if (this.nodes().length && !confirm('Заменить текущую карту примером?')) return;
     const find = (name: string): Product | undefined =>
       this.products().find((p) => p.name.toLowerCase() === name.toLowerCase());

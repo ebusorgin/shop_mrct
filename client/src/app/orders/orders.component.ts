@@ -159,10 +159,10 @@ export class OrdersComponent implements OnInit {
 
   /** Отчёт-отгрузку можно выгрузить, когда приём заказов на дату уже закрыт. */
   canDownloadReport = computed(() => {
-    const date = this.selectedDate();
-    if (!date || !this.group()) return false;
-    const window = this.upcoming().get(date);
-    return window ? !window.open : date < this.todayIso();
+    // Отчёт доступен для любой даты с заказами — и для ещё открытого окна приёма,
+    // чтобы офис мог проверить документ до закрытия заказа.
+    const group = this.group();
+    return !!this.selectedDate() && !!group && group.orders.length > 0;
   });
 
   todayIso = computed(() => this.archive()?.today ?? '');

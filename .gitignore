@@ -25,6 +25,7 @@ client/tmp-*
 *.xls
 *.csv
 *.pdf
+!client/public/labels/*.pdf
 *.jpg
 *.jpeg
 *.png

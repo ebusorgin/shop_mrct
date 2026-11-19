@@ -151,7 +151,7 @@
                     {{ o.positions }} {{ plural(o.positions, 'позиция', 'позиции', 'позиций') }} ·
                     {{ o.packages }} уп.
                     @if (o.weightG > 0) { · {{ fmtQty(o.weightG, 'г') }} }
-                    @if (o.total) { · <b>{{ fmtMoney(o.total) }} RSD</b> }
+                    @if (o.total) { · <b>{{ fmtMoney(o.total) }}</b> }
                     <span class="oc-time">сохранён {{ fmtDateTime(o.updatedAt) }}</span>
                   </div>
                   @if (canDownloadReport() && !storeMode) {
@@ -184,8 +184,8 @@
                         <span class="oi-qty">
                           <b>{{ fmtReportQty(item.reportQty, item.reportUnit) }}</b>
                           <small>{{ itemSub(item) }}</small>
-                          <small class="oi-price" [title]="fmtMoney(item.price) + ' RSD за ' + item.reportUnit">
-                            {{ fmtMoney(item.sum) }} RSD
+                          <small class="oi-price" [title]="fmtMoney(item.price) + ' за ' + item.reportUnit">
+                            {{ fmtMoney(item.sum) }}
                           </small>
                         </span>
                       </li>

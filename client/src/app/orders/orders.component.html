@@ -151,6 +151,7 @@
                     {{ o.positions }} {{ plural(o.positions, 'позиция', 'позиции', 'позиций') }} ·
                     {{ o.packages }} уп.
                     @if (o.weightG > 0) { · {{ fmtQty(o.weightG, 'г') }} }
+                    @if (o.total) { · <b>{{ fmtMoney(o.total) }} RSD</b> }
                     <span class="oc-time">сохранён {{ fmtDateTime(o.updatedAt) }}</span>
                   </div>
                   @if (canDownloadReport() && !storeMode) {
@@ -170,15 +171,22 @@
                 @if (o.comment) { <p class="oc-comment">{{ o.comment }}</p> }
 
                 <ul class="oc-items" aria-label="Состав заказа">
-                  @for (item of o.items; track item.packagingId) {
-                    <li>
-                      <span class="oi-name">{{ itemLabel(item) }}</span>
-                      <span class="dots" aria-hidden="true"></span>
-                      <span class="oi-qty">
-                        <b>{{ fmtReportQty(item.reportQty, item.reportUnit) }}</b>
-                        <small>{{ itemSub(item) }}</small>
-                      </span>
+                  @for (grp of itemGroups(o); track grp.key) {
+                    <li class="oc-cat">
+                      <span class="oc-cat-dot" [style.background]="grp.color" aria-hidden="true"></span>
+                      <span class="oc-cat-name">{{ grp.icon }} {{ grp.name }}</span>
+                      <span class="oc-cat-count">{{ grp.items.length }}</span>
                     </li>
+                    @for (item of grp.items; track item.packagingId) {
+                      <li>
+                        <span class="oi-name">{{ itemLabel(item) }}</span>
+                        <span class="dots" aria-hidden="true"></span>
+                        <span class="oi-qty">
+                          <b>{{ fmtReportQty(item.reportQty, item.reportUnit) }}</b>
+                          <small>{{ itemSub(item) }}</small>
+                        </span>
+                      </li>
+                    }
                   }
                 </ul>
               </article>

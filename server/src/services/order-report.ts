@@ -6,7 +6,7 @@
  */
 import { pool } from '../db';
 import { sheetsPool } from '../db-sheets';
-import { freezeOrderPrices } from './order-price-snapshot';
+import { freezeOrderSnapshots } from './order-price-snapshot';
 
 export const VAT_RATE = 20;
 
@@ -167,8 +167,8 @@ export async function orderReport(
   storeId: number | null,
   priceMode: ReportPriceMode = 'sale',
   vatRate: number = VAT_RATE
-): Promise<{ documents: ReportDoc[] }> {  // Даты, которые уже наступили, сначала фиксируют цены — дальше читаем слепок.
-  await freezeOrderPrices();
+): Promise<{ documents: ReportDoc[] }> {  // Даты, которые уже наступили, сначала фиксируют слепок — дальше читаем его.
+  await freezeOrderSnapshots();
   const { rows } = await pool.query<ReportRow>(
     `select o.id as "orderId",
             o.doc_no as "docNo",
@@ -179,12 +179,13 @@ export async function orderReport(
             s.id as "storeId", s.code as "storeCode", s.name as "storeName",
             s.address as "storeAddress", s.pib as "storePib",
             s.mbr as "storeMbr", s.account_no as "storeAccount",
-            coalesce(pk.title, tc.name) as "cardName",
-            coalesce(pk.title_sr, nullif(tc.name_sr, ''), '') as "cardNameSr",
-            i.qty, pk.qty_base::float8 as "qtyBase",
+            coalesce(i.name_snapshot, pk.title, tc.name) as "cardName",
+            coalesce(i.name_sr_snapshot, pk.title_sr, nullif(tc.name_sr, ''), '') as "cardNameSr",
+            i.qty, coalesce(i.qty_base_snapshot, pk.qty_base)::float8 as "qtyBase",
             coalesce(i.price_snapshot, pk.price)::float8 as price,
             coalesce(i.cost_snapshot, pk.cost)::float8 as cost,
-            coalesce(i.basis_snapshot, pk.price_basis) as "priceBasis", u.dimension
+            coalesce(i.basis_snapshot, pk.price_basis) as "priceBasis",
+            coalesce(i.dimension_snapshot, u.dimension) as dimension
        from store_orders o
        join stores s on s.id = o.store_id
        join store_order_items i on i.order_id = o.id

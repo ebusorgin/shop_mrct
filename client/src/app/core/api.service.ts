@@ -238,6 +238,18 @@ export class ApiService {
   setReportLineQty$(orderId: number, packagingId: number, qty: number): Observable<{ ok: boolean }> {
     return this.http.put<{ ok: boolean }>(`${this.base}/orders/report/line`, { orderId, packagingId, qty });
   }
+  /** Состояние слепка цен и названий строк заказов на дату доставки. */
+  priceSnapshotInfo$(date: string): Observable<{
+    date: string; total: number; frozen: number; named: number; frozenAt: string | null; past: boolean;
+  }> {
+    return this.http.get<{
+      date: string; total: number; frozen: number; named: number; frozenAt: string | null; past: boolean;
+    }>(`${this.base}/orders/price-snapshot`, { params: { date } });
+  }
+  /** Переснять слепок прошедшей даты по текущим ценам (офис). */
+  refreshPriceSnapshot$(date: string): Observable<{ ok: boolean; rows: number }> {
+    return this.http.post<{ ok: boolean; rows: number }>(`${this.base}/orders/price-snapshot/refresh`, { date });
+  }
 
   // ---- ручное списание склада по доставке (офис) ----
   /** Статус списаний на дату доставки. */

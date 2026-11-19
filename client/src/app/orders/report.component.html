@@ -105,6 +105,28 @@
   </details>
 }
 
+@if (!storeMode && date) {
+  <div class="snapshot-bar no-print" aria-live="polite">
+    @if (snapshotInfo(); as s) {
+      @if (s.past) {
+        <span class="sb-ico" aria-hidden="true">🔒</span>
+        <span>
+          Слепок цен и названий на дату доставки: <b>{{ s.frozen }} из {{ s.total }}</b> строк зафиксировано
+          @if (s.frozenAt) { <span class="muted"> · {{ frozenLabel(s.frozenAt) }}</span> }
+        </span>
+        <button type="button" class="btn sm" [disabled]="snapBusy()" (click)="refreshSnapshot()"
+                title="Заменить зафиксированные цены текущими — для исправления ошибки">
+          {{ snapBusy() ? 'Переснимаем…' : 'Переснять по текущим ценам' }}
+        </button>
+      } @else {
+        <span class="sb-ico" aria-hidden="true">⏳</span>
+        <span>Цены и названия зафиксируются автоматически в 00:00 {{ dateLabel() }} — до этого их можно менять.</span>
+      }
+      @if (snapErr()) { <span class="sb-err">{{ snapErr() }}</span> }
+    }
+  </div>
+}
+
 @if (loading()) {
   <section class="panel no-print"><p class="muted state" role="status">Готовим отчёт…</p></section>
 } @else if (err()) {

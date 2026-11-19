@@ -676,6 +676,12 @@ alter table store_order_items add column if not exists price_snapshot numeric;
 alter table store_order_items add column if not exists cost_snapshot numeric;
 alter table store_order_items add column if not exists basis_snapshot text;
 alter table store_order_items add column if not exists snapshot_at timestamptz;
+-- Слепок названий и единиц: переименование блюда/фасовки в будущем не меняет прошлые документы.
+alter table store_order_items add column if not exists name_snapshot text;
+alter table store_order_items add column if not exists name_en_snapshot text;
+alter table store_order_items add column if not exists name_sr_snapshot text;
+alter table store_order_items add column if not exists qty_base_snapshot numeric;
+alter table store_order_items add column if not exists dimension_snapshot text;
 
 -- ---------- Списание склада по доставке (вручную, кнопкой) ----------
 -- Каждая запись — факт списания сырья по техкартам всех заказов даты доставки.

@@ -93,6 +93,12 @@ export class OrderReportComponent implements OnInit {
   /** Скачивание zip-архива с PDF-документами даты. */
   pdfBusy = signal(false);
   pdfErr = signal('');
+  /** Состояние слепка цен и названий на дату доставки (офис). */
+  snapshotInfo = signal<{
+    date: string; total: number; frozen: number; named: number; frozenAt: string | null; past: boolean;
+  } | null>(null);
+  snapBusy = signal(false);
+  snapErr = signal('');
   /** Прошлая доставка — история: количество в таких заказах не редактируется. */
   readonly qtyLocked = computed(() => !this.date || this.date < isoToday());
   orderNote = signal('');
@@ -156,6 +162,7 @@ export class OrderReportComponent implements OnInit {
         next: (report) => {
           this.report.set(report);
           this.loading.set(false);
+          this.loadSnapshotInfo();
         },
         error: (e) => {
           this.loading.set(false);
@@ -208,6 +215,42 @@ export class OrderReportComponent implements OnInit {
         const status = (e as { status?: number })?.status;
         this.pdfErr.set(`Не удалось сформировать документы${status ? ` (${status})` : ''}`);
       },
+    });
+  }
+
+  /** Блок слепка цен: состояние фиксации на дату доставки. */
+  private loadSnapshotInfo(): void {
+    if (this.storeMode || !this.date) return;
+    this.api.priceSnapshotInfo$(this.date).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: (info) => this.snapshotInfo.set(info),
+      error: () => this.snapshotInfo.set(null),
+    });
+  }
+
+  /** «12.11.2026 00:05» из ISO-строки момента фиксации. */
+  frozenLabel(iso: string | null): string {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '';
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  /** Осознанный переснимок слепка прошедшей даты по текущим ценам и названиям. */
+  refreshSnapshot(): void {
+    if (!this.date || this.snapBusy()) return;
+    if (!confirm(`Переснять слепок на ${this.dateLabel()} по текущим ценам и названиям? Прошлые значения будут заменены.`)) return;
+    this.snapBusy.set(true);
+    this.snapErr.set('');
+    this.api.refreshPriceSnapshot$(this.date).pipe(
+      takeUntilDestroyed(this.destroyRef),
+      finalize(() => this.snapBusy.set(false)),
+    ).subscribe({
+      next: (r) => {
+        this.orderNote.set(`Слепок переснят: ${r.rows} строк`);
+        this.load();
+      },
+      error: (e) => this.snapErr.set(httpErr(e)),
     });
   }
 

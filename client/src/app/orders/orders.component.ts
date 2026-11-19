@@ -3,7 +3,7 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { ApiService } from '../core/api.service';
-import { fmtDateTime, fmtQty, fmtReportQty, httpErr } from '../core/format';
+import { fmtDateTime, fmtMoney, fmtQty, fmtReportQty, httpErr } from '../core/format';
 import { ArchiveOrder, ArchiveOrderItem, DeliveryWriteoffRecord, OrderArchive, UpcomingDelivery } from '../core/models';
 import { DeliveryWriteoffComponent } from './delivery-writeoff.component';
 import { packagingLabel } from '../core/packaging-label';
@@ -27,6 +27,15 @@ interface CalendarDay {
   isUpcoming: boolean;
   isSelected: boolean;
   isToday: boolean;
+}
+
+/** Позиции заказа одного каталога — лёгкая визуальная группировка в карточке. */
+interface ItemGroup {
+  key: string;
+  name: string;
+  icon: string;
+  color: string;
+  items: ArchiveOrderItem[];
 }
 
 /**
@@ -72,6 +81,7 @@ export class OrdersComponent implements OnInit {
   fmtQty = fmtQty;
   fmtReportQty = fmtReportQty;
   fmtDateTime = fmtDateTime;
+  fmtMoney = fmtMoney;
 
   groups = computed<DateGroup[]>(() => {
     const byDate = new Map<string, DateGroup>();
@@ -315,6 +325,27 @@ export class OrdersComponent implements OnInit {
       return fmtQty(item.qty * item.qtyBase, item.unitCode);
     }
     return `${item.qty} уп.`;
+  }
+
+  /** Позиции заказа по каталогам: заголовок группы рисуем тонко, без рамок и плашек. */
+  itemGroups(o: ArchiveOrder): ItemGroup[] {
+    const groups = new Map<string, ItemGroup>();
+    for (const item of o.items) {
+      const key = item.catalogId == null ? 'none' : String(item.catalogId);
+      let g = groups.get(key);
+      if (!g) {
+        g = {
+          key,
+          name: item.catalogName || 'прочее',
+          icon: item.catalogIcon || '📦',
+          color: item.catalogColor || '#d9d3c7',
+          items: [],
+        };
+        groups.set(key, g);
+      }
+      g.items.push(item);
+    }
+    return [...groups.values()];
   }
 
   plural(n: number, one: string, few: string, many: string): string {

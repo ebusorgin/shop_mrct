@@ -429,6 +429,15 @@ export interface ArchiveOrderItem {
   /** Количество и единица ровно как в строке отчёта-отгрузки. */
   reportQty: number;
   reportUnit: ReportUnit;
+  /** Цена строки в единицах отчёта (из слепка на дату доставки). */
+  price: number;
+  /** Сумма строки: цена × количество отчёта. */
+  sum: number;
+  /** Каталог блюда: по нему позиции группируются в архиве. */
+  catalogId?: number | null;
+  catalogName?: string | null;
+  catalogIcon?: string | null;
+  catalogColor?: string | null;
 }
 
 /** Сохранённый заказ в архиве: магазин, состав и итоги. */
@@ -446,6 +455,8 @@ export interface ArchiveOrder {
   /** Вес заказа в граммах (только позиции с единицей «г»). */
   weightG: number;
   items: ArchiveOrderItem[];
+  /** Сумма заказа по ценам слепка, RSD. */
+  total?: number;
 }
 
 /** Будущая дата доставки: open — приём заказа ещё не закрыт. */

@@ -169,6 +169,17 @@
 .qty-pop-err { margin-top: 7px; color: var(--red); font-size: 12px; }
 .qty-pop-actions { display: flex; gap: 6px; margin-top: 10px; }
 
+/* Строка состояния слепка цен на дату доставки */
+.snapshot-bar {
+  max-width: 210mm; margin: 0 auto 12px; padding: 9px 12px;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  border: 1px solid var(--border); border-left: 3px solid #b08a2a; border-radius: 10px;
+  background: #fbf7ec; font-size: 12.5px; color: #5c4a1f;
+}
+.snapshot-bar .sb-ico { flex: none; }
+.snapshot-bar .btn { margin-left: auto; }
+.snapshot-bar .sb-err { color: var(--red); font-size: 12px; }
+
 .totals { width: 104mm; margin: 12mm 0 0 auto; border-collapse: collapse; font-size: 11px; }
 .totals th, .totals td { border: 1px solid #555; padding: 2.2mm 3mm; }
 .totals th { width: 72mm; text-align: left; font-weight: 400; }

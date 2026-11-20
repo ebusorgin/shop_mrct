@@ -303,6 +303,34 @@ export class ApiService {
   }
   testGpt$(): Observable<M.GptTestResult> { return this.http.post<M.GptTestResult>(`${this.base}/settings/gpt/test`, {}); }
 
+  // ---- чат с Qoder (только админ): свои диалоги у каждого пользователя ----
+  qoderDialogs$(): Observable<M.QoderDialog[]> { return this.http.get<M.QoderDialog[]>(`${this.base}/qoder/dialogs`); }
+  qoderDialog$(id: number): Observable<M.QoderDialogFull> {
+    return this.http.get<M.QoderDialogFull>(`${this.base}/qoder/dialogs/${id}`);
+  }
+  createQoderDialog$(): Observable<M.QoderDialog> {
+    return this.http.post<M.QoderDialog>(`${this.base}/qoder/dialogs`, {});
+  }
+  deleteQoderDialog$(id: number): Observable<{ ok: boolean }> {
+    return this.http.delete<{ ok: boolean }>(`${this.base}/qoder/dialogs/${id}`);
+  }
+  /** Сообщение в диалог: сервер запускает фоновую задачу агента и сразу возвращает её id. */
+  sendQoderMessage$(id: number, text: string): Observable<M.QoderJobStart> {
+    return this.http.post<M.QoderJobStart>(`${this.base}/qoder/dialogs/${id}/messages`, { text });
+  }
+  qoderJob$(jobId: string): Observable<M.QoderJob> {
+    return this.http.get<M.QoderJob>(`${this.base}/qoder/jobs/${jobId}`);
+  }
+  qoderDialogJob$(id: number): Observable<M.QoderDialogJob> {
+    return this.http.get<M.QoderDialogJob>(`${this.base}/qoder/dialogs/${id}/job`);
+  }
+  approveQoder$(jobId: string, approvalId: string, decision: M.QoderApprovalDecision): Observable<M.QoderJob> {
+    return this.http.post<M.QoderJob>(`${this.base}/qoder/jobs/${jobId}/approvals/${approvalId}`, { decision });
+  }
+  cancelQoderJob$(jobId: string): Observable<M.QoderJob> {
+    return this.http.post<M.QoderJob>(`${this.base}/qoder/jobs/${jobId}/cancel`, {});
+  }
+
   deliveryCalendar$(): Observable<M.DeliveryCalendar> {
     return this.http.get<M.DeliveryCalendar>(`${this.base}/settings/delivery-calendar`);
   }

@@ -1083,3 +1083,23 @@ begin
       foreign key (packaging_id) references prod_packagings(id);
   end if;
 end $$;
+
+-- ---------- Чат с Qoder (вкладка в настройках, только администратор) ----------
+-- Диалоги принадлежат пользователю: чужой диалог не виден и не продолжаем.
+create table if not exists qoder_dialogs (
+  id         serial primary key,
+  user_id    int not null references users(id) on delete cascade,
+  title      text not null default 'Новый диалог',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create index if not exists qoder_dialogs_user_idx on qoder_dialogs (user_id, updated_at desc);
+
+create table if not exists qoder_messages (
+  id         serial primary key,
+  dialog_id  int not null references qoder_dialogs(id) on delete cascade,
+  role       text not null check (role in ('user','assistant')),
+  content    text not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists qoder_messages_dialog_idx on qoder_messages (dialog_id, id);

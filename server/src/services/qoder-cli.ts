@@ -73,7 +73,7 @@ export async function qoderCliVersion(): Promise<string | null> {
  * CRM может работать внутри Qoder (агентский процесс): его SDK-переменные ломают обычный
  * запуск CLI («SDK worker sessions are no longer supported»). Оставляем только токен.
  */
-function cliEnv(): NodeJS.ProcessEnv {
+export function cliEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of Object.keys(env)) {
     if (!key.startsWith('QODER_')) continue;

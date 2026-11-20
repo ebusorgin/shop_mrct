@@ -14,6 +14,7 @@ import { PasswordFormComponent } from '../shared/password-form.component';
 import { PickOption, PickerComponent } from '../shared/picker.component';
 import { TabItem, TabStripComponent } from '../shared/tab-strip.component';
 import { AuditComponent } from './audit.component';
+import { QoderChatComponent } from './qoder-chat.component';
 
 interface DeliveryDay {
   date: string;
@@ -51,7 +52,7 @@ function isoDateLabel(value: string): string {
 }
 
 /** Разделы верхнего меню настроек. */
-type SettingsTab = 'delivery' | 'currency' | 'gpt' | 'categories' | 'catalogs' | 'excel' | 'labels' | 'audit';
+type SettingsTab = 'delivery' | 'currency' | 'gpt' | 'qoder' | 'categories' | 'catalogs' | 'excel' | 'labels' | 'audit';
 
 /** Тот же признак, что считает сервер: чем именно дата покрыта правилом. */
 type RuleKind = 'week' | 'month' | 'both';
@@ -78,7 +79,7 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
 @Component({
   selector: 'app-settings',
   standalone: true,
-  imports: [CommonModule, FormsModule, TranslatePipe, PasswordFormComponent, PickerComponent, TabStripComponent, AuditComponent],
+  imports: [CommonModule, FormsModule, TranslatePipe, PasswordFormComponent, PickerComponent, TabStripComponent, AuditComponent, QoderChatComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styles: [`
     .cat-badge { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; border-radius:8px; margin-right:8px; font-size:15px; line-height:1; vertical-align:middle; }
@@ -628,6 +629,16 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
       } @else { <div class="muted" style="font-size:12px">Загружаем…</div> }
     </div>
 
+    <!-- ЧАТ С QODER -->
+    <div id="settings-panel-qoder" class="panel settings-section" role="tabpanel"
+         aria-labelledby="settings-tab-qoder" [hidden]="settingsTab() !== 'qoder'">
+      <h3>💬 Чат с Qoder</h3>
+      <div class="muted" style="font-size:12px; margin-bottom:14px">
+        Переписка с ИИ-ассистентом. Диалоги сохраняются у вашей учётной записи и доступны с любого устройства.
+      </div>
+      @if (settingsTab() === 'qoder') { <app-qoder-chat /> }
+    </div>
+
     <!-- КАТЕГОРИИ НОМЕНКЛАТУРЫ -->
     <div id="settings-panel-categories" class="panel settings-section" role="tabpanel"
          aria-labelledby="settings-tab-categories" [hidden]="settingsTab() !== 'categories'">
@@ -1014,6 +1025,7 @@ export class SettingsComponent implements OnInit {
     { id: 'delivery', label: 'Доставки', icon: '📅', buttonId: 'settings-tab-delivery', panelId: 'settings-panel-delivery' },
     { id: 'currency', label: 'Валюта', icon: '💱', buttonId: 'settings-tab-currency', panelId: 'settings-panel-currency' },
     { id: 'gpt', label: 'GPT и прокси', icon: '🤖', buttonId: 'settings-tab-gpt', panelId: 'settings-panel-gpt' },
+    { id: 'qoder', label: 'Чат с Qoder', icon: '💬', buttonId: 'settings-tab-qoder', panelId: 'settings-panel-qoder' },
     { id: 'categories', label: 'Категории склада', icon: '📦', buttonId: 'settings-tab-categories', panelId: 'settings-panel-categories' },
     { id: 'catalogs', label: 'Каталоги продукции', icon: '🥗', buttonId: 'settings-tab-catalogs', panelId: 'settings-panel-catalogs' },
     { id: 'excel', label: 'Синхронизация Excel', icon: '📄', buttonId: 'settings-tab-excel', panelId: 'settings-panel-excel' },

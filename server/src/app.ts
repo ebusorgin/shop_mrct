@@ -19,6 +19,7 @@ import { authRouter } from './routes/auth';
 import { storeRouter } from './routes/store';
 import { settingsRouter } from './routes/settings';
 import { aiRouter } from './routes/ai';
+import { qoderRouter } from './routes/qoder';
 import { requireAdmin, requireAuth, requireOffice } from './services/auth';
 import { requireMapMigrated } from './services/map-migration';
 import { qoderCliVersion } from './services/qoder-cli';
@@ -70,6 +71,8 @@ export function createApp(): express.Express {
   app.use('/api/settings', requireAdmin, settingsRouter);
   // подсказки ИИ (спросить — и подставить в поле): читают справочник, в базу не пишут
   app.use('/api/ai', requireOffice, aiRouter);
+  // чат с Qoder: переписка и история диалогов, только администратор
+  app.use('/api/qoder', requireAdmin, qoderRouter);
 
   app.use('/api', (_req, res) => res.status(404).json({ error: 'Не найдено' }));
 

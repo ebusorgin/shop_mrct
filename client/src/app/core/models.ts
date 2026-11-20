@@ -772,6 +772,79 @@ export interface GptTestResult {
   error?: string;
 }
 
+/** Диалог с Qoder в настройках (у каждого администратора свои). */
+export interface QoderDialog {
+  id: number;
+  title: string;
+  updatedAt: string;
+  messageCount: number;
+  preview: string | null;
+}
+
+export interface QoderMessage {
+  id: number;
+  role: 'user' | 'assistant';
+  content: string;
+  createdAt: string;
+}
+
+/** Диалог с историей для правой панели чата. */
+export interface QoderDialogFull {
+  id: number;
+  title: string;
+  messages: QoderMessage[];
+}
+
+export type QoderJobStatus = 'running' | 'done' | 'error' | 'cancelled';
+export type QoderApprovalDecision = 'once' | 'always' | 'deny';
+
+/** Шаг работы агента: мысли, текст, вызов инструмента, его результат или служебный статус. */
+export interface QoderJobEvent {
+  seq: number;
+  at: string;
+  kind: 'tool' | 'tool_result' | 'status' | 'error' | 'text' | 'thinking';
+  title: string;
+  detail?: string;
+  tool?: string;
+  toolUseId?: string;
+  status?: 'running' | 'ok' | 'error';
+  permissionId?: string;
+}
+
+/** Запрос CLI на разрешение команды или правки файла. */
+export interface QoderApproval {
+  id: string;
+  tool: string;
+  title: string;
+  description?: string;
+  preview: string;
+  canAlways: boolean;
+  createdAt: string;
+  resolved?: QoderApprovalDecision;
+}
+
+/** Фоновая задача агента: снимок состояния для опроса. */
+export interface QoderJob {
+  id: string;
+  status: QoderJobStatus;
+  events: QoderJobEvent[];
+  approvals: QoderApproval[];
+  answer?: string;
+  error?: string;
+  assistantMessage?: QoderMessage;
+  title?: string;
+}
+
+export interface QoderJobStart {
+  jobId: string;
+  userMessage: QoderMessage;
+  title: string;
+}
+
+export interface QoderDialogJob {
+  job: QoderJob | null;
+}
+
 /** Все ручные даты расписания и сегодняшняя дата сервера. Дни правила клиент считает сам — их в расписании нет. */
 export interface DeliveryCalendar {
   today: string;

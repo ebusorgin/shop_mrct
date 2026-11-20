@@ -88,10 +88,8 @@ export function attachLogWs(server: HttpServer): void {
       socket.destroy();
       return;
     }
-    if (pathname !== '/api/ws/log') {
-      socket.destroy();
-      return;
-    }
+    // Чужие пути обрабатывает другой upgrade-обработчик (например, чат Qoder).
+    if (pathname !== '/api/ws/log') return;
     // В WebSocket нельзя отдать обычный 401 JSON, поэтому отвечаем строкой HTTP и закрываем.
     const reject = (status: string): void => {
       socket.write(`HTTP/1.1 ${status}\r\nConnection: close\r\n\r\n`);

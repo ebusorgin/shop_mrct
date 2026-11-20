@@ -12,7 +12,7 @@ import {
 import { DatePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { Observable, Subscription, of, switchMap, take } from 'rxjs';
+import { Observable, of, switchMap, take } from 'rxjs';
 import { map } from 'rxjs/operators';
 import { ApiService } from '../core/api.service';
 import {
@@ -135,7 +135,7 @@ import { httpErr } from '../core/format';
           <b>{{ selectedTitle() || 'Новый диалог' }}</b>
           <span class="qspacer"></span>
           @if (job()?.status === 'running') {
-            <span class="muted small">{{ pendingApproval() ? 'ждёт подтверждения' : 'работает в проекте…' }}</span>
+            <span class="muted small" [title]="live() ? 'канал WebSocket подключён' : 'восстанавливаем соединение…'">{{ pendingApproval() ? 'ждёт подтверждения' : live() ? 'работает в проекте…' : 'переподключение…' }}</span>
             <button type="button" class="btn sm" (click)="stop()" [disabled]="stopping()">Остановить</button>
           }
         </div>
@@ -229,8 +229,6 @@ export class QoderChatComponent implements OnInit, OnDestroy {
   private destroyRef = inject(DestroyRef);
   private scroller = viewChild<ElementRef<HTMLElement>>('scroller');
   private actBody = viewChild<ElementRef<HTMLElement>>('actbody');
-  private pollTimer?: ReturnType<typeof setInterval>;
-  private lastEventSeq = 0;
 
   readonly dialogs = signal<QoderDialog[]>([]);
   readonly selectedId = signal<number | null>(null);
@@ -242,15 +240,24 @@ export class QoderChatComponent implements OnInit, OnDestroy {
   readonly stopping = signal(false);
   readonly deciding = signal<string | null>(null);
   readonly job = signal<QoderJob | null>(null);
+  readonly live = signal(false);
   readonly err = signal('');
   readonly listErr = signal('');
+
+  /** WebSocket задачи: снимки приходят с сервера, опроса по HTTP нет. */
+  private ws: WebSocket | null = null;
+  private wsTimer?: ReturnType<typeof setTimeout>;
+  private wsAttempts = 0;
+  private watchJobId: string | null = null;
+  private destroyed = false;
 
   ngOnInit(): void {
     this.loadList(true);
   }
 
   ngOnDestroy(): void {
-    this.stopPoll();
+    this.destroyed = true;
+    this.stopWatch();
   }
 
   busy(): boolean {
@@ -291,7 +298,7 @@ export class QoderChatComponent implements OnInit, OnDestroy {
 
   newDialog(): void {
     if (this.busy()) return;
-    this.stopPoll();
+    this.stopWatch();
     this.job.set(null);
     this.selectedId.set(null);
     this.selectedTitle.set('');
@@ -302,7 +309,7 @@ export class QoderChatComponent implements OnInit, OnDestroy {
 
   select(d: QoderDialog): void {
     if (this.busy()) return;
-    this.stopPoll();
+    this.stopWatch();
     this.job.set(null);
     this.err.set('');
     this.selectedId.set(d.id);
@@ -330,8 +337,7 @@ export class QoderChatComponent implements OnInit, OnDestroy {
         next: (r) => {
           if (r.job && r.job.status === 'running') {
             this.job.set(r.job);
-            this.lastEventSeq = this.lastSeq(r.job);
-            this.startPolling(r.job.id);
+            this.startWatch(r.job.id);
           }
         },
         error: () => undefined,
@@ -368,7 +374,7 @@ export class QoderChatComponent implements OnInit, OnDestroy {
     const text = this.draft().trim();
     if (!text || this.busy()) return;
     this.err.set('');
-    this.stopPoll();
+    this.stopWatch();
     this.job.set(null);
     this.starting.set(true);
     const pending: QoderMessage = { id: -Date.now(), role: 'user', content: text, createdAt: 'сейчас' };
@@ -399,8 +405,7 @@ export class QoderChatComponent implements OnInit, OnDestroy {
           this.messages.update((list) => [...list.filter((m) => m.id !== pending.id), r.userMessage]);
           this.selectedTitle.set(r.title);
           this.job.set({ id: r.jobId, status: 'running', events: [], approvals: [], title: r.title });
-          this.lastEventSeq = 0;
-          this.startPolling(r.jobId);
+          this.startWatch(r.jobId);
           this.loadList(false);
           this.scrollBottom();
         },
@@ -462,27 +467,129 @@ export class QoderChatComponent implements OnInit, OnDestroy {
       });
   }
 
-  private startPolling(jobId: string): void {
-    this.stopPoll();
-    const tick = (): void => {
-      this.api
-        .qoderJob$(jobId)
-        .pipe(take(1), takeUntilDestroyed(this.destroyRef))
-        .subscribe({
-          next: (job) => this.applyJob(job),
-          error: (e) => {
-            this.stopPoll();
-            this.err.set(httpErr(e));
-          },
-        });
-    };
-    tick();
-    this.pollTimer = setInterval(tick, 900);
+  /** Подписаться на задачу по сокету: снимок и все изменения придут кадром «job». */
+  private startWatch(jobId: string): void {
+    this.stopWatch();
+    this.watchJobId = jobId;
+    this.openSocket();
   }
 
-  private stopPoll(): void {
-    if (this.pollTimer) clearInterval(this.pollTimer);
-    this.pollTimer = undefined;
+  private stopWatch(): void {
+    this.watchJobId = null;
+    this.live.set(false);
+    if (this.wsTimer) {
+      clearTimeout(this.wsTimer);
+      this.wsTimer = undefined;
+    }
+    const ws = this.ws;
+    this.ws = null;
+    if (ws) {
+      try {
+        ws.close();
+      } catch {
+        /* уже закрыт */
+      }
+    }
+  }
+
+  private openSocket(): void {
+    if (typeof window === 'undefined') return;
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+      this.subscribeJob();
+      return;
+    }
+    if (this.wsTimer) {
+      clearTimeout(this.wsTimer);
+      this.wsTimer = undefined;
+    }
+    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${window.location.host}/api/ws/qoder`);
+    this.ws = ws;
+    ws.onopen = () => {
+      this.wsAttempts = 0;
+      this.live.set(true);
+      this.subscribeJob();
+    };
+    ws.onmessage = (ev) => this.onSocket(ev.data);
+    ws.onclose = () => {
+      this.live.set(false);
+      if (this.ws === ws) this.ws = null;
+      this.scheduleReconnect();
+    };
+    ws.onerror = () => {
+      try {
+        ws.close();
+      } catch {
+        /* уже закрыт */
+      }
+    };
+  }
+
+  /** После переподключения повторяем подписку — сервер сразу пришлёт полный снимок. */
+  private subscribeJob(): void {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN || !this.watchJobId) return;
+    try {
+      ws.send(JSON.stringify({ type: 'subscribe', jobId: this.watchJobId }));
+    } catch {
+      /* закроется — переподключимся */
+    }
+  }
+
+  private scheduleReconnect(): void {
+    if (this.wsTimer || !this.watchJobId || this.destroyed) return;
+    const delay = Math.min(15_000, 1_000 * 2 ** Math.min(this.wsAttempts++, 4));
+    this.wsTimer = setTimeout(() => {
+      this.wsTimer = undefined;
+      if (!this.watchJobId || this.destroyed) return;
+      this.openSocket();
+    }, delay);
+  }
+
+  private onSocket(raw: unknown): void {
+    if (typeof raw !== 'string') return;
+    let msg: Record<string, unknown>;
+    try {
+      msg = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    if (msg['type'] === 'hello') {
+      this.live.set(true);
+      return;
+    }
+    if (msg['type'] === 'job') {
+      const job = msg['job'] as QoderJob | undefined;
+      if (!job || !this.watchJobId || job.id !== this.watchJobId) return;
+      this.applyJob(job);
+      return;
+    }
+    if (msg['type'] === 'gone') {
+      if (msg['jobId'] !== this.watchJobId) return;
+      this.stopWatch();
+      this.reloadDialog();
+      return;
+    }
+    if (msg['type'] === 'error') {
+      this.err.set(String(msg['message'] ?? 'Ошибка канала Qoder'));
+    }
+  }
+
+  /** Задача истекла, пока вкладка была закрыта: подтягиваем сохранённую историю. */
+  private reloadDialog(): void {
+    const id = this.selectedId();
+    if (!id) return;
+    this.api
+      .qoderDialog$(id)
+      .pipe(take(1), takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (full) => {
+          this.messages.set(full.messages);
+          this.selectedTitle.set(full.title);
+          this.scrollBottom();
+        },
+        error: () => undefined,
+      });
   }
 
   private applyJob(job: QoderJob): void {
@@ -490,15 +597,10 @@ export class QoderChatComponent implements OnInit, OnDestroy {
     this.job.set(job);
     if (job.status === 'running') {
       this.scrollActivity();
-      const seq = this.lastSeq(job);
-      if (seq !== this.lastEventSeq) {
-        this.lastEventSeq = seq;
-        this.scrollBottom();
-      }
       return;
     }
 
-    this.stopPoll();
+    this.stopWatch();
     if (job.status === 'done') {
       const answer: QoderMessage =
         job.assistantMessage ??
@@ -513,10 +615,6 @@ export class QoderChatComponent implements OnInit, OnDestroy {
 
     this.err.set(job.error || (job.status === 'cancelled' ? 'Задача остановлена' : 'Qoder завершил задачу с ошибкой'));
     this.loadList(false);
-  }
-
-  private lastSeq(job: QoderJob): number {
-    return job.events.length ? job.events[job.events.length - 1].seq : 0;
   }
 
   private scrollBottom(): void {

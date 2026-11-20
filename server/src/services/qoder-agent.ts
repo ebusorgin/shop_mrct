@@ -116,6 +116,9 @@ export function qoderProjectRoot(): string {
 class QoderAgentService {
   private jobs = new Map<string, Job>();
   private byDialog = new Map<number, string>();
+  /** Подписчики веб-сокета: получают снимок задачи при каждом изменении. */
+  private subs = new Map<string, Set<(snapshot: QoderJobSnapshot) => void>>();
+  private notifyTimers = new Map<string, NodeJS.Timeout>();
 
   start(input: StartQoderJobInput): QoderJobSnapshot {
     const active = this.byDialog.get(input.dialogId);
@@ -190,6 +193,28 @@ class QoderAgentService {
 
   get(jobId: string, userId: number): QoderJobSnapshot {
     return this.snapshot(this.own(jobId, userId));
+  }
+
+  /**
+   * Подписка веб-сокета на задачу: снимок приходит сразу и после каждого изменения.
+   * null — задачи нет (истекла) или она чужая; сокет отвечает клиенту «gone».
+   */
+  subscribe(jobId: string, userId: number, cb: (snapshot: QoderJobSnapshot) => void): (() => void) | null {
+    const job = this.jobs.get(jobId);
+    if (!job || job.userId !== userId) return null;
+    let set = this.subs.get(jobId);
+    if (!set) {
+      set = new Set();
+      this.subs.set(jobId, set);
+    }
+    set.add(cb);
+    cb(this.snapshot(job));
+    return () => {
+      const live = this.subs.get(jobId);
+      if (!live) return;
+      live.delete(cb);
+      if (!live.size) this.subs.delete(jobId);
+    };
   }
 
   activeForDialog(dialogId: number, userId: number): QoderJobSnapshot | null {
@@ -377,9 +402,9 @@ class QoderAgentService {
       const live = job.streamBlocks.get(index);
       if (!live) return;
       if (deltaType === 'text_delta' && live.kind === 'text') {
-        this.appendEventDetail(live, asString(delta?.text));
+        this.appendEventDetail(job, live, asString(delta?.text));
       } else if (deltaType === 'thinking_delta' && live.kind === 'thinking') {
-        this.appendEventDetail(live, asString(delta?.thinking));
+        this.appendEventDetail(job, live, asString(delta?.thinking));
       }
       return;
     }
@@ -505,6 +530,7 @@ class QoderAgentService {
         job.finishedAt = Date.now();
         this.endChild(job);
         this.pruneLater(job);
+        this.scheduleNotify(job);
       }
     );
   }
@@ -551,7 +577,13 @@ class QoderAgentService {
   }
 
   private pruneLater(job: Job): void {
-    const timer = setTimeout(() => this.jobs.delete(job.id), JOB_TTL_MS);
+    const timer = setTimeout(() => {
+      this.jobs.delete(job.id);
+      this.subs.delete(job.id);
+      const notify = this.notifyTimers.get(job.id);
+      if (notify) clearTimeout(notify);
+      this.notifyTimers.delete(job.id);
+    }, JOB_TTL_MS);
     timer.unref();
   }
 
@@ -584,15 +616,42 @@ class QoderAgentService {
     };
     job.events.push(event);
     if (job.events.length > MAX_EVENTS) job.events.splice(0, job.events.length - MAX_EVENTS);
+    this.scheduleNotify(job);
     return event;
   }
 
   /** Потоковые дельты дописываются в то же событие — в чате растёт один блок, а не сотни строк. */
-  private appendEventDetail(event: QoderJobEvent, delta: string): void {
+  private appendEventDetail(job: Job, event: QoderJobEvent, delta: string): void {
     if (!delta) return;
     const current = event.detail ?? '';
     if (current.length >= MAX_EVENT_DETAIL) return;
     event.detail = (current + delta).slice(0, MAX_EVENT_DETAIL);
+    this.scheduleNotify(job);
+  }
+
+  /**
+   * Рассылка снимка подписчикам с троттлингом: дельты приходят десятками в секунду,
+   * а браузеру достаточно ~8 кадров в секунду, чтобы лента выглядела живой.
+   */
+  private scheduleNotify(job: Job): void {
+    if (!this.subs.get(job.id)?.size) return;
+    if (this.notifyTimers.has(job.id)) return;
+    const timer = setTimeout(() => {
+      this.notifyTimers.delete(job.id);
+      const live = this.jobs.get(job.id);
+      const listeners = this.subs.get(job.id);
+      if (!live || !listeners?.size) return;
+      const snapshot = this.snapshot(live);
+      for (const cb of listeners) {
+        try {
+          cb(snapshot);
+        } catch {
+          /* сокет мог закрыться между кадрами */
+        }
+      }
+    }, 120);
+    timer.unref();
+    this.notifyTimers.set(job.id, timer);
   }
 
   private snapshot(job: Job): QoderJobSnapshot {

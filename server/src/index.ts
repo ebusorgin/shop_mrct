@@ -7,6 +7,7 @@ import { pool } from './db';
 import { ensureAdminUser, purgeExpiredSessions } from './services/auth';
 import { freezeOrderSnapshots } from './services/order-price-snapshot';
 import { attachLogWs } from './services/ws-log';
+import { attachQoderWs } from './services/ws-qoder';
 
 async function main(): Promise<void> {
   await initDb();
@@ -21,6 +22,8 @@ async function main(): Promise<void> {
   const server = createServer(app);
   // живой лог «что делает сервер» для офисных страниц (разбор накладной и т.п.)
   attachLogWs(server);
+  // чат с Qoder: поток «мыслей», текста и инструментов вместо опроса по HTTP
+  attachQoderWs(server);
   server.listen(config.port, config.host, () => {
     console.log(`MIX markt CRM API: http://${config.host}:${config.port}/api`);
   });

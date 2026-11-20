@@ -88,6 +88,7 @@ import { httpErr } from '../core/format';
     .qev pre { margin: 4px 0 0; padding: 6px 8px; max-height: 140px; overflow: auto; border-radius: 6px; background: var(--panel); color: var(--text); font-size: 11px; line-height: 1.35; white-space: pre-wrap; overflow-wrap: anywhere; }
     .qev pre.qthink { border: 0; background: transparent; color: var(--muted); padding: 2px 0; font-style: italic; }
     .qapproval { margin: 4px 10px 10px; border: 1px solid color-mix(in srgb, var(--red) 45%, var(--border)); border-radius: 10px; background: var(--bg); padding: 10px; }
+    .qapprovalbar { margin: 0 14px 10px; background: color-mix(in srgb, var(--red-soft) 55%, var(--bg)); box-shadow: 0 4px 14px rgba(15,23,42,.08); }
     .qapproval-head { display: flex; align-items: baseline; gap: 8px; font-size: 12px; }
     .qapproval-head b { font-size: 13px; }
     .qapproval-title { margin-top: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; }
@@ -186,26 +187,27 @@ import { httpErr } from '../core/format';
                   }
                 </div>
               }
-              @if (pendingApproval(); as a) {
-                <div class="qapproval">
-                  <div class="qapproval-head"><b>Нужно подтверждение</b><span class="muted">{{ a.tool }}</span></div>
-                  <div class="qapproval-title">{{ a.title }}</div>
-                  @if (a.description && a.description !== a.title) { <div class="qapproval-desc">{{ a.description }}</div> }
-                  @if (a.preview && a.preview !== a.title) { <pre>{{ a.preview }}</pre> }
-                  <div class="qapproval-actions">
-                    <button type="button" class="btn primary sm" (click)="decide(a, 'once')" [disabled]="!!deciding()">Разрешить</button>
-                    @if (a.canAlways) {
-                      <button type="button" class="btn sm" (click)="decide(a, 'always')" [disabled]="!!deciding()">Разрешить и запомнить</button>
-                    }
-                    <button type="button" class="btn sm" (click)="decide(a, 'deny')" [disabled]="!!deciding()">Отклонить</button>
-                  </div>
-                </div>
-              } @else if (j.status === 'running') {
+              @if (!pendingApproval() && j.status === 'running') {
                 <div class="qact-body muted small">Qoder думает…</div>
               }
             </div>
           }
         </div>
+        @if (pendingApproval(); as a) {
+          <div class="qapproval qapprovalbar" role="alert">
+            <div class="qapproval-head"><b>Нужно подтверждение</b><span class="muted">{{ a.tool }}</span></div>
+            <div class="qapproval-title">{{ a.title }}</div>
+            @if (a.description && a.description !== a.title) { <div class="qapproval-desc">{{ a.description }}</div> }
+            @if (a.preview && a.preview !== a.title) { <pre>{{ a.preview }}</pre> }
+            <div class="qapproval-actions">
+              <button type="button" class="btn primary sm" (click)="decide(a, 'once')" [disabled]="!!deciding()">Разрешить</button>
+              @if (a.canAlways) {
+                <button type="button" class="btn sm" (click)="decide(a, 'always')" [disabled]="!!deciding()">Разрешить и запомнить</button>
+              }
+              <button type="button" class="btn sm" (click)="decide(a, 'deny')" [disabled]="!!deciding()">Отклонить</button>
+            </div>
+          </div>
+        }
         @if (err()) { <div class="err qerr" role="alert">{{ err() }}</div> }
         <div class="qcomposer">
           <textarea
@@ -250,6 +252,7 @@ export class QoderChatComponent implements OnInit, OnDestroy {
   private wsAttempts = 0;
   private watchJobId: string | null = null;
   private destroyed = false;
+  private lastEventSeq = 0;
 
   ngOnInit(): void {
     this.loadList(true);
@@ -476,6 +479,7 @@ export class QoderChatComponent implements OnInit, OnDestroy {
 
   private stopWatch(): void {
     this.watchJobId = null;
+    this.lastEventSeq = 0;
     this.live.set(false);
     if (this.wsTimer) {
       clearTimeout(this.wsTimer);
@@ -596,6 +600,11 @@ export class QoderChatComponent implements OnInit, OnDestroy {
     if (this.job()?.id && this.job()!.id !== job.id) return;
     this.job.set(job);
     if (job.status === 'running') {
+      const seq = job.events.length ? job.events[job.events.length - 1].seq : 0;
+      if (seq !== this.lastEventSeq) {
+        this.lastEventSeq = seq;
+        this.scrollBottom();
+      }
       this.scrollActivity();
       return;
     }

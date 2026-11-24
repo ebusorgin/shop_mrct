@@ -32,17 +32,43 @@ create table if not exists google_sheet_manual_links (
   tab_name       text not null,
   row_name       text not null,
   -- null — позицию явно оставили без продукции (перекрывает автоподбор)
-  card_id        int,
+  packaging_id   int,
   updated_at     timestamptz not null default now(),
   primary key (spreadsheet_id, tab_name, row_name)
 );
-alter table google_sheet_manual_links alter column card_id drop not null;
 
--- Ручная связь теперь указывает на фасовку; card_id остаётся для старых записей —
--- при чтении переводим его в базовую фасовку техкарты.
-alter table google_sheet_manual_links add column if not exists packaging_id int;
+-- Старый формат связей хранил id техкарты; после удаления legacy-модели колонка не нужна.
+alter table if exists google_sheet_manual_links drop column if exists card_id;
+alter table if exists google_sheet_manual_links add column if not exists packaging_id int;
+alter table if exists google_sheets drop column if exists links_version;
 
--- 0 — links строк хранят id техкарт (старый формат), 1 — id фасовок,
--- 2 — id фасовок карты производства (prod_packagings) после миграции.
--- Старые связи читаются через фасовку по умолчанию и заменяются при следующей синхронизации.
-alter table google_sheets add column if not exists links_version int not null default 0;
+-- ---------- Комментарии к таблицам ----------
+-- Идемпотентно: descriptions обновляются при каждом старте сервера.
+
+comment on table google_sheets is
+  'Один скачанный документ Google Sheets: заголовок, URL, время синхронизации, список несопоставленных названий и версия формата ссылок на фасовки.';
+
+comment on table google_sheet_tabs is
+  'Листы Google-таблицы: имя вида DD.MM, ширина, строки как в Google и массив ссылок links на фасовки по индексам строк.';
+
+comment on table google_sheet_manual_links is
+  'Ручные решения сопоставления строк листа: нормализованное название строки и фасовка карты либо явное «не сопоставлять» (packaging_id = null).';
+
+-- ---------- Комментарии к колонкам (mixmarkt_sheets) ----------
+-- Идемпотентно: описания обновляются при каждом старте.
+comment on column google_sheet_manual_links.spreadsheet_id is 'Идентификатор документа Google Sheets.';
+comment on column google_sheet_manual_links.tab_name is 'Имя листа.';
+comment on column google_sheet_manual_links.row_name is 'Нормализованное название строки листа.';
+comment on column google_sheet_manual_links.updated_at is 'Когда ручное решение изменено.';
+comment on column google_sheet_manual_links.packaging_id is 'Фасовка карты (prod_packagings.id); null — не сопоставлять.';
+comment on column google_sheet_tabs.spreadsheet_id is 'Идентификатор документа Google Sheets.';
+comment on column google_sheet_tabs.position is 'Порядок листа в документе.';
+comment on column google_sheet_tabs.name is 'Имя листа, обычно DD.MM.';
+comment on column google_sheet_tabs.width is 'Ширина листа в колонках.';
+comment on column google_sheet_tabs.rows is 'Строки листа как в Google, в JSON.';
+comment on column google_sheet_tabs.links is 'id фасовок по индексам строк, в JSON.';
+comment on column google_sheets.spreadsheet_id is 'Идентификатор документа Google Sheets; первичный ключ.';
+comment on column google_sheets.title is 'Заголовок документа.';
+comment on column google_sheets.url is 'URL документа.';
+comment on column google_sheets.synced_at is 'Когда документ последний раз синхронизирован.';
+comment on column google_sheets.unmatched is 'Названия строк без сопоставления, в JSON.';

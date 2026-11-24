@@ -77,8 +77,10 @@ interface ReportRow {
   packagingId: number;
   /** id рецептуры — строки отчёта ссылаются на карточку производства. */
   nodeId: number;
-  /** Сквозной номер отчёта из последовательности; null — старый заказ до введения нумерации. */
+  /** Порядковый номер внутри года; null — старый заказ до введения нумерации. */
   docNo: string | null;
+  /** Год номера; null у старых заказов без doc_no. */
+  docYear: number | null;
   deliveryDate: string;
   savedAt: string;
   storeId: number;
@@ -176,6 +178,7 @@ export async function orderReport(
   const { rows } = await pool.query<ReportRow>(
     `select o.id as "orderId",
             o.doc_no as "docNo",
+            o.doc_year as "docYear",
             i.packaging_id as "packagingId",
             tc.id as "nodeId",
             to_char(o.delivery_date, 'YYYY-MM-DD') as "deliveryDate",
@@ -210,9 +213,9 @@ export async function orderReport(
     if (!doc) {
       doc = {
         orderId: r.orderId,
-        // С сегодняшнего дня — сквозной номер 2026-843, 2026-844…;
+        // Номер — год и порядковый номер внутри года (2027-1, 2027-2…);
         // у старых заказов без номера остаётся прежний вид год-id.
-        number: `${r.deliveryDate.slice(0, 4)}-${r.docNo ?? r.orderId}`,
+        number: `${r.docYear ?? r.deliveryDate.slice(0, 4)}-${r.docNo ?? r.orderId}`,
         deliveryDate: r.deliveryDate,
         savedAt: r.savedAt,
         supplier: SUPPLIER,

@@ -27,6 +27,23 @@ drop table if exists order_tabs cascade;
 drop table if exists order_categories cascade;
 drop table if exists writeoff_runs cascade;
 drop function if exists orders_audit_fn() cascade;
+-- Старая история выпусков заменена map_batches; таблицы больше не используются.
+drop table if exists production_batch_items cascade;
+drop table if exists production_batches cascade;
+-- Старая модель полуфабрикатов/техкарт удалена; рецептуры живут в prod_nodes/prod_ops.
+drop table if exists product_packagings cascade;
+drop table if exists tech_card_items cascade;
+drop table if exists tech_cards cascade;
+drop table if exists semi_inputs cascade;
+drop table if exists semi_products cascade;
+
+-- Исторические колонки старой модели больше не нужны.
+alter table if exists prod_nodes drop column if exists legacy_kind;
+alter table if exists prod_nodes drop column if exists legacy_id;
+alter table if exists prod_ops drop column if exists legacy_source;
+alter table if exists prod_ops drop column if exists legacy_id;
+alter table if exists prod_packagings drop column if exists legacy_id;
+alter table if exists store_order_items drop column if exists legacy_packaging_id;
 
 -- ---------- Справочники и склад ----------
 
@@ -42,7 +59,7 @@ create table if not exists units (
 create table if not exists products (
   id              serial primary key,
   name            text unique not null,
-  category        text not null default 'прочее',
+  category_id     int,
   unit_id         int not null,
   min_stock       numeric not null default 0,
   active          boolean not null default true,
@@ -87,6 +104,80 @@ insert into product_categories (name, icon, color, protected, position) values
 on conflict (name) do update set protected = true;
 update product_categories set protected = true
  where lower(btrim(name)) in ('упаковка', 'прочее');
+
+-- products.category_id — единственный ключ категории сырья.
+-- Текстовой колонки products.category больше нет: имя живёт только в product_categories.
+alter table products add column if not exists category_id int;
+
+do $$
+declare
+  has_text boolean;
+  default_id int;
+begin
+  select exists (
+    select 1
+      from information_schema.columns
+     where table_schema = current_schema()
+       and table_name = 'products'
+       and column_name = 'category'
+  ) into has_text;
+
+  if has_text then
+    -- Перенести все текстовые категории в справочник, не создавая дублей по регистру.
+    execute $mig$
+      insert into product_categories (name)
+      select distinct lower(btrim(p.category))
+        from products p
+       where btrim(p.category) <> ''
+         and not exists (
+           select 1 from product_categories pc
+            where lower(btrim(pc.name)) = lower(btrim(p.category))
+         )
+    $mig$;
+
+    execute $mig$
+      update products p
+         set category_id = pc.id
+        from product_categories pc
+       where p.category_id is null
+         and lower(btrim(p.category)) = lower(btrim(pc.name))
+    $mig$;
+  end if;
+
+  select id into default_id
+    from product_categories
+   where lower(btrim(name)) = 'прочее'
+   limit 1;
+
+  if default_id is null then
+    insert into product_categories (name, protected)
+    values ('прочее', true)
+    returning id into default_id;
+  end if;
+
+  update products set category_id = default_id where category_id is null;
+
+  if has_text then
+    execute 'alter table products drop column category';
+  end if;
+end $$;
+
+alter table products alter column category_id set not null;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+     where conname = 'products_category_id_fkey'
+       and conrelid = 'products'::regclass
+  ) then
+    alter table products
+      add constraint products_category_id_fkey
+      foreign key (category_id) references product_categories(id);
+  end if;
+end $$;
+
+create index if not exists products_category_idx on products (category_id);
 
 -- Каталог готовой продукции (разделы меню/витрины): техкарты ссылаются на него.
 create table if not exists product_catalogs (
@@ -134,162 +225,7 @@ create table if not exists movements (
   user_login text
 );
 
--- ---------- Производство: полуфабрикаты и техкарты ----------
-
-create table if not exists semi_products (
-  id              serial primary key,
-  name            text unique not null,
-  unit_id         int not null,
-  note            text default '',
-  created_at      timestamptz not null default now(),
-  g_per_pcs       numeric check (g_per_pcs is null or g_per_pcs >= 0),
-  ml_per_pcs      numeric check (ml_per_pcs is null or ml_per_pcs >= 0),
-  g_per_ml        numeric check (g_per_ml is null or g_per_ml >= 0),
-  shelf_life_days int check (shelf_life_days is null or shelf_life_days >= 0),
-  created_by      int,
-  updated_by      int,
-  out_qty         numeric not null default 1,
-  board           jsonb
-);
-
-create table if not exists semi_inputs (
-  id             serial primary key,
-  semi_id        int not null,
-  yield_pct      numeric check (yield_pct > 0 and yield_pct <= 100),
-  qty_per_output numeric check (qty_per_output > 0),
-  source_type    text not null default 'raw' check (source_type in ('raw','semi')),
-  ref_id         int not null
-);
-
-comment on column semi_inputs.yield_pct is 'base: выход после уварки/очистки, %; additive (опц.): выход своей уварки, % — сырой вход делится на него';
-comment on column semi_inputs.qty_per_output is 'количество входа на партию, в базовых единицах входа; yield_pct (если задан) — потери при обработке этого входа';
-comment on column semi_inputs.source_type is 'raw = складское сырьё (products.id), semi = другой полуфабрикат (semi_products.id)';
-
-create table if not exists tech_cards (
-  id              serial primary key,
-  name            text not null,
-  name_en         text not null default '',
-  name_sr         text not null default '',
-  portion_qty     numeric not null check (portion_qty > 0),
-  portion_unit_id int not null,
-  note            text default '',
-  created_at      timestamptz not null default now(),
-  plu             text,
-  created_by      int,
-  updated_by      int,
-  catalog_id      int
-);
-
--- каталог продукции появился позже — добавляем колонку в уже работающие базы
-alter table tech_cards add column if not exists catalog_id int;
-
--- названия на английском и сербском: основной язык остаётся в name
-alter table tech_cards add column if not exists name_en text not null default '';
-alter table tech_cards add column if not exists name_sr text not null default '';
-
--- остатки старого модуля заказов
-alter table tech_cards drop column if exists category_id;
-alter table tech_cards drop column if exists min_qty;
-
-create table if not exists tech_card_items (
-  id          serial primary key,
-  card_id     int not null,
-  source_type text not null check (source_type in ('raw','semi','product')),
-  ref_id      int not null,
-  qty         numeric not null check (qty > 0),
-  unit_id     int not null,
-  position    int not null default 0
-);
-
--- продукт может входить в состав другого продукта: raw = products, semi = semi_products, product = tech_cards
-alter table tech_card_items drop constraint if exists tech_card_items_source_type_check;
-alter table tech_card_items add constraint tech_card_items_source_type_check
-  check (source_type in ('raw','semi','product'));
-comment on column tech_card_items.source_type is 'raw = products.id, semi = semi_products.id, product = другой продукт tech_cards.id';
-
--- Фасовки техкарты: продаваемая позиция (SKU). Одна техкарта — несколько упаковок.
--- qty_base — вес нетто одной упаковки в единице выхода техкарты, min_order — минимум упаковок в заказе.
-create table if not exists product_packagings (
-  id         serial primary key,
-  card_id    int not null,
-  name       text not null check (btrim(name) <> ''),
-  qty_base   numeric not null check (qty_base > 0 and qty_base < 'Infinity'::numeric),
-  min_order  int not null default 1 check (min_order > 0),
-  is_default boolean not null default false,
-  price      numeric not null default 0,
-  -- за что указана цена: unit — за кг/л/шт, portion — за упаковку (порцию), piece — за штуку
-  price_basis text not null default 'unit' check (price_basis in ('unit','portion','piece')),
-  -- себестоимость фасовки в RSD за ту же базу, что и цена; 0 — не задана
-  cost       numeric not null default 0
-);
-
--- цена продажи и база цены (кг/л/шт, порция или штука) — для отчёта-отгрузки магазину
-alter table product_packagings add column if not exists price numeric not null default 0;
-alter table product_packagings add column if not exists price_basis text not null default 'unit';
--- себестоимость (внутренняя цена) в RSD за ту же базу, что и цена продажи
-alter table product_packagings add column if not exists cost numeric not null default 0;
--- в старых базах была кратность заказа order_step — заменяем минимальным заказом
-alter table product_packagings add column if not exists min_order int not null default 1;
--- фасовку можно заказывать магазинам, только если она включена в доставку
-alter table product_packagings add column if not exists available boolean not null default true;
-alter table product_packagings drop column if exists order_step;
-drop table if exists product_packaging_items;
--- ровно одна фасовка по умолчанию на техкарту
-update product_packagings pk set is_default = false
- where pk.is_default
-   and pk.id <> (select min(p2.id) from product_packagings p2 where p2.card_id = pk.card_id and p2.is_default);
-update product_packagings pk set is_default = true
- where pk.id = (select min(p2.id) from product_packagings p2 where p2.card_id = pk.card_id)
-   and not exists (select 1 from product_packagings p2 where p2.card_id = pk.card_id and p2.is_default);
-create index if not exists product_packagings_card_idx on product_packagings (card_id);
-create unique index if not exists product_packagings_default_uniq on product_packagings (card_id) where is_default;
-
-do $$
-begin
-  if not exists (
-    select 1 from pg_constraint
-     where conname = 'product_packagings_min_order_check'
-       and conrelid = 'product_packagings'::regclass
-  ) then
-    alter table product_packagings add constraint product_packagings_min_order_check check (min_order > 0);
-  end if;
-  if not exists (
-    select 1 from pg_constraint
-     where conname = 'product_packagings_price_basis_check'
-       and conrelid = 'product_packagings'::regclass
-  ) then
-    alter table product_packagings add constraint product_packagings_price_basis_check
-      check (price_basis in ('unit','portion','piece'));
-  end if;
-end $$;
-
--- Каждая техкарта продаётся хотя бы одной фасовкой: существующим создаём базовую по выходу.
-insert into product_packagings (card_id, name, qty_base, min_order, is_default)
-select tc.id, trim_scale(tc.portion_qty)::text || ' ' || u.code, tc.portion_qty, 1, true
-  from tech_cards tc
-  join units u on u.id = tc.portion_unit_id
- where not exists (select 1 from product_packagings pk where pk.card_id = tc.id);
-
-create table if not exists production_batches (
-  id            serial primary key,
-  card_id       int not null,
-  portions      int not null check (portions > 0),
-  batch_date    date not null default current_date,
-  cost_total    numeric not null default 0,
-  note          text default '',
-  status        text not null default 'posted' check (status in ('posted','reversed')),
-  created_at    timestamptz not null default now(),
-  created_by    int,
-  created_login text
-);
-
-create table if not exists production_batch_items (
-  id         serial primary key,
-  batch_id   int not null,
-  product_id int not null,
-  qty        numeric not null,
-  unit_cost  numeric not null default 0
-);
+-- Старая модель полуфабрикатов и техкарт удалена; рецептуры живут в prod_nodes/prod_ops.
 
 -- ---------- Приходные накладные ----------
 
@@ -426,28 +362,13 @@ begin
         ('movements',              'movements_product_id_fkey',              'foreign key (product_id) references products(id)'),
         ('movements',              'movements_user_id_fkey',                 'foreign key (user_id) references users(id) on delete set null'),
         ('product_aliases',        'product_aliases_product_id_fkey',        'foreign key (product_id) references products(id) on delete cascade'),
-        ('production_batch_items', 'production_batch_items_batch_id_fkey',   'foreign key (batch_id) references production_batches(id) on delete cascade'),
-        ('production_batch_items', 'production_batch_items_product_id_fkey', 'foreign key (product_id) references products(id)'),
-        ('production_batches',     'production_batches_card_id_fkey',        'foreign key (card_id) references tech_cards(id)'),
-        ('production_batches',     'production_batches_created_by_fkey',     'foreign key (created_by) references users(id) on delete set null'),
-        ('product_packagings',     'product_packagings_card_id_fkey',        'foreign key (card_id) references tech_cards(id) on delete cascade'),
         ('products',               'products_created_by_fkey',               'foreign key (created_by) references users(id) on delete set null'),
         ('products',               'products_unit_id_fkey',                  'foreign key (unit_id) references units(id)'),
         ('products',               'products_updated_by_fkey',               'foreign key (updated_by) references users(id) on delete set null'),
-        ('semi_inputs',            'semi_inputs_semi_id_fkey',               'foreign key (semi_id) references semi_products(id) on delete cascade'),
-        ('semi_products',          'semi_products_created_by_fkey',          'foreign key (created_by) references users(id) on delete set null'),
-        ('semi_products',          'semi_products_unit_id_fkey',             'foreign key (unit_id) references units(id)'),
-        ('semi_products',          'semi_products_updated_by_fkey',          'foreign key (updated_by) references users(id) on delete set null'),
         ('sessions',               'sessions_user_id_fkey',                  'foreign key (user_id) references users(id) on delete cascade'),
         ('stock',                  'stock_product_id_fkey',                  'foreign key (product_id) references products(id) on delete cascade'),
         ('stores',                 'stores_created_by_fkey',                 'foreign key (created_by) references users(id) on delete set null'),
         ('stores',                 'stores_updated_by_fkey',                 'foreign key (updated_by) references users(id) on delete set null'),
-        ('tech_card_items',        'tech_card_items_card_id_fkey',           'foreign key (card_id) references tech_cards(id) on delete cascade'),
-        ('tech_card_items',        'tech_card_items_unit_id_fkey',           'foreign key (unit_id) references units(id)'),
-        ('tech_cards',             'tech_cards_catalog_id_fkey',             'foreign key (catalog_id) references product_catalogs(id) on delete set null'),
-        ('tech_cards',             'tech_cards_created_by_fkey',             'foreign key (created_by) references users(id) on delete set null'),
-        ('tech_cards',             'tech_cards_portion_unit_id_fkey',        'foreign key (portion_unit_id) references units(id)'),
-        ('tech_cards',             'tech_cards_updated_by_fkey',             'foreign key (updated_by) references users(id) on delete set null'),
         ('users',                  'users_store_id_fkey',                    'foreign key (store_id) references stores(id) on delete set null'),
         ('waybill_items',          'waybill_items_product_id_fkey',          'foreign key (product_id) references products(id)'),
         ('waybill_items',          'waybill_items_unit_id_fkey',             'foreign key (unit_id) references units(id)'),
@@ -480,7 +401,6 @@ create index if not exists product_aliases_trgm          on product_aliases usin
 create index if not exists products_name_trgm            on products using gin (name gin_trgm_ops);
 create index if not exists sessions_expires_idx          on sessions (expires_at);
 create index if not exists sessions_user_idx             on sessions (user_id);
-create unique index if not exists tech_cards_plu_uniq    on tech_cards (plu) where plu is not null and plu <> '';
 create unique index if not exists users_login_lower_uidx on users (lower(login));
 create index if not exists users_store_idx               on users (store_id);
 -- Уникальность номера действующей накладной. На живой БД с историческими дублями
@@ -509,8 +429,9 @@ on conflict do nothing;
 
 -- Тара для фасовок: складские позиции категории «упаковка» (банки, крышки, контейнеры).
 -- Нужны, чтобы в «Фасовки и цены» можно было добавлять тару к упаковке продукта.
-insert into products (name, category, unit_id, min_stock, active)
-select v.name, 'упаковка', (select id from units where code = 'шт'), 0, true
+insert into products (name, category_id, unit_id, min_stock, active)
+select v.name, (select id from product_categories where name = 'упаковка'),
+       (select id from units where code = 'шт'), 0, true
   from (values
     ('банка 1000г'),
     ('банка 450г'),
@@ -523,7 +444,7 @@ on conflict (name) do nothing;
 
 insert into stock (product_id)
 select p.id from products p
- where lower(btrim(p.category)) = 'упаковка'
+ where p.category_id = (select id from product_categories where name = 'упаковка')
 on conflict (product_id) do nothing;
 
 insert into stores (id, code, name, position) values
@@ -624,50 +545,48 @@ create unique index if not exists store_orders_store_date_uniq
 create index if not exists store_orders_delivery_idx
   on store_orders (delivery_date desc);
 
--- Номера отчётов-отгрузок (Otpremnica): формат «год-номер», сквозная нумерация
--- с 843 для действующих и будущих заказов. Старые документы сохраняют прежний номер.
+-- Номера отчётов-отгрузок (Otpremnica): номер порядковый внутри года.
+-- Год берётся из delivery_date; уникальна пара (doc_year, doc_no).
 alter table store_orders add column if not exists doc_no bigint;
-create unique index if not exists store_orders_doc_no_uniq
-  on store_orders (doc_no) where doc_no is not null;
-create sequence if not exists store_order_doc_seq start with 843 minvalue 1;
+alter table store_orders add column if not exists doc_year int;
+
+create table if not exists doc_counters (
+  doc_year   int primary key,
+  last_no    bigint not null default 0,
+  updated_at timestamptz not null default now()
+);
+
+drop index if exists store_orders_doc_no_uniq;
+create unique index if not exists store_orders_doc_year_no_uniq
+  on store_orders (doc_year, doc_no) where doc_no is not null;
+
+-- Бэкфилл года для уже выданных номеров и счётчиков по годам.
+update store_orders
+   set doc_year = extract(year from delivery_date)::int
+ where doc_no is not null and doc_year is null;
+
+insert into doc_counters (doc_year, last_no)
+select doc_year, max(doc_no)
+  from store_orders
+ where doc_year is not null and doc_no is not null
+ group by doc_year
+on conflict (doc_year) do update
+  set last_no = greatest(doc_counters.last_no, excluded.last_no),
+      updated_at = now();
+
+-- Старая глобальная последовательность больше не используется.
+drop sequence if exists store_order_doc_seq;
 
 -- Ручной порядок строк в отчёте-отгрузке: массив id фасовок карты (prod_packagings).
 -- Пусто/null — обычный порядок каталога; меняется перетаскиванием в отчёте.
 alter table store_orders add column if not exists line_order int[];
 
--- Одноразовый бэкфилл: заказы на сегодня и вперёд получают номер в стабильном
--- порядке (дата доставки, точка, id), чтобы уже существующие отчёты не менялись.
-do $$
-declare r record;
-begin
-  if exists (select 1 from app_migrations where name = 'backfill_doc_no_843') then
-    return;
-  end if;
-
-  for r in
-    select id
-      from store_orders
-     where doc_no is null and delivery_date >= current_date
-     order by delivery_date, store_id, id
-  loop
-    update store_orders set doc_no = nextval('store_order_doc_seq') where id = r.id;
-  end loop;
-
-  insert into app_migrations (name) values ('backfill_doc_no_843')
-  on conflict (name) do nothing;
-end $$;
-
 create table if not exists store_order_items (
   order_id     int not null references store_orders(id) on delete cascade,
-  -- после миграции на карту это prod_packagings.id; у существующих баз id
-  -- переезжает туда же, старый id остаётся в legacy_packaging_id
   packaging_id int not null,
-  legacy_packaging_id int,
   qty          int not null check (qty > 0 and qty <= 999),
   primary key (order_id, packaging_id)
 );
--- старые базы: колонка появится при миграции/переименовании
-alter table store_order_items add column if not exists legacy_packaging_id int;
 
 -- Слепок цен строки заказа на момент наступления даты доставки.
 -- Отчёт-отгрузка и архив читают эти значения, поэтому изменение цен фасовок
@@ -947,8 +866,6 @@ create table if not exists prod_nodes (
 create index if not exists prod_nodes_kind_idx on prod_nodes (kind);
 -- архив вместо удаления: на фасовки ссылается история заказов
 alter table prod_nodes add column if not exists archived boolean not null default false;
-alter table prod_nodes add column if not exists legacy_kind text;
-alter table prod_nodes add column if not exists legacy_id int;
 create index if not exists prod_nodes_archived_idx on prod_nodes (archived);
 
 create table if not exists prod_ops (
@@ -963,8 +880,6 @@ create table if not exists prod_ops (
   position       int not null default 0
 );
 create index if not exists prod_ops_output_idx on prod_ops (output_node_id);
-alter table prod_ops add column if not exists legacy_source text;
-alter table prod_ops add column if not exists legacy_id int;
 -- план выхода операции: сколько нужно получить; выход считается как сумма ингредиентов
 alter table prod_ops add column if not exists plan_qty numeric check (plan_qty is null or plan_qty >= 0);
 alter table prod_ops add column if not exists plan_unit_id int;
@@ -1004,7 +919,6 @@ create table if not exists prod_packagings (
 );
 create index if not exists prod_packagings_node_idx on prod_packagings (node_id);
 alter table prod_packagings add column if not exists archived boolean not null default false;
-alter table prod_packagings add column if not exists legacy_id int;
 alter table prod_packagings add column if not exists title text;
 alter table prod_packagings add column if not exists title_en text;
 alter table prod_packagings add column if not exists title_sr text;
@@ -1068,15 +982,16 @@ create table if not exists map_meta (
 );
 insert into map_meta (id, version) values (1, 1) on conflict (id) do nothing;
 
--- Строки заказов ссылаются на фасовки карты. На старых базах внешний ключ
--- добавляется только после миграции: до неё packaging_id ещё хранит старые id.
+-- Строки заказов ссылаются на фасовки карты. FK добавляем, когда все id уже валидны.
 do $$
 begin
   if not exists (
     select 1 from pg_constraint where conname = 'store_order_items_prod_packaging_fkey'
-  ) and (
-    not exists (select 1 from store_order_items)
-    or exists (select 1 from app_migrations where name = 'legacy_to_map_v1')
+  ) and not exists (
+    select 1
+      from store_order_items i
+      left join prod_packagings pk on pk.id = i.packaging_id
+     where pk.id is null
   ) then
     alter table store_order_items
       add constraint store_order_items_prod_packaging_fkey
@@ -1103,3 +1018,406 @@ create table if not exists qoder_messages (
   created_at timestamptz not null default now()
 );
 create index if not exists qoder_messages_dialog_idx on qoder_messages (dialog_id, id);
+
+-- ---------- Комментарии к таблицам ----------
+-- Идемпотентно: comment on table выполняется при каждом старте и задаёт
+-- человекочитаемое описание таблицы в pg_description (видно в psql и клиентах).
+
+comment on table app_migrations is
+  'Реестр одноразовых миграций и бэкфиллов (rawcat_position_v1, packaging_tare_multi_v1 и др.). Нужен, чтобы изменения данных не повторялись при каждом старте.';
+
+comment on table app_settings is
+  'Настройки CRM в формате JSON по строковому ключу: валюта, срок приёма заказов, транспорт GPT. Кто и когда изменил — в updated_by и updated_at.';
+
+comment on table units is
+  'Базовые единицы измерения: г, мл, шт. У всех base_factor = 1, потому что склад, движения и составы ведутся только в базовых единицах.';
+
+comment on table products is
+  'Складская номенклатура: сырьё и товары. Хранит название, category_id (FK на product_categories), базовую единицу, коэффициенты пересчёта, минимальный остаток, срок годности и признак активности.';
+
+comment on table product_categories is
+  'Справочник категорий складского сырья: название, иконка, цвет, защищённость и порядок. products.category_id — внешний ключ на эту таблицу.';
+
+comment on table product_catalogs is
+  'Справочник каталогов готовой продукции (салаты, супы, заготовки, выпечка и т. п.), на который ссылаются узлы карты производства.';
+
+comment on table product_aliases is
+  'Псевдонимы товаров из накладных: нормализованное написание и исходный текст, привязанные к products.id. Используются для автоматического сопоставления строк документов.';
+
+comment on table stock is
+  'Материализованный текущий остаток и средневзвешенная себестоимость по каждому продукту. Источник истины — movements; stock обновляется через applyMovement, строка может появиться при первом движении.';
+
+comment on table movements is
+  'Журнал движений склада: приход, списание и корректировка. Хранит знаковое количество в базовых единицах, себестоимость, документ-источник (doc_type и doc_id) и автора операции.';
+
+comment on table waybills is
+  'Шапки приходных накладных поставщиков: номер, дата, поставщик, суммы, ставки, статус posted или reversed, фото и сканы документа, данные приёмки и отмены.';
+
+comment on table waybill_items is
+  'Строки приходной накладной в единицах документа: количество, цена без PDV, ставка и сумма налога. На склад количество попадает пересчитанным в базовые единицы.';
+
+comment on table suppliers is
+  'Справочник поставщиков: код, название, юридическое имя, реквизиты PIB, MB и GLN, банковские счета, контакты и заметки. Используется для распознавания продавца в накладных.';
+
+comment on table supplier_invoices is
+  'Оцифрованные документы поставщиков: шапка счёта, реквизиты, суммы и путь к скану. Это документ, а не приход: остатки склада и движения он не меняет.';
+
+comment on table supplier_invoice_items is
+  'Позиции оцифрованного счёта поставщика: название, количество в KG или KOM, цена, скидка, ставка PDV и сумма. Склад и движения не меняет.';
+
+comment on table stores is
+  'Торговые точки (магазины): числовой номер, уникальный код, название, реквизиты, контакты и активность. Удаление мягкое через deleted_at, история сохраняется.';
+
+comment on table users is
+  'Пользователи CRM: логин, scrypt-пароль, роль администратора, привязка к магазину и активность. store_id = null означает офисного пользователя.';
+
+comment on table sessions is
+  'Сессии входа: sha256 токена из cookie mix_session, пользователь, срок действия и user-agent. Сам токен в базе не хранится.';
+
+comment on table delivery_schedule is
+  'Ручные даты доставки, выбранные в календаре. Повторяющиеся дни хранятся отдельно в delivery_schedule_period и в эту таблицу не материализуются.';
+
+comment on table delivery_schedule_period is
+  'Правило повторяющихся доставок: день недели или число месяца и признак включения. По нему календарь вычисляет будущие даты, не записывая их в delivery_schedule.';
+
+comment on table store_orders is
+  'Заказы магазинов: один заказ на пару store_id и delivery_date. Хранит комментарий, номер Otpremnica (doc_year + doc_no) и ручной порядок строк line_order.';
+
+comment on table doc_counters is
+  'Счётчики номеров Otpremnica по годам: last_no — последний выданный номер внутри года. Сброс начинается с 1 для каждого нового года.';
+
+comment on table store_order_items is
+  'Позиции заказа магазина: фасовка карты и целое количество упаковок, а также слепки цены, себестоимости, названия и единицы на дату доставки.';
+
+comment on table store_delivery_writeoffs is
+  'Факты ручного списания сырья по доставке: дата, магазин (null — все магазины даты), стоимость, число позиций, автор и заметка. Повтор на ту же дату и магазин запрещён.';
+
+comment on table prod_nodes is
+  'Узлы карты производства: сырьё (product), заготовка или состояние (state) и готовое блюдо (output). Хранит название, единицу, каталог, выход, цену, позицию и признак архива.';
+
+comment on table prod_ops is
+  'Операции карты производства: техкарты и заготовки. Хранит название, выход после обработки, план партии, человекочасы и узел-результат.';
+
+comment on table prod_op_inputs is
+  'Входы операции карты: узел-компонент, количество, участие в массе и потери на связи. Пара op_id и node_id уникальна.';
+
+comment on table prod_packagings is
+  'Фасовки узлов карты: продаваемый SKU с весом, минимальным заказом, ценой, базой цены, себестоимостью, доступностью и архивом. Именно этот id используется в заказах и отчётах.';
+
+comment on table prod_packaging_tare is
+  'Тара фасовки: связь фасовки карты с несколькими складскими позициями категории упаковка. Пара packaging_id и product_id уникальна.';
+
+comment on table map_batches is
+  'История выпусков карты производства: операция и результат по именам, количество, единица, себестоимость и статус posted или reversed. Отдельных op_id и node_id нет.';
+
+comment on table map_batch_items is
+  'Снимок сырья, списанного на выпуск карты: продукт, количество и себестоимость на момент выпуска. Используется для истории и отмены партии.';
+
+comment on table map_meta is
+  'Служебная строка карты производства: версия для оптимистичной блокировки одновременных сохранений. Всегда одна запись с id = 1.';
+
+comment on table audit_log is
+  'Журнал действий: кто, что и когда сделал, сущность и entity_id, заголовок и JSON-детали. Ссылка на сущность полиморфная, без внешнего ключа.';
+
+comment on table qoder_dialogs is
+  'Диалоги чата с Qoder: принадлежат пользователю, имеют заголовок и время создания и обновления.';
+
+comment on table qoder_messages is
+  'Сообщения диалогов Qoder: роль user или assistant, текст и время создания.';
+
+-- ---------- Комментарии к колонкам (mixmarkt_crm) ----------
+-- Идемпотентно: описания обновляются при каждом старте.
+comment on column app_migrations.name is 'Имя одноразовой миграции или бэкфилла.';
+comment on column app_migrations.applied_at is 'Когда миграция была применена.';
+comment on column app_settings.key is 'Ключ настройки: currency, delivery или gpt.';
+comment on column app_settings.value is 'Значение настройки в JSON.';
+comment on column app_settings.updated_at is 'Когда настройка последний раз изменялась.';
+comment on column app_settings.updated_by is 'Логин того, кто изменил настройку.';
+comment on column audit_log.id is 'Первичный ключ записи журнала.';
+comment on column audit_log.user_id is 'Пользователь, совершивший действие (users.id).';
+comment on column audit_log.user_login is 'Логин пользователя на момент действия.';
+comment on column audit_log.action is 'Тип действия: create, update, delete, post, reverse, adjust, login и т. п.';
+comment on column audit_log.entity is 'Сущность журнала: product, waybill, store_order, production_map и т. п.';
+comment on column audit_log.entity_id is 'Идентификатор сущности в её таблице, хранится текстом.';
+comment on column audit_log.title is 'Человекочитаемое описание события.';
+comment on column audit_log.details is 'Детали события в JSON: изменённые поля и параметры.';
+comment on column audit_log.created_at is 'Дата и время события.';
+comment on column audit_log.user_name is 'ФИО пользователя на момент действия.';
+comment on column delivery_schedule.delivery_date is 'Ручная дата доставки.';
+comment on column delivery_schedule.created_at is 'Когда дата добавлена в календарь.';
+comment on column delivery_schedule.created_by is 'Кто добавил дату (users.id).';
+comment on column delivery_schedule_period.kind is 'Тип правила: weekday или monthday.';
+comment on column delivery_schedule_period.value is 'День недели 1–7 или число месяца 1–31.';
+comment on column delivery_schedule_period.enabled is 'Включено ли правило в календаре.';
+comment on column map_batch_items.id is 'Первичный ключ строки выпуска.';
+comment on column map_batch_items.batch_id is 'Выпуск карты (map_batches.id).';
+comment on column map_batch_items.product_id is 'Списанный продукт (products.id).';
+comment on column map_batch_items.qty is 'Количество списания в базовых единицах.';
+comment on column map_batch_items.unit_cost is 'Себестоимость базовой единицы на момент выпуска.';
+comment on column map_batches.id is 'Первичный ключ выпуска карты.';
+comment on column map_batches.op_name is 'Имя операции на момент выпуска (снимок, не id).';
+comment on column map_batches.output_name is 'Имя результата операции на момент выпуска.';
+comment on column map_batches.qty is 'Выпущенное количество.';
+comment on column map_batches.unit_id is 'Единица выпуска (units.id).';
+comment on column map_batches.cost_total is 'Общая себестоимость сырья выпуска.';
+comment on column map_batches.status is 'Статус выпуска: posted или reversed.';
+comment on column map_batches.note is 'Заметка к выпуску.';
+comment on column map_batches.created_at is 'Когда выпуск проведён.';
+comment on column map_batches.created_by is 'Пользователь, выпустивший партию (users.id).';
+comment on column map_batches.created_login is 'Логин автора выпуска.';
+comment on column map_meta.id is 'Служебная строка карты, всегда 1.';
+comment on column map_meta.version is 'Версия карты для оптимистичной блокировки сохранений.';
+comment on column map_meta.updated_at is 'Когда карта последний раз сохранялась.';
+comment on column movements.id is 'Первичный ключ движения склада.';
+comment on column movements.product_id is 'Продукт движения (products.id).';
+comment on column movements.type is 'Тип движения: receipt, writeoff или adjustment.';
+comment on column movements.qty is 'Изменение остатка со знаком, в базовых единицах.';
+comment on column movements.unit_cost is 'Себестоимость базовой единицы для движения.';
+comment on column movements.doc_type is 'Тип документа-источника: waybill, map_batch, map_ship, store_delivery или manual.';
+comment on column movements.doc_id is 'id документа-источника; полиморфная ссылка без внешнего ключа.';
+comment on column movements.comment is 'Комментарий к движению.';
+comment on column movements.created_at is 'Когда движение записано.';
+comment on column movements.user_id is 'Автор движения (users.id).';
+comment on column movements.user_login is 'Логин автора движения.';
+comment on column prod_nodes.id is 'Первичный ключ узла карты.';
+comment on column prod_nodes.kind is 'Тип узла: product (сырьё), state (заготовка) или output (блюдо).';
+comment on column prod_nodes.ref_id is 'products.id для kind=product; для состояний и блюд null.';
+comment on column prod_nodes.name is 'Название узла или результата.';
+comment on column prod_nodes.unit_id is 'Базовая единица узла (units.id).';
+comment on column prod_nodes.x is 'Координата X на карте производства.';
+comment on column prod_nodes.y is 'Координата Y на карте производства.';
+comment on column prod_nodes.position is 'Порядок узла в списке и раскладке.';
+comment on column prod_nodes.portion_qty is 'Выход на порцию или размер партии в базовой единице.';
+comment on column prod_nodes.note is 'Заметка к узлу.';
+comment on column prod_nodes.name_en is 'Английское название.';
+comment on column prod_nodes.name_sr is 'Сербское название.';
+comment on column prod_nodes.catalog_id is 'Каталог готовой продукции (product_catalogs.id).';
+comment on column prod_nodes.price is 'Базовая цена блюда.';
+comment on column prod_nodes.archived is 'Признак архивного узла; история заказов сохраняется.';
+comment on column prod_op_inputs.id is 'Первичный ключ входа операции.';
+comment on column prod_op_inputs.op_id is 'Операция (prod_ops.id).';
+comment on column prod_op_inputs.node_id is 'Входной узел карты (prod_nodes.id).';
+comment on column prod_op_inputs.qty is 'Количество входа в базовой единице.';
+comment on column prod_op_inputs.in_mass is 'Участвует ли вход в проверку массы партии.';
+comment on column prod_op_inputs.loss_pct is 'Потери на связи в процентах.';
+comment on column prod_ops.id is 'Первичный ключ операции.';
+comment on column prod_ops.name is 'Название операции.';
+comment on column prod_ops.yield_pct is 'Выход после обработки в процентах; в текущей формуле не используется.';
+comment on column prod_ops.labor_hours is 'Человекочасы операции.';
+comment on column prod_ops.output_node_id is 'Узел-результат операции (prod_nodes.id).';
+comment on column prod_ops.note is 'Заметка к операции.';
+comment on column prod_ops.x is 'Координата X на карте производства.';
+comment on column prod_ops.y is 'Координата Y на карте производства.';
+comment on column prod_ops.position is 'Порядок операции в списке и раскладке.';
+comment on column prod_ops.plan_qty is 'План выхода партии.';
+comment on column prod_ops.plan_unit_id is 'Единица плана партии (units.id).';
+comment on column prod_packaging_tare.packaging_id is 'Фасовка карты (prod_packagings.id).';
+comment on column prod_packaging_tare.product_id is 'Складская позиция тары (products.id).';
+comment on column prod_packaging_tare.position is 'Порядок тары в списке.';
+comment on column prod_packagings.id is 'Первичный ключ фасовки карты.';
+comment on column prod_packagings.node_id is 'Узел карты (prod_nodes.id).';
+comment on column prod_packagings.name is 'Внутреннее название фасовки, например 1000 г.';
+comment on column prod_packagings.qty_base is 'Вес, объём или количество одной упаковки в базовой единице.';
+comment on column prod_packagings.min_order is 'Минимальный заказ в упаковках.';
+comment on column prod_packagings.is_default is 'Фасовка по умолчанию для узла.';
+comment on column prod_packagings.price is 'Продажная цена.';
+comment on column prod_packagings.price_basis is 'База цены: unit, portion или piece.';
+comment on column prod_packagings.cost is 'Внутренняя себестоимость.';
+comment on column prod_packagings.available is 'Доступна ли фасовка к заказу магазинами.';
+comment on column prod_packagings.position is 'Порядок фасовки в списке.';
+comment on column prod_packagings.archived is 'Признак архивной фасовки.';
+comment on column prod_packagings.title is 'Своё название фасовки для продажи.';
+comment on column prod_packagings.title_en is 'Английское название фасовки.';
+comment on column prod_packagings.title_sr is 'Сербское название фасовки.';
+comment on column product_aliases.id is 'Первичный ключ псевдонима.';
+comment on column product_aliases.product_id is 'Продукт, к которому привязан псевдоним (products.id).';
+comment on column product_aliases.alias is 'Нормализованное написание для поиска; уникально.';
+comment on column product_aliases.alias_raw is 'Исходное написание из документа.';
+comment on column product_aliases.source is 'Источник псевдонима: waybill или manual.';
+comment on column product_aliases.created_at is 'Когда псевдоним добавлен.';
+comment on column product_catalogs.id is 'Первичный ключ каталога готовой продукции.';
+comment on column product_catalogs.name is 'Название каталога.';
+comment on column product_catalogs.position is 'Порядок каталога в интерфейсе.';
+comment on column product_catalogs.icon is 'Иконка каталога.';
+comment on column product_catalogs.color is 'Фоновый цвет каталога.';
+comment on column product_catalogs.protected is 'Системный каталог, который нельзя удалить.';
+comment on column product_categories.id is 'Первичный ключ категории сырья.';
+comment on column product_categories.name is 'Название категории.';
+comment on column product_categories.icon is 'Иконка категории.';
+comment on column product_categories.color is 'Фоновый цвет категории.';
+comment on column product_categories.protected is 'Системная категория, которую нельзя удалить.';
+comment on column product_categories.position is 'Порядок категории в интерфейсе.';
+comment on column products.id is 'Первичный ключ складской позиции.';
+comment on column products.name is 'Название позиции; уникально.';
+comment on column products.unit_id is 'Базовая единица хранения (units.id).';
+comment on column products.min_stock is 'Минимальный остаток в базовых единицах.';
+comment on column products.active is 'Признак активной позиции.';
+comment on column products.created_at is 'Когда позиция создана.';
+comment on column products.g_per_pcs is 'Граммов в одной штуке.';
+comment on column products.ml_per_pcs is 'Миллилитров в одной штуке.';
+comment on column products.g_per_ml is 'Граммов в одном миллилитре (плотность).';
+comment on column products.shelf_life_days is 'Срок годности в днях.';
+comment on column products.created_by is 'Кто создал позицию (users.id).';
+comment on column products.updated_by is 'Кто изменил позицию (users.id).';
+comment on column products.category_id is 'Категория сырья (product_categories.id).';
+comment on column qoder_dialogs.id is 'Первичный ключ диалога Qoder.';
+comment on column qoder_dialogs.user_id is 'Владелец диалога (users.id).';
+comment on column qoder_dialogs.title is 'Заголовок диалога.';
+comment on column qoder_dialogs.created_at is 'Когда диалог создан.';
+comment on column qoder_dialogs.updated_at is 'Когда диалог последний раз обновлялся.';
+comment on column qoder_messages.id is 'Первичный ключ сообщения.';
+comment on column qoder_messages.dialog_id is 'Диалог (qoder_dialogs.id).';
+comment on column qoder_messages.role is 'Роль автора сообщения: user или assistant.';
+comment on column qoder_messages.content is 'Текст сообщения.';
+comment on column qoder_messages.created_at is 'Когда сообщение создано.';
+comment on column sessions.token_hash is 'sha256 токена сессии; первичный ключ.';
+comment on column sessions.user_id is 'Пользователь сессии (users.id).';
+comment on column sessions.created_at is 'Когда сессия создана.';
+comment on column sessions.expires_at is 'Срок действия сессии.';
+comment on column sessions.user_agent is 'User-Agent входа.';
+comment on column stock.product_id is 'Продукт (products.id); первичный ключ.';
+comment on column stock.qty is 'Текущий остаток в базовых единицах.';
+comment on column stock.avg_cost is 'Средневзвешенная себестоимость.';
+comment on column stock.updated_at is 'Когда остаток последний раз менялся.';
+comment on column store_delivery_writeoffs.id is 'Первичный ключ списания по доставке.';
+comment on column store_delivery_writeoffs.delivery_date is 'Дата доставки.';
+comment on column store_delivery_writeoffs.store_id is 'Магазин (stores.id); null — все магазины даты.';
+comment on column store_delivery_writeoffs.cost_total is 'Стоимость списанного сырья.';
+comment on column store_delivery_writeoffs.positions is 'Количество позиций списания.';
+comment on column store_delivery_writeoffs.note is 'Заметка к списанию.';
+comment on column store_delivery_writeoffs.created_at is 'Когда списание проведено.';
+comment on column store_delivery_writeoffs.created_by is 'Автор списания (users.id).';
+comment on column store_delivery_writeoffs.created_login is 'Логин автора списания.';
+comment on column store_order_items.order_id is 'Заказ (store_orders.id); часть составного PK.';
+comment on column store_order_items.qty is 'Количество упаковок в заказе.';
+comment on column store_order_items.packaging_id is 'Фасовка карты (prod_packagings.id); часть составного PK.';
+comment on column store_order_items.price_snapshot is 'Цена строки на дату доставки.';
+comment on column store_order_items.cost_snapshot is 'Себестоимость строки на дату доставки.';
+comment on column store_order_items.basis_snapshot is 'База цены на дату доставки.';
+comment on column store_order_items.snapshot_at is 'Когда снят слепок строки.';
+comment on column store_order_items.name_snapshot is 'Название на дату доставки.';
+comment on column store_order_items.name_en_snapshot is 'Английское название на дату доставки.';
+comment on column store_order_items.name_sr_snapshot is 'Сербское название на дату доставки.';
+comment on column store_order_items.qty_base_snapshot is 'Вес или объём упаковки на дату доставки.';
+comment on column store_order_items.dimension_snapshot is 'Размерность единицы на дату доставки.';
+comment on column store_orders.id is 'Первичный ключ заказа.';
+comment on column store_orders.store_id is 'Магазин (stores.id).';
+comment on column store_orders.delivery_date is 'Дата доставки; вместе с store_id уникальна.';
+comment on column store_orders.comment is 'Комментарий магазина к заказу.';
+comment on column store_orders.created_by is 'Кто создал заказ (users.id).';
+comment on column store_orders.created_at is 'Когда заказ создан.';
+comment on column store_orders.updated_by is 'Кто изменил заказ (users.id).';
+comment on column store_orders.updated_at is 'Когда заказ последний раз менялся.';
+comment on column store_orders.doc_no is 'Порядковый номер Otpremnica внутри года.';
+comment on column store_orders.doc_year is 'Год номера Otpremnica, берётся из delivery_date.';
+comment on column store_orders.line_order is 'Ручной порядок id фасовок в отчёте.';
+comment on column doc_counters.doc_year is 'Год, к которому относится счётчик.';
+comment on column doc_counters.last_no is 'Последний выданный номер внутри года.';
+comment on column doc_counters.updated_at is 'Когда счётчик последний раз увеличивался.';
+comment on column stores.id is 'Номер магазина; первичный ключ.';
+comment on column stores.code is 'Уникальный код магазина, например Mix 38103.';
+comment on column stores.name is 'Название магазина.';
+comment on column stores.active is 'Признак активного магазина.';
+comment on column stores.position is 'Порядок магазина в интерфейсе.';
+comment on column stores.address is 'Адрес магазина.';
+comment on column stores.phone is 'Телефон.';
+comment on column stores.email is 'Email.';
+comment on column stores.contact_person is 'Контактное лицо.';
+comment on column stores.opening_hours is 'Часы работы.';
+comment on column stores.note is 'Заметка.';
+comment on column stores.created_at is 'Когда магазин создан.';
+comment on column stores.updated_at is 'Когда карточка магазина изменена.';
+comment on column stores.created_by is 'Кто создал (users.id).';
+comment on column stores.updated_by is 'Кто изменил (users.id).';
+comment on column stores.pib is 'PIB магазина.';
+comment on column stores.mbr is 'MB или MBR магазина.';
+comment on column stores.account_no is 'Банковский счёт магазина.';
+comment on column stores.deleted_at is 'Мягкое удаление: магазин скрыт, история сохранена.';
+comment on column supplier_invoice_items.id is 'Первичный ключ строки счёта.';
+comment on column supplier_invoice_items.invoice_id is 'Счёт поставщика (supplier_invoices.id).';
+comment on column supplier_invoice_items.position is 'Номер строки в счёте.';
+comment on column supplier_invoice_items.ident is 'Артикул или штрихкод позиции.';
+comment on column supplier_invoice_items.name is 'Название позиции.';
+comment on column supplier_invoice_items.qty is 'Количество.';
+comment on column supplier_invoice_items.unit is 'Единица количества: KG или KOM.';
+comment on column supplier_invoice_items.price is 'Цена.';
+comment on column supplier_invoice_items.discount_pct is 'Скидка в процентах.';
+comment on column supplier_invoice_items.vat_rate is 'Ставка PDV в процентах.';
+comment on column supplier_invoice_items.net is 'Сумма строки без PDV.';
+comment on column supplier_invoices.id is 'Первичный ключ счёта поставщика.';
+comment on column supplier_invoices.supplier_id is 'Поставщик (suppliers.id).';
+comment on column supplier_invoices.number is 'Номер документа.';
+comment on column supplier_invoices.doc_date is 'Дата документа.';
+comment on column supplier_invoices.currency is 'Валюта документа.';
+comment on column supplier_invoices.recipient is 'Получатель из документа.';
+comment on column supplier_invoices.buyer_code is 'Код покупателя.';
+comment on column supplier_invoices.order_ref is 'Ссылка на заказ поставщику.';
+comment on column supplier_invoices.note is 'Заметка.';
+comment on column supplier_invoices.total_net is 'Сумма без PDV.';
+comment on column supplier_invoices.total_vat is 'Сумма PDV.';
+comment on column supplier_invoices.total_gross is 'Сумма с PDV.';
+comment on column supplier_invoices.source_file is 'Путь к скану документа.';
+comment on column supplier_invoices.created_at is 'Когда счёт оцифрован.';
+comment on column suppliers.id is 'Первичный ключ поставщика.';
+comment on column suppliers.code is 'Уникальный код поставщика.';
+comment on column suppliers.name is 'Краткое название.';
+comment on column suppliers.legal_name is 'Юридическое название.';
+comment on column suppliers.address is 'Адрес.';
+comment on column suppliers.pib is 'PIB поставщика.';
+comment on column suppliers.mb is 'MB поставщика.';
+comment on column suppliers.phone is 'Телефон.';
+comment on column suppliers.fax is 'Факс.';
+comment on column suppliers.email is 'Email.';
+comment on column suppliers.accounts is 'Банковские счета в JSON.';
+comment on column suppliers.gln is 'GLN поставщика.';
+comment on column suppliers.contact is 'Контактное лицо.';
+comment on column suppliers.note is 'Заметка.';
+comment on column suppliers.created_at is 'Когда поставщик добавлен.';
+comment on column units.id is 'Первичный ключ единицы.';
+comment on column units.code is 'Код единицы: г, мл или шт.';
+comment on column units.name is 'Название единицы.';
+comment on column units.dimension is 'Размерность: mass, volume или count.';
+comment on column units.base_factor is 'Коэффициент к базовой единице; всегда 1.';
+comment on column users.id is 'Первичный ключ пользователя.';
+comment on column users.login is 'Логин; уникален без учёта регистра.';
+comment on column users.password_hash is 'scrypt-хеш пароля.';
+comment on column users.is_admin is 'Признак администратора.';
+comment on column users.active is 'Признак активного пользователя.';
+comment on column users.created_at is 'Когда пользователь создан.';
+comment on column users.updated_at is 'Когда пользователь изменён.';
+comment on column users.last_login_at is 'Последний вход.';
+comment on column users.full_name is 'ФИО для подписи в журнале.';
+comment on column users.store_id is 'Магазин пользователя (stores.id); null — офис.';
+comment on column waybill_items.id is 'Первичный ключ строки накладной.';
+comment on column waybill_items.waybill_id is 'Накладная (waybills.id).';
+comment on column waybill_items.product_id is 'Продукт (products.id).';
+comment on column waybill_items.qty is 'Количество в единице документа.';
+comment on column waybill_items.unit_id is 'Единица документа (units.id).';
+comment on column waybill_items.price is 'Цена без PDV за единицу документа.';
+comment on column waybill_items.vat_rate is 'Ставка PDV в процентах.';
+comment on column waybill_items.vat_amount is 'Сумма PDV по строке.';
+comment on column waybills.id is 'Первичный ключ накладной.';
+comment on column waybills.number is 'Номер накладной; уникален среди неотменённых.';
+comment on column waybills.supplier is 'Название поставщика текстом.';
+comment on column waybills.doc_date is 'Дата документа.';
+comment on column waybills.created_at is 'Когда накладная создана.';
+comment on column waybills.file_name is 'Имя загруженного файла.';
+comment on column waybills.stored_file is 'Имя файла на диске (кэш).';
+comment on column waybills.status is 'Статус: posted или reversed.';
+comment on column waybills.supplier_pib is 'PIB поставщика.';
+comment on column waybills.currency is 'Валюта документа.';
+comment on column waybills.total_net is 'Сумма без PDV по строкам.';
+comment on column waybills.total_vat is 'PDV по строкам.';
+comment on column waybills.total_gross is 'Сумма с PDV по строкам.';
+comment on column waybills.doc_total_net is 'Напечатанная в документе сумма без PDV.';
+comment on column waybills.doc_total_vat is 'Напечатанный в документе PDV.';
+comment on column waybills.doc_total_gross is 'Напечатанная в документе сумма с PDV.';
+comment on column waybills.file_data is 'Байты основного файла накладной.';
+comment on column waybills.file_mime is 'MIME-тип основного файла.';
+comment on column waybills.extra_files is 'Дополнительные листы накладной в JSON/base64.';
+comment on column waybills.accepted_by is 'Кто принял накладную (users.id).';
+comment on column waybills.accepted_login is 'Логин принявшего.';
+comment on column waybills.accepted_at is 'Когда накладная принята.';
+comment on column waybills.reversed_by is 'Кто отменил накладную (users.id).';
+comment on column waybills.reversed_login is 'Логин отменившего.';
+comment on column waybills.reversed_at is 'Когда накладная отменена.';

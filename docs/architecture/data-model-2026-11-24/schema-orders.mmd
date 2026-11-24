@@ -1,0 +1,84 @@
+erDiagram
+  STORES ||--o{ STORE_ORDERS : "store_id"
+  STORE_ORDERS ||--o{ STORE_ORDER_ITEMS : "order_id"
+  PROD_PACKAGINGS ||--o{ STORE_ORDER_ITEMS : "packaging_id"
+  STORES ||--o{ STORE_DELIVERY_WRITEOFFS : "store_id"
+  USERS ||--o{ STORE_ORDERS : "created_by / updated_by"
+  USERS ||--o{ STORE_DELIVERY_WRITEOFFS : "created_by (без FK)"
+
+  STORES {
+    int id PK "номер точки 103…110"
+    text code UK "Mix 38103"
+    text name
+    text pib
+    text mbr
+    text account_no
+  }
+
+  DELIVERY_SCHEDULE {
+    date delivery_date PK "только ручные даты"
+    int created_by FK
+  }
+
+  DELIVERY_SCHEDULE_PERIOD {
+    text kind PK "weekday | monthday"
+    int value PK "1…7 | 1…31"
+    boolean enabled
+  }
+
+  STORE_ORDERS {
+    int id PK
+    int store_id FK
+    date delivery_date
+    text comment
+    bigint doc_no UK "номер Otpremnica внутри года"
+    int doc_year UK "год номера, из delivery_date"
+    int_array line_order "ручной порядок строк"
+    int created_by FK
+    int updated_by FK
+    timestamptz created_at
+    timestamptz updated_at
+  }
+
+  STORE_ORDER_ITEMS {
+    int order_id PK
+    int packaging_id PK "prod_packagings.id"
+    int qty "1…999 упаковок"
+    numeric price_snapshot
+    numeric cost_snapshot
+    text basis_snapshot
+    text name_snapshot
+    text name_en_snapshot
+    text name_sr_snapshot
+    numeric qty_base_snapshot
+    text dimension_snapshot
+    timestamptz snapshot_at
+  }
+
+  STORE_DELIVERY_WRITEOFFS {
+    bigint id PK
+    date delivery_date
+    int store_id FK "null = все магазины"
+    numeric cost_total
+    int positions
+    text note
+    int created_by "без FK"
+    text created_login
+  }
+
+  PROD_PACKAGINGS {
+    int id PK "id-пространство фасовок карты"
+    int node_id
+    numeric qty_base
+    numeric price
+    numeric cost
+    boolean available
+    boolean archived
+  }
+
+  USERS {
+    int id PK
+    text login UK
+    int store_id FK
+    boolean is_admin
+  }

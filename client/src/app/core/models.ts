@@ -11,7 +11,9 @@ export interface Product {
   name: string;
   /** Альтернативные названия для накладных и поиска (без учёта регистра). */
   aliases?: string[];
-  category: string;
+  categoryId: number;
+  /** Имя категории — только для отображения, приходит join-ом из справочника. */
+  categoryName: string;
   unitId: number;
   unitCode: string;
   dimension: string;
@@ -62,7 +64,8 @@ export interface ProductSupplier {
 export interface StockRow {
   productId: number;
   name: string;
-  category: string;
+  categoryId: number;
+  categoryName: string;
   unitCode: string;
   qty: number;
   avgCost: number;
@@ -153,7 +156,7 @@ export interface ImportItem {
   } | null;
   match: { productId: number; name: string; unitCode: string; via: 'name' | 'alias' | 'llm' } | null;
   candidates: { productId: number; name: string; sim: number }[];
-  newHint: { name: string; category: string } | null;
+  newHint: { name: string; categoryId: number } | null;
 }
 
 export interface ImportParseResult {

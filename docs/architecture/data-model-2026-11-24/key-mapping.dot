@@ -1,0 +1,116 @@
+digraph key_mapping {
+  graph [
+    rankdir=TB,
+    fontname="Segoe UI",
+    fontsize=12,
+    nodesep=0.35,
+    ranksep=0.55,
+    splines=true,
+    bgcolor="white",
+    pad="0.3"
+  ];
+  node [
+    shape=record,
+    style="rounded,filled",
+    fontname="Segoe UI",
+    fontsize=9,
+    color="#9aa0a6",
+    fillcolor="#f6f7f9"
+  ];
+  edge [
+    fontname="Segoe UI",
+    fontsize=8,
+    color="#5f6368",
+    fontcolor="#3c4043"
+  ];
+
+  subgraph cluster_identity {
+    label="Идентификаторы и владельцы";
+    fontsize=10;
+    color="#c5cae9";
+    style="rounded,dashed";
+    k_stores [label="{stores|id (PK, 103…110)|code (UK: Mix 38103)}", fillcolor="#e8f0fe"];
+    k_users [label="{users|id (PK)|login (UK, lower)|store_id → stores}", fillcolor="#e8f0fe"];
+    k_sessions [label="{sessions|token_hash (PK)|user_id → users}", fillcolor="#e8f0fe"];
+  }
+
+  subgraph cluster_reference {
+    label="Справочники и склад";
+    fontsize=10;
+    color="#80cbc4";
+    style="rounded,dashed";
+    k_products [label="{products|id (PK)|name (UK)|category_id → product_categories.id}", fillcolor="#e0f2f1"];
+    k_aliases [label="{product_aliases|id (PK)|product_id → products|alias (UK)}", fillcolor="#e0f2f1"];
+    k_stock [label="{stock|product_id (PK → products)}", fillcolor="#e0f2f1"];
+    k_movements [label="{movements|id (PK)|product_id → products|doc_type + doc_id}", fillcolor="#e0f2f1"];
+    k_suppliers [label="{suppliers|id (PK)|code (UK)|pib · mb · gln}", fillcolor="#e0f2f1"];
+    k_invoices [label="{supplier_invoices|id (PK)|supplier_id → suppliers|(supplier_id, number) UK}", fillcolor="#e0f2f1"];
+  }
+
+  subgraph cluster_map {
+    label="Карта производства";
+    fontsize=10;
+    color="#90a4ae";
+    style="rounded,dashed";
+    k_nodes [label="{prod_nodes|id (PK)|kind|ref_id → products (soft)}", fillcolor="#eceff1"];
+    k_ops [label="{prod_ops|id (PK)|output_node_id → prod_nodes (soft)}", fillcolor="#eceff1"];
+    k_inputs [label="{prod_op_inputs|id (PK)|op_id → prod_ops|node_id → prod_nodes|UK(op_id,node_id)}", fillcolor="#eceff1"];
+    k_packs [label="{prod_packagings|id (PK)|node_id → prod_nodes (soft)|default UK(node_id)}", fillcolor="#eceff1"];
+    k_tare [label="{prod_packaging_tare|(packaging_id, product_id) PK}", fillcolor="#eceff1"];
+    k_batches [label="{map_batches|id (PK)|op_name · output_name — без id}", fillcolor="#eceff1"];
+    k_batch_items [label="{map_batch_items|id (PK)|batch_id (soft)|product_id (soft)}", fillcolor="#eceff1"];
+  }
+
+  subgraph cluster_orders {
+    label="Заказы и документы";
+    fontsize=10;
+    color="#ffcc80";
+    style="rounded,dashed";
+    k_orders [label="{store_orders|id (PK)|(store_id, delivery_date) UK|doc_year + doc_no (UK)|line_order int[]}", fillcolor="#fff3e0"];
+    k_items [label="{store_order_items|(order_id, packaging_id) PK|snapshots}", fillcolor="#fff3e0"];
+    k_waybills [label="{waybills|id (PK)|btrim(number) UK, где status != reversed}", fillcolor="#fff3e0"];
+    k_waybill_items [label="{waybill_items|id (PK)|waybill_id → waybills|product_id → products}", fillcolor="#fff3e0"];
+    k_writeoffs [label="{store_delivery_writeoffs|id (PK)|(delivery_date, coalesce(store_id,0)) UK}", fillcolor="#fff3e0"];
+  }
+
+  subgraph cluster_sheets {
+    label="mixmarkt_sheets (другая БД)";
+    fontsize=10;
+    color="#ce93d8";
+    style="rounded,dashed";
+    k_sheet [label="{google_sheets|spreadsheet_id (PK)}", fillcolor="#f3e5f5"];
+    k_tabs [label="{google_sheet_tabs|(spreadsheet_id, position) PK|rows jsonb|links jsonb}", fillcolor="#f3e5f5"];
+    k_manual [label="{google_sheet_manual_links|(spreadsheet_id, tab_name, row_name) PK|packaging_id}", fillcolor="#f3e5f5"];
+  }
+
+  k_stores -> k_users [label="users.store_id"];
+  k_users -> k_sessions [label="sessions.user_id"];
+  k_users -> k_movements [label="movements.user_id"];
+  k_products -> k_aliases [label="product_id"];
+  k_products -> k_stock [label="product_id"];
+  k_products -> k_movements [label="product_id"];
+  k_products -> k_nodes [label="ref_id, kind=product\n(soft)"];
+  k_products -> k_tare [label="product_id (FK)"];
+  k_products -> k_batch_items [label="product_id (soft)"];
+  k_suppliers -> k_invoices [label="supplier_id"];
+  k_invoices -> k_waybills [label="supplier name/PIB\nв шапке, не FK"];
+  k_waybills -> k_waybill_items [label="waybill_id"];
+  k_waybills -> k_products [label="waybill_items.product_id"];
+  k_movements -> k_waybills [label="doc_type=waybill\ndoc_id=waybills.id", style=dashed];
+  k_movements -> k_batches [label="doc_type=map_batch\ndoc_id=map_batches.id", style=dashed];
+  k_movements -> k_writeoffs [label="doc_type=store_delivery\ndoc_id=writeoffs.id", style=dashed];
+  k_nodes -> k_ops [label="output_node_id (soft)"];
+  k_ops -> k_inputs [label="op_id (soft)"];
+  k_nodes -> k_inputs [label="node_id (soft)"];
+  k_nodes -> k_packs [label="node_id (soft)"];
+  k_packs -> k_tare [label="packaging_id (FK)"];
+  k_ops -> k_batches [label="имя операции\n(нет id)", style=dashed];
+  k_batches -> k_batch_items [label="batch_id (soft)"];
+  k_stores -> k_orders [label="store_id"];
+  k_orders -> k_items [label="order_id"];
+  k_packs -> k_items [label="packaging_id"];
+  k_stores -> k_writeoffs [label="store_id"];
+  k_sheet -> k_tabs [label="spreadsheet_id"];
+  k_tabs -> k_packs [label="links[] id\n(кросс-БД, без FK)", style=dashed];
+  k_manual -> k_packs [label="packaging_id\n(кросс-БД, без FK)", style=dashed];
+}

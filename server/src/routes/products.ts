@@ -3,12 +3,14 @@ import { pool, tx } from '../db';
 import { ApiError, reqStr, reqNum, optNum, wrap, aiSource } from '../http';
 import { assertBaseUnit } from '../services/expansion';
 import { assertNameFree } from '../services/name-check';
+import { assertCategoryId, defaultCategoryId } from '../services/categories';
 import { auditTx, diff } from '../services/audit';
 
 export const productsRouter = Router();
 
 const SQL_LIST = `
-  select p.id, p.name, p.category, p.unit_id as "unitId", u.code as "unitCode",
+  select p.id, p.name, p.category_id as "categoryId", pc.name as "categoryName",
+         p.unit_id as "unitId", u.code as "unitCode",
          u.dimension as "dimension", u.base_factor as "baseFactor",
          p.min_stock as "minStock", p.active,
          p.shelf_life_days as "shelfLifeDays",
@@ -19,6 +21,7 @@ const SQL_LIST = `
                      from product_aliases a where a.product_id = p.id), '[]'::json) as aliases
     from products p
     join units u on u.id = p.unit_id
+    join product_categories pc on pc.id = p.category_id
     left join stock s on s.product_id = p.id`;
 
 /** Неотрицательное число или null (пусто/undefined -> null); для коэффициентов пересчёта. */
@@ -73,7 +76,11 @@ productsRouter.get(
     const where: string[] = [];
     const params: unknown[] = [];
     const q = typeof req.query.q === 'string' ? req.query.q.trim().toLowerCase() : '';
-    const cat = typeof req.query.category === 'string' && req.query.category ? req.query.category : null;
+    const rawCat = req.query.categoryId;
+    const categoryId = rawCat === undefined || rawCat === '' ? null : Number(rawCat);
+    if (categoryId !== null && (!Number.isInteger(categoryId) || categoryId <= 0)) {
+      throw new ApiError(400, 'categoryId: требуется целое положительное число');
+    }
     if (q) {
       where.push(
         `(lower(p.name) like '%' || $${params.length + 1} || '%'
@@ -82,13 +89,13 @@ productsRouter.get(
       );
       params.push(q);
     }
-    if (cat) {
-      where.push('p.category = $' + (params.length + 1));
-      params.push(cat);
+    if (categoryId !== null) {
+      where.push('p.category_id = $' + (params.length + 1));
+      params.push(categoryId);
     }
     if (req.query.active === 'true') where.push('p.active');
     const sql =
-      SQL_LIST + (where.length ? ' where ' + where.join(' and ') : '') + ' order by p.category, p.name';
+      SQL_LIST + (where.length ? ' where ' + where.join(' and ') : '') + ' order by pc.position, pc.name, p.name';
     const { rows } = await pool.query(sql, params);
     res.json(rows.map((r) => ({ ...r, baseFactor: Number(r.baseFactor) })));
   })
@@ -103,7 +110,7 @@ productsRouter.get(
   })
 );
 
-/** Где используется складское сырьё: полуфабрикаты и техкарты, в базовых единицах позиции. */
+/** Где используется складское сырьё: операции карты, в базовых единицах позиции. */
 productsRouter.get(
   '/:id/usage',
   wrap(async (req, res) => {
@@ -154,13 +161,6 @@ productsRouter.get(
   })
 );
 
-/** Занести категорию в словарь product_categories (кроме корзины «прочее»). */
-async function ensureCategory(client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }> }, category: string): Promise<void> {
-  const name = category.toLowerCase().trim();
-  if (!name || name === 'прочее') return;
-  await client.query('insert into product_categories (name) values ($1) on conflict (name) do nothing', [name]);
-}
-
 /**
  * Заменить ручной список псевдонимов позиции. Псевдонимы из накладных входят в этот же
  * список, поэтому пользователь может их убрать. Чужой псевдоним не перепривязываем молча:
@@ -205,7 +205,15 @@ productsRouter.post(
   wrap(async (req, res) => {
     const name = reqStr(req.body, 'name');
     const unitId = reqNum(req.body, 'unitId');
-    const category = typeof req.body.category === 'string' ? req.body.category.trim() : 'прочее';
+    const rawCategoryId = req.body.categoryId;
+    if (rawCategoryId !== undefined && rawCategoryId !== null && rawCategoryId !== '') {
+      if (!Number.isInteger(Number(rawCategoryId)) || Number(rawCategoryId) <= 0) {
+        throw new ApiError(400, 'categoryId: требуется целое положительное число');
+      }
+    }
+    const requestedCategoryId = rawCategoryId === undefined || rawCategoryId === null || rawCategoryId === ''
+      ? null
+      : Number(rawCategoryId);
     const minStock = optNum(req.body, 'minStock');
     const shelfLifeDays = intOrNull(req.body, 'shelfLifeDays');
     const gPerPcs = convNum(req.body, 'gPerPcs');
@@ -215,19 +223,21 @@ productsRouter.post(
     const id = await tx(async (client) => {
       await assertBaseUnit(client, unitId, 'Продукт');
       await assertNameFree(client, name, 'products');
+      const categoryId = requestedCategoryId == null
+        ? await defaultCategoryId(client)
+        : await assertCategoryId(client, requestedCategoryId);
       const { rows } = await client.query(
-        'insert into products (name, category, unit_id, min_stock, shelf_life_days, g_per_pcs, ml_per_pcs, g_per_ml, created_by, updated_by) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9) returning id',
-        [name, category || 'прочее', unitId, minStock, shelfLifeDays, gPerPcs, mlPerPcs, gPerMl, req.user?.id ?? null]
+        'insert into products (name, category_id, unit_id, min_stock, shelf_life_days, g_per_pcs, ml_per_pcs, g_per_ml, created_by, updated_by) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9) returning id',
+        [name, categoryId, unitId, minStock, shelfLifeDays, gPerPcs, mlPerPcs, gPerMl, req.user?.id ?? null]
       );
       await client.query('insert into stock (product_id, qty, avg_cost) values ($1, 0, 0)', [rows[0].id]);
-      await ensureCategory(client, category || 'прочее');
       if (aliases?.length) await saveAliases(client, rows[0].id, aliases, name);
       await auditTx(client, req.user, {
         action: 'create',
         entity: 'product',
         entityId: rows[0].id,
         title: `Продукт «${name}»`,
-        details: { category: category || 'прочее', unitId, minStock, shelfLifeDays, gPerPcs, mlPerPcs, gPerMl, aliases: aliases ?? [] },
+        details: { categoryId, unitId, minStock, shelfLifeDays, gPerPcs, mlPerPcs, gPerMl, aliases: aliases ?? [] },
       });
       return rows[0].id as number;
     });
@@ -247,7 +257,11 @@ productsRouter.patch(
     const newName = typeof req.body.name === 'string' ? reqStr(req.body, 'name') : null;
     if (newName) push('name', newName);
     if (req.body.unitId !== undefined) push('unit_id', reqNum(req.body, 'unitId'));
-    if (req.body.category !== undefined) push('category', String(req.body.category).trim() || 'прочее');
+    const hasCategory = req.body.categoryId !== undefined && req.body.categoryId !== null && req.body.categoryId !== '';
+    const rawCategoryId = req.body.categoryId;
+    if (hasCategory && (!Number.isInteger(Number(rawCategoryId)) || Number(rawCategoryId) <= 0)) {
+      throw new ApiError(400, 'categoryId: требуется целое положительное число');
+    }
     if (req.body.minStock !== undefined) push('min_stock', optNum(req.body, 'minStock'));
     if ('shelfLifeDays' in req.body) push('shelf_life_days', intOrNull(req.body, 'shelfLifeDays'));
     if ('gPerPcs' in req.body) push('g_per_pcs', convNum(req.body, 'gPerPcs'));
@@ -255,25 +269,25 @@ productsRouter.patch(
     if ('gPerMl' in req.body) push('g_per_ml', convNum(req.body, 'gPerMl'));
     if (req.body.active !== undefined) push('active', Boolean(req.body.active));
     const aliases = aliasList(req.body);
-    if (!fields.length && aliases === null) throw new ApiError(400, 'Нет полей для обновления');
+    if (!fields.length && aliases === null && !hasCategory) throw new ApiError(400, 'Нет полей для обновления');
     if (req.body.unitId !== undefined) {
       await tx(async (client) => assertBaseUnit(client, reqNum(req.body, 'unitId'), 'Продукт'));
     }
     const id = Number(req.params.id);
     await tx(async (client) => {
       if (newName) await assertNameFree(client, newName, 'products', id);
+      if (hasCategory) push('category_id', await assertCategoryId(client, Number(rawCategoryId)));
       // снимок «до» — для журнала: видно, что именно поменяли.
       // коэффициенты (г в 1 шт, мл в 1 шт, плотность) — обязательно: от них зависят расход и себестоимость,
       // без них правка одного коэффициента попадала в журнал как пустое изменение.
       const snapCols =
-        'name, category, unit_id, min_stock, shelf_life_days, active, g_per_pcs::float8 as g_per_pcs, ml_per_pcs::float8 as ml_per_pcs, g_per_ml::float8 as g_per_ml';
+        'name, category_id, unit_id, min_stock, shelf_life_days, active, g_per_pcs::float8 as g_per_pcs, ml_per_pcs::float8 as ml_per_pcs, g_per_ml::float8 as g_per_ml';
       const { rows: before } = await client.query(`select ${snapCols} from products where id = $1`, [id]);
       if (!before.length) throw new ApiError(404, 'Продукт не найден');
       params.push(req.user?.id ?? null);
       fields.push(`updated_by = $${params.length}`);
       params.push(id);
       await client.query(`update products set ${fields.join(', ')} where id = $${params.length}`, params);
-      if (req.body.category !== undefined) await ensureCategory(client, String(req.body.category).trim() || 'прочее');
       const { rows: after } = await client.query(`select ${snapCols} from products where id = $1`, [id]);
       if (aliases) await saveAliases(client, id, aliases, String(after[0].name));
       const changes = diff(before[0], after[0]);
@@ -311,25 +325,36 @@ productsRouter.delete(
       );
       const stockQty = stockRes.rows.length ? Number(stockRes.rows[0].qty) : 0;
 
-      // Используется ли в живых рецептурах (полуфабрикаты / техкарты) — ссылки там полиморфные (source_type, ref_id).
-      const recipeRes = await client.query(
-        `select (select count(*) from semi_inputs where source_type = 'raw' and ref_id = $1)
-              + (select count(*) from tech_card_items where source_type = 'raw' and ref_id = $1) as used`,
+      // Живые ссылки: состав операций карты, тара фасовок и история выпусков.
+      // Пока позиция где-то используется, физически удалять её нельзя — только архив.
+      const usageRes = await client.query(
+        `select
+           (select count(*) from prod_nodes n
+              join prod_op_inputs i on i.node_id = n.id
+             where n.kind = 'product' and n.ref_id = $1)::int as in_recipes,
+           (select count(*) from prod_packaging_tare where product_id = $1)::int as in_tare,
+           (select count(*) from map_batch_items where product_id = $1)::int as in_history`,
         [id]
       );
-      const recipeUsed = Number(recipeRes.rows[0].used);
+      const usage = usageRes.rows[0] as { in_recipes: number; in_tare: number; in_history: number };
+      const usedReason = usage.in_recipes > 0
+        ? 'используется в рецептурах'
+        : usage.in_tare > 0
+          ? 'используется как тара фасовки'
+          : usage.in_history > 0
+            ? 'есть в истории выпусков'
+            : null;
 
-      if (recipeUsed > 0) {
-        // Физически удалять нельзя — позиция участвует в рецептурах, иначе они «сломались» бы.
+      if (usedReason) {
         await client.query('update products set active = false, updated_by = $2 where id = $1', [id, req.user?.id ?? null]);
         await auditTx(client, req.user, {
           action: 'delete',
           entity: 'product',
           entityId: id,
           title,
-          details: { mode: 'archive', reason: 'используется в рецептурах', stockQty },
+          details: { mode: 'archive', reason: usedReason, stockQty },
         });
-        return { ok: true, deactivated: true, reason: 'recipe', stockQty };
+        return { ok: true, deactivated: true, reason: 'used', stockQty, detail: usedReason };
       }
 
       if (stockQty !== 0) {
@@ -349,11 +374,9 @@ productsRouter.delete(
       // stock удалится каскадом (on delete cascade).
       const hist = await client.query(
         `with d1 as (delete from movements where product_id = $1 returning 1),
-               d2 as (delete from waybill_items where product_id = $1 returning 1),
-               d3 as (delete from production_batch_items where product_id = $1 returning 1)
+               d2 as (delete from waybill_items where product_id = $1 returning 1)
          select (select count(*) from d1) as mv,
-                (select count(*) from d2) as wb,
-                (select count(*) from d3) as bi`,
+                (select count(*) from d2) as wb`,
         [id]
       );
       await client.query('delete from products where id = $1', [id]);
@@ -366,14 +389,14 @@ productsRouter.delete(
         details: {
           mode: 'hard',
           stockQty,
-          cleaned: { movements: Number(h.mv), waybillItems: Number(h.wb), batchItems: Number(h.bi) },
+          cleaned: { movements: Number(h.mv), waybillItems: Number(h.wb) },
         },
       });
       return {
         ok: true,
         deleted: true,
         stockQty,
-        cleaned: { movements: Number(h.mv), waybillItems: Number(h.wb), batchItems: Number(h.bi) },
+        cleaned: { movements: Number(h.mv), waybillItems: Number(h.wb) },
       };
     });
 

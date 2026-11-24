@@ -1,7 +1,7 @@
 import { PoolClient } from 'pg';
 import { ApiError } from '../http';
 
-/** Карта единиц: unit_id -> {dimension, base_factor} */
+/** Карта единиц: unit_id -> {dimension, base_factor}. */
 type UnitsMap = Map<number, { dimension: string; factor: number }>;
 
 export async function loadUnits(client: PoolClient): Promise<UnitsMap> {
@@ -11,9 +11,9 @@ export async function loadUnits(client: PoolClient): Promise<UnitsMap> {
 
 /** Парные коэффициенты пересчёта между размерностями одного товара (NULL = связь не задана). */
 export interface ProdConv {
-  gPerPcs: number | null; // грамм в 1 штуке (count<->mass)
-  mlPerPcs: number | null; // мл в 1 штуке (count<->volume)
-  gPerMl: number | null; // грамм в 1 мл, плотность (mass<->volume)
+  gPerPcs: number | null;
+  mlPerPcs: number | null;
+  gPerMl: number | null;
 }
 
 export async function loadProductConv(client: PoolClient): Promise<Map<number, ProdConv>> {
@@ -30,31 +30,6 @@ export async function loadProductConv(client: PoolClient): Promise<Map<number, P
       },
     ])
   );
-}
-
-/** Те же парные коэффициенты, но для ВЫХОДА полуфабриката (semi_products). */
-export async function loadSemiConv(client: PoolClient): Promise<Map<number, ProdConv>> {
-  const { rows } = await client.query(
-    'select id, g_per_pcs::float8 as gp, ml_per_pcs::float8 as mp, g_per_ml::float8 as gm from semi_products'
-  );
-  return new Map(
-    rows.map((r) => [
-      r.id as number,
-      {
-        gPerPcs: r.gp == null ? null : Number(r.gp),
-        mlPerPcs: r.mp == null ? null : Number(r.mp),
-        gPerMl: r.gm == null ? null : Number(r.gm),
-      },
-    ])
-  );
-}
-
-/** Контекст раскрытия техкарты: единицы + коэффициенты сырья и полуфабрикатов. */
-interface ExpCtx {
-  client: PoolClient;
-  units: UnitsMap;
-  prodConv: Map<number, ProdConv>;
-  semiConv: Map<number, ProdConv>;
 }
 
 const DIM_LABEL: Record<string, string> = { mass: 'г', volume: 'мл', count: 'шт' };
@@ -105,8 +80,8 @@ export function convertAcross(dimFrom: string, dimTo: string, amount: number, co
 
 /**
  * Перевод количества в базовые единицы целевой единицы с учётом размерности.
- * Внутри одной размерности — как раньше (qty × фактор). Кросс-размерность (шт<->г<->мл) возможна
- * только при переданном conv товара; иначе — ошибка. `conv` отсутствует => прежнее поведение toBase.
+ * Внутри одной размерности — qty × фактор. Кросс-размерность (шт<->г<->мл) возможна
+ * только при переданном conv товара; иначе — ошибка.
  */
 export function toBaseCross(
   qty: number,
@@ -117,280 +92,23 @@ export function toBaseCross(
 ): number {
   const u = units.get(fromUnitId);
   const b = units.get(toUnitId);
-  if (!u || !b) throw new ApiError(400, `Неизвестная единица измерения`);
-  const base = qty * u.factor; // в базовой единице размерности from
+  if (!u || !b) throw new ApiError(400, 'Неизвестная единица измерения');
+  const base = qty * u.factor;
   if (u.dimension === b.dimension) return base / b.factor;
-  if (!conv) throw new ApiError(400, `Нельзя перевести «${DIM_LABEL[u.dimension] ?? u.dimension}» в «${DIM_LABEL[b.dimension] ?? b.dimension}»`);
+  if (!conv) {
+    throw new ApiError(
+      400,
+      `Нельзя перевести «${DIM_LABEL[u.dimension] ?? u.dimension}» в «${DIM_LABEL[b.dimension] ?? b.dimension}»`
+    );
+  }
   return convertAcross(u.dimension, b.dimension, base, conv) / b.factor;
-}
-
-/** Обратная совместимость: старый вызов без коэффициентов = только внутри одной размерности. */
-export function toBase(qty: number, unitId: number, baseUnitId: number, units: UnitsMap): number {
-  return toBaseCross(qty, unitId, baseUnitId, units);
-}
-
-/** id базовой единицы массы (г) — стартовая точка для перевода граммов входа. */
-function massUnitId(units: UnitsMap): number | null {
-  for (const [id, u] of units) if (u.dimension === 'mass') return id;
-  return null;
-}
-
-export interface RawNeed {
-  productId: number;
-  qty: number; // базовые единицы продукта
 }
 
 /** Проверка: единица — базовая для своего измерения (г/мл/шт, base_factor = 1). */
 export async function assertBaseUnit(client: PoolClient, unitId: number, what: string): Promise<void> {
   const { rows } = await client.query('select code, base_factor::float8 as f from units where id = $1', [unitId]);
-  if (!rows.length) throw new ApiError(400, `Неизвестная единица измерения`);
+  if (!rows.length) throw new ApiError(400, 'Неизвестная единица измерения');
   if (Number(rows[0].f) !== 1) {
     throw new ApiError(400, `${what}: хранение только в базовых единицах (г/мл/шт), а не «${rows[0].code}»`);
   }
 }
-
-/**
- * Раскрывает позиции техкарты (кол-во на порцию × порции) в ЧИСТОЕ сырьё со склада.
- * Рекурсия: позиция может быть полуфабрикатом или другим продуктом — разворачиваем цепочку
- * до листовых сырьевых продуктов с учётом выхода после обработки на каждом уровне.
- * Состав заготовки — АБСОЛЮТНЫЕ количества на партию: вход = количество × (нужный выход ÷ размер партии),
- * а если у входа задан свой выход после обработки — количество делится на него (см. resolveSemi).
- */
-export async function expandCard(
-  client: PoolClient,
-  cardId: number,
-  portions: number
-): Promise<RawNeed[]> {
-  const units = await loadUnits(client);
-  const prodConv = await loadProductConv(client);
-  const semiConv = await loadSemiConv(client);
-  const ctx: ExpCtx = { client, units, prodConv, semiConv };
-
-  const items = await loadCardItems(client, cardId);
-  if (items.length === 0) throw new ApiError(400, 'В составе техкарты нет позиций');
-
-  const need = new Map<number, number>();
-  const add = (productId: number, qty: number) =>
-    need.set(productId, (need.get(productId) ?? 0) + qty);
-
-  const cardPath = new Set<number>([cardId]);
-  for (const it of items) {
-    if (!it.ref_unit_id) {
-      throw new ApiError(400, `В составе техкарты: позиция #${it.ref_id} не связана с единицей измерения`);
-    }
-    // Рубеж 1: позиция карты (в любой размерности) -> базовая единица выхода товара/полуфабриката/продукта.
-    const qtyBase = toBaseCross(it.qty, it.unit_id, it.ref_unit_id, units, itemConv(ctx, it.source_type, it.ref_id)) * portions;
-    await resolveItem(ctx, it.source_type, it.ref_id, qtyBase, it.ref_unit_id, add, cardPath);
-  }
-
-  return [...need.entries()].map(([productId, qty]) => ({ productId, qty: round3(qty) }));
-}
-
-type CardSourceType = 'raw' | 'semi' | 'product';
-
-interface CardItemRow {
-  source_type: CardSourceType;
-  ref_id: number;
-  qty: number; // количество на порцию, в базовых единицах самой позиции
-  unit_id: number;
-  ref_unit_id: number | null; // каноничная единица сырья/полуфабриката/продукта
-}
-
-/** Позиции состава техкарты с единицей связанной сущности (products / semi_products / tech_cards). */
-async function loadCardItems(client: PoolClient, cardId: number): Promise<CardItemRow[]> {
-  const { rows } = await client.query(
-    `select i.source_type, i.ref_id, i.qty::float8 as qty, i.unit_id,
-            coalesce(p.unit_id, su.unit_id, tc.portion_unit_id) as ref_unit_id
-       from tech_card_items i
-       left join products p on i.source_type = 'raw'  and p.id = i.ref_id
-       left join semi_products su on i.source_type = 'semi' and su.id = i.ref_id
-       left join tech_cards tc on i.source_type = 'product' and tc.id = i.ref_id
-      where i.card_id = $1
-      order by i.position, i.id`,
-    [cardId]
-  );
-  return rows;
-}
-
-/** Коэффициенты пересчёта размерностей позиции: у продукта (tech_card) их нет. */
-function itemConv(ctx: ExpCtx, sourceType: CardSourceType, refId: number): ProdConv | undefined {
-  if (sourceType === 'raw') return ctx.prodConv.get(refId);
-  if (sourceType === 'semi') return ctx.semiConv.get(refId);
-  return undefined;
-}
-
-/**
- * Раскрывает одну позицию состава: сырьё добавляется как есть, полуфабрикат/продукт
- * разворачиваются рекурсивно. `cardPath` — продукты на текущей ветке (защита от циклов).
- */
-async function resolveItem(
-  ctx: ExpCtx,
-  sourceType: CardSourceType,
-  refId: number,
-  qtyBase: number,
-  refUnitId: number,
-  add: (productId: number, qty: number) => void,
-  cardPath: Set<number>
-): Promise<void> {
-  if (sourceType === 'raw') {
-    add(refId, qtyBase);
-    return;
-  }
-  if (sourceType === 'semi') {
-    const s = await semiUnit(ctx.client, refId);
-    await resolveSemi(ctx, refId, qtyBase, refUnitId, s.batchOut, add, new Set([refId]));
-    return;
-  }
-  if (cardPath.has(refId)) throw new ApiError(400, 'Обнаружен цикл в составе техкарт');
-  await resolveCard(ctx, refId, qtyBase, refUnitId, add, new Set([...cardPath, refId]));
-}
-
-/**
- * Раскрывает продукт `cardId` (нужно `outQtyBase` баз. ед. его выхода) в сырьё.
- * Состав продукта задан на порцию `portion_qty`, поэтому все позиции масштабируются на
- * `outQtyBase / portion_qty`.
- */
-async function resolveCard(
-  ctx: ExpCtx,
-  cardId: number,
-  outQtyBase: number,
-  cardUnitId: number,
-  add: (productId: number, qty: number) => void,
-  cardPath: Set<number>
-): Promise<void> {
-  const { rows } = await ctx.client.query(
-    'select portion_qty::float8 as qty, portion_unit_id from tech_cards where id = $1',
-    [cardId]
-  );
-  if (!rows.length) throw new ApiError(400, `Техкарта #${cardId} не найдена`);
-  const portionBase = toBaseCross(Number(rows[0].qty), rows[0].portion_unit_id, cardUnitId, ctx.units);
-  if (!(portionBase > 0)) throw new ApiError(400, `У техкарты #${cardId} не задан выход`);
-  const k = outQtyBase / portionBase;
-
-  const items = await loadCardItems(ctx.client, cardId);
-  if (!items.length) throw new ApiError(400, `У техкарты #${cardId} пустой состав`);
-  for (const it of items) {
-    if (!it.ref_unit_id) {
-      throw new ApiError(400, `У техкарты #${cardId}: позиция #${it.ref_id} не связана с единицей измерения`);
-    }
-    const qtyBase = toBaseCross(it.qty, it.unit_id, it.ref_unit_id, ctx.units, itemConv(ctx, it.source_type, it.ref_id)) * k;
-    await resolveItem(ctx, it.source_type, it.ref_id, qtyBase, it.ref_unit_id, add, cardPath);
-  }
-}
-
-/** Composition of one semi (may reference raw or other semis). */
-interface SemiInputRow {
-  source_type: 'raw' | 'semi';
-  ref_id: number;
-  qty: number; // количество входа НА ПАРТИЮ, в базовых единицах самого входа
-  yield_pct: number | null;
-  in_unit_id: number; // каноничная единица входа (товара или дочернего полуфабриката)
-}
-
-/** Размер партии и единица выхода заготовки — нужны, чтобы переводить «хотим столько-то» в масштаб состава. */
-async function semiUnit(client: PoolClient, semiId: number): Promise<{ unitId: number; batchOut: number }> {
-  const { rows } = await client.query('select unit_id, out_qty::float8 as out_qty from semi_products where id = $1', [semiId]);
-  if (!rows.length) throw new ApiError(400, `Полуфабрикат #${semiId} не найден`);
-  return { unitId: rows[0].unit_id as number, batchOut: Number(rows[0].out_qty) || 1 };
-}
-
-async function loadSemiInputs(client: PoolClient, semiId: number): Promise<SemiInputRow[]> {
-  const { rows } = await client.query(
-    `select si.source_type, si.ref_id, si.qty_per_output::float8 as qty,
-            si.yield_pct::float8 as yield_pct,
-            coalesce(p.unit_id, sub.unit_id) as in_unit_id
-       from semi_inputs si
-       left join products p on si.source_type = 'raw'  and p.id = si.ref_id
-       left join semi_products sub on si.source_type = 'semi' and sub.id = si.ref_id
-      where si.semi_id = $1`,
-    [semiId]
-  );
-  return rows;
-}
-
-/**
- * Рекурсивно разворачивает полуфабрикат `semiId` (нужно `outQtyBase` баз. ед. его ВЫХОДА `semiUnitId`)
- * в листовые сырьевые продукты через колбэк `add`.
- * Состав хранится абсолютными количествами на партию размером `batchOut` баз. ед. выхода,
- * поэтому всё просто умножается на масштаб `outQtyBase / batchOut` — привязки к «основному
- * продукту» нет, у каждого входа своё количество и свой (необязательный) выход после обработки.
- * `path` — множество semi_products на текущей ветке (защита от циклов).
- */
-async function resolveSemi(
-  ctx: ExpCtx,
-  semiId: number,
-  outQtyBase: number,
-  semiUnitId: number,
-  batchOut: number,
-  add: (productId: number, qty: number) => void,
-  path: Set<number>
-): Promise<void> {
-  const inputs = await loadSemiInputs(ctx.client, semiId);
-  if (!inputs.length) throw new ApiError(400, `У полуфабриката #${semiId} пустой состав`);
-  if (!(batchOut > 0)) throw new ApiError(400, `У полуфабриката #${semiId} не задан размер партии`);
-  const k = outQtyBase / batchOut; // масштаб партии: сколько «заготовочных партий» нам нужно
-
-  const feed = async (inp: SemiInputRow, qInBase: number, inGrams = false) => {
-    if (!inp.in_unit_id) {
-      throw new ApiError(400, `У полуфабриката #${semiId}: вход #${inp.ref_id} не связан с единицей измерения`);
-    }
-    const tConv = inp.source_type === 'raw' ? ctx.prodConv.get(inp.ref_id) : ctx.semiConv.get(inp.ref_id);
-    // число в граммах (выход после обработки штучного входа считаем по массе) → переводим из mass, а не из единицы входа
-    const fromUnitId = inGrams ? massUnitId(ctx.units) ?? semiUnitId : inp.in_unit_id;
-    const qTarget = toBaseCross(qInBase, fromUnitId, inp.in_unit_id, ctx.units, tConv);
-    if (inp.source_type === 'raw') {
-      add(inp.ref_id, qTarget);
-      return;
-    }
-    if (path.has(inp.ref_id)) {
-      throw new ApiError(400, 'Обнаружен цикл в составе полуфабрикатов');
-    }
-    const inSemi = await semiUnit(ctx.client, inp.ref_id);
-    await resolveSemi(ctx, inp.ref_id, qTarget, inSemi.unitId, inSemi.batchOut, add, new Set([...path, inp.ref_id]));
-  };
-
-  for (const inp of inputs) {
-    const q = inp.qty * k; // уже в базовой единице ВХОДА
-    const y = Number(inp.yield_pct);
-    if (!(y > 0 && y < 100)) {
-      await feed(inp, q);
-      continue;
-    }
-    // потери при обработке — отношение масс: штуки делить на «÷ 90 %» нельзя («10 % яиц истаяло»).
-    // если вход штучный и у него задан «грамм в 1 шт» — считаем потерю в граммах; без коэффициента
-    // остаётся честное деление штук (клиентский предпросмотр показывает это как предупреждение)
-    if (ctx.units.get(inp.in_unit_id)?.dimension === 'count') {
-      const conv = inp.source_type === 'raw' ? ctx.prodConv.get(inp.ref_id) : ctx.semiConv.get(inp.ref_id);
-      const g = conv?.gPerPcs != null && conv.gPerPcs > 0 ? Number(conv.gPerPcs) : null;
-      if (g != null) {
-        await feed(inp, (q * g) / (y / 100), true);
-        continue;
-      }
-    }
-    await feed(inp, q / (y / 100));
-  }
-}
-
-/**
- * Раскрытие одного полуфабриката в чистое сырьё (для предпросмотра в конструкторе).
- * `outputQtyBase` — сколько базовых единиц заготовки хотим получить (в единице выхода semi).
- */
-export async function expandSemi(
-  client: PoolClient,
-  semiId: number,
-  outputQtyBase: number
-): Promise<RawNeed[]> {
-  const units = await loadUnits(client);
-  const prodConv = await loadProductConv(client);
-  const semiConv = await loadSemiConv(client);
-  const ctx: ExpCtx = { client, units, prodConv, semiConv };
-  const { rows } = await client.query('select unit_id, out_qty::float8 as out_qty from semi_products where id = $1', [semiId]);
-  if (!rows.length) throw new ApiError(404, 'Полуфабрикат не найден');
-  const need = new Map<number, number>();
-  const add = (productId: number, qty: number) =>
-    need.set(productId, (need.get(productId) ?? 0) + qty);
-  await resolveSemi(ctx, semiId, outputQtyBase, rows[0].unit_id, Number(rows[0].out_qty) || 1, add, new Set([semiId]));
-  return [...need.entries()].map(([productId, qty]) => ({ productId, qty: round3(qty) }));
-}
-
-export const round3 = (n: number) => Math.round(n * 1000) / 1000;

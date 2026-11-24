@@ -1,0 +1,69 @@
+digraph system_context {
+  graph [
+    rankdir=TB,
+    fontname="Segoe UI",
+    fontsize=12,
+    nodesep=0.45,
+    ranksep=0.7,
+    splines=true,
+    bgcolor="white",
+    pad="0.3"
+  ];
+  node [
+    shape=box,
+    style="rounded,filled",
+    fontname="Segoe UI",
+    fontsize=10,
+    color="#9aa0a6",
+    fillcolor="#f6f7f9"
+  ];
+  edge [
+    fontname="Segoe UI",
+    fontsize=9,
+    color="#5f6368",
+    fontcolor="#3c4043"
+  ];
+
+  subgraph cluster_people {
+    label="Пользователи";
+    fontsize=11;
+    color="#c5cae9";
+    style="rounded,dashed";
+    office [label="Офис\n(is_admin / офисный пользователь)", fillcolor="#e8f0fe"];
+    store [label="Магазин\n(users.store_id)", fillcolor="#e6f4ea"];
+  }
+
+  subgraph cluster_boundary {
+    label="MIX markt CRM — self-hosted контур";
+    fontsize=11;
+    color="#90a4ae";
+    style="rounded";
+    client [label="Angular 19 SPA\nсессия в cookie mix_session", fillcolor="#ffffff"];
+    api [label="Express API\n/api/* · TypeScript", fillcolor="#ffffff"];
+  }
+
+  subgraph cluster_postgres {
+    label="PostgreSQL :5432";
+    fontsize=11;
+    color="#80cbc4";
+    style="rounded,dashed";
+    db_main [shape=cylinder, label="mixmarkt_crm\nбизнес-данные\n~15 МБ (локальная копия)", fillcolor="#e0f2f1"];
+    db_sheets [shape=cylinder, label="mixmarkt_sheets\nкэш листов Google\n~8,9 МБ", fillcolor="#e0f2f1"];
+  }
+
+  files [shape=folder, label="Файловое хранилище\nserver/uploads/waybills\nclient/public/invoices\nclient/public/labels", fillcolor="#fff8e1"];
+  gsheet [shape=cloud, label="Google Sheets\n«Микс Маркт Гастро»\nread-only", fillcolor="#f3e5f5"];
+  ai [shape=cloud, label="OpenAI / Qoder CLI\nраспознавание накладных", fillcolor="#f3e5f5"];
+
+  office -> client [label="HTTPS"];
+  store -> client [label="HTTPS"];
+  client -> api [label="JSON /api/*"];
+  api -> db_main [label="SQL · pool max 10"];
+  api -> db_sheets [label="SQL · pool max 4"];
+  api -> gsheet [label="Sheets API\nvalueRenderOption=FORMATTED_VALUE"];
+  api -> files [label="bytea в БД +\nдиск как кэш"];
+  api -> ai [label="фото / PDF → JSON"];
+
+  db_main -> files [style=dashed, label="source_file / stored_file\n(пути, не байты)"];
+  db_sheets -> db_main [style=dashed, label="ссылки по id\nбез FK между БД"];
+}

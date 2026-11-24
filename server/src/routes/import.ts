@@ -22,6 +22,7 @@ import {
 import { CLI_VERSIONS_WITH_BROKEN_VISION, qoderCliVersion } from '../services/qoder-cli';
 import { classifyNewProduct, findLexEntry, lexIdentity, matchByMeaning } from '../services/product-lexicon';
 import { isPlaceholderSupplier, resolveOrCreateSupplier } from '../services/supplier-match';
+import { assertCategoryId, defaultCategoryId } from '../services/categories';
 
 export const importRouter = Router();
 
@@ -345,13 +346,14 @@ export function baseLine(
 /** Каталог + алиасы — и для промпта, и для детерминированного матчинга. */
 async function loadCatalog(): Promise<{ products: CatalogProduct[]; byNormName: Map<string, CatalogProduct>; byAlias: Map<string, CatalogProduct> }> {
   const { rows } = await pool.query(`
-    select p.id, p.name, p.category, u.code as "unitCode",
+    select p.id, p.name, pc.name as category, u.code as "unitCode",
            coalesce(json_agg(distinct a.alias_raw) filter (where a.alias_raw is not null), '[]')::jsonb as aliases
       from products p
+      join product_categories pc on pc.id = p.category_id
       join units u on u.id = p.unit_id
       left join product_aliases a on a.product_id = p.id
      where p.active
-     group by p.id, p.name, p.category, u.code
+     group by p.id, p.name, pc.name, u.code
      order by p.name`);
   const products = rows.map((r) => ({
     id: r.id as number,
@@ -489,6 +491,9 @@ importRouter.post(
     log('stage', `ИИ ответил: ${doc.items.length} строк · сопоставляю с каталогом…`);
     const products = catalog.products;
     const { byNormName, byAlias } = catalog;
+    const categoryOptions = await loadCategoryOptions();
+    const categoryByName = new Map(categoryOptions.map((c) => [c.name.trim().toLowerCase(), c.id]));
+    const defaultCatId = categoryIdFor('прочее', categoryByName, categoryOptions[0]?.id ?? 0);
     const validIds = new Set(products.map((p) => p.id));
     const unitByCode = new Map(units.map((u) => [u.code, u]));
     // коэффициенты пересчёта размерностей по товарам — чтобы кросс-размерный приход (шт<->г<->мл) сошёлся
@@ -611,6 +616,9 @@ importRouter.post(
       const doubt = conv.doubt;
       if (it.qty == null && !qtyForecast) itemNotes.push('количество не прочитано — укажите вручную');
       if (it.unitCode && !du) itemNotes.push(`единица «${it.unitCode}» не распознана — укажите базовую (г/мл/шт) и проверьте количество`);
+      const hint = it.newHint && it.newHint.category && it.newHint.category !== 'прочее'
+        ? it.newHint
+        : classifyNewProduct(it.name) ?? it.newHint;
 
       items.push({
         rawName: it.name,
@@ -640,11 +648,7 @@ importRouter.post(
         match,
         candidates: filtered,
         // подсказка для нового товара: словарь точнее «прочее» от модели
-        newHint: match
-          ? null
-          : it.newHint && it.newHint.category && it.newHint.category !== 'прочее'
-            ? it.newHint
-            : classifyNewProduct(it.name) ?? it.newHint,
+        newHint: match ? null : hintWithCategoryId(hint, categoryByName, defaultCatId),
       });
     }
     {
@@ -880,7 +884,10 @@ importRouter.post(
 
       const catalog = await loadCatalog();
       const units = await loadUnitRows();
-      const categories = await loadCategoryNames();
+      const categoryOptions = await loadCategoryOptions();
+      const categories = categoryOptions.map((c) => c.name);
+      const categoryByName = new Map(categoryOptions.map((c) => [c.name.trim().toLowerCase(), c.id]));
+      const defaultCatId = categoryIdFor('прочее', categoryByName, categoryOptions[0]?.id ?? 0);
       const validIds = new Set(catalog.products.map((p) => p.id));
       const unitByCode = new Map(units.map((u) => [u.code, u]));
       const { rows: convRows } = await pool.query(
@@ -1235,7 +1242,7 @@ importRouter.post(
       const serviceLines: ServiceLine[] = [];
       // скидка, уже вошедшая в сумму строки, второй раз в служебные строки не попадает
       const discountNames = new Set(discItems.map((d) => normName(d.name)));
-      const catSet = new Set(categories);
+      const catSet = categoryByName;
 
       // Детерминированный контроль качества: сколько ложных подсказок и избыточных
       // сомнений сняли после сопоставления по словарю и каталогу.
@@ -1341,11 +1348,11 @@ importRouter.post(
           }
         }
 
-        const hint = it.newHint && catSet.has(it.newHint.category)
+        const rawHint = it.newHint && catSet.has(it.newHint.category.trim().toLowerCase())
           ? it.newHint
           : meaning.hint
-            ? { name: meaning.hint.name, category: catSet.has(meaning.hint.category) ? meaning.hint.category : 'прочее' }
-            : classifyNewProduct(it.name) ?? (it.newHint ?? { name: it.name, category: 'прочее' });
+            ? { name: meaning.hint.name, category: meaning.hint.category }
+            : classifyNewProduct(it.name) ?? it.newHint ?? { name: it.name, category: 'прочее' };
 
         items.push({
           rawName: it.name,
@@ -1368,7 +1375,7 @@ importRouter.post(
           rowDiscount: null,
           match,
           candidates: filtered,
-          newHint: match ? null : hint,
+          newHint: match ? null : hintWithCategoryId(rawHint, categoryByName, defaultCatId),
         });
       }
 
@@ -1938,10 +1945,34 @@ importRouter.post(
   })
 );
 
-/** Категории номенклатуры из настроек — для подсказок новых товаров. */
-async function loadCategoryNames(): Promise<string[]> {
-  const { rows } = await pool.query('select name from product_categories order by name');
-  return rows.map((r) => String(r.name));
+/** Категории номенклатуры из настроек — id для записи, name только как ярлык для ИИ. */
+interface CategoryOption { id: number; name: string }
+
+async function loadCategoryOptions(): Promise<CategoryOption[]> {
+  const { rows } = await pool.query<{ id: number; name: string }>(
+    'select id, name from product_categories order by position, name'
+  );
+  return rows.map((r) => ({ id: Number(r.id), name: String(r.name) }));
+}
+
+/** Внешний ярлык (ответ ИИ/словаря) → category_id. Неизвестное имя уходит в «прочее». */
+function categoryIdFor(
+  name: string | null | undefined,
+  byName: Map<string, number>,
+  fallback: number
+): number {
+  const key = String(name ?? '').trim().toLowerCase();
+  return (key ? byName.get(key) : undefined) ?? fallback;
+}
+
+/** Подсказка нового товара: наружу отдаём category_id, имя остаётся только в тексте. */
+function hintWithCategoryId(
+  hint: { name: string; category: string } | null,
+  byName: Map<string, number>,
+  fallback: number
+): { name: string; categoryId: number } | null {
+  if (!hint) return null;
+  return { name: hint.name, categoryId: categoryIdFor(hint.category, byName, fallback) };
 }
 
 function guessMime(fileName: string): string {
@@ -1979,7 +2010,7 @@ export interface ConfirmImportItem {
   price: number | null;
   vatRate: number | null;
   productId?: number | null;
-  create?: { name?: string; category?: string; unitId?: number } | null;
+  create?: { name?: string; categoryId?: number; unitId?: number } | null;
 }
 
 export interface ConfirmImportInput {
@@ -2049,10 +2080,12 @@ export async function confirmImport(input: ConfirmImportInput, actor: Actor, run
       const vatRate = optNum(raw, 'vatRate'); // ставка PDV в % или null
       let productId: number;
 
-      const create = raw.create as { name?: string; category?: string; unitId?: number } | null | undefined;
+      const create = raw.create as { name?: string; categoryId?: number; unitId?: number } | null | undefined;
       if (create && create.name) {
         const name = String(create.name).trim();
-        const category = String(create.category ?? 'прочее').trim() || 'прочее';
+        const categoryId = create.categoryId == null
+          ? await defaultCategoryId(client)
+          : await assertCategoryId(client, Number(create.categoryId));
         const unitReq = reqNum(create, 'unitId');
         const { rows: u } = await client.query('select base_factor::float8 as f from units where id = $1', [unitReq]);
         if (!u.length || u[0].f !== 1) throw new ApiError(400, 'Складская единица у новой позиции должна быть базовой (г/мл/шт)');
@@ -2061,8 +2094,8 @@ export async function confirmImport(input: ConfirmImportInput, actor: Actor, run
           productId = ex[0].id as number; // такое название уже есть — дописываемся к нему
         } else {
           const { rows: ins } = await client.query(
-            `insert into products (name, category, unit_id, created_by, updated_by) values ($1, $2, $3, $4, $4) returning id`,
-            [name, category, unitReq, actor?.id ?? null]
+            `insert into products (name, category_id, unit_id, created_by, updated_by) values ($1, $2, $3, $4, $4) returning id`,
+            [name, categoryId, unitReq, actor?.id ?? null]
           );
           productId = ins[0].id as number;
           await client.query('insert into stock (product_id, qty, avg_cost) values ($1, 0, 0)', [productId]);

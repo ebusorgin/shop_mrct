@@ -17,8 +17,10 @@ metaRouter.get(
 metaRouter.get(
   '/categories',
   wrap(async (_req, res) => {
-    const { rows } = await pool.query('select distinct category from products order by category');
-    res.json(rows.map((r) => r.category));
+    const { rows } = await pool.query(
+      'select id, name from product_categories order by position, name'
+    );
+    res.json(rows);
   })
 );
 

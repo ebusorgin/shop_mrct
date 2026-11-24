@@ -11,15 +11,18 @@ stockRouter.get(
   '/',
   wrap(async (_req, res) => {
     const { rows } = await pool.query(`
-      select s.product_id as "productId", p.name, p.category, u.code as "unitCode",
+      select s.product_id as "productId", p.name,
+             p.category_id as "categoryId", pc.name as "categoryName",
+             u.code as "unitCode",
              s.qty::float8 as qty, s.avg_cost::float8 as "avgCost",
              p.min_stock::float8 as "minStock",
              (s.qty < p.min_stock) as low
         from stock s
         join products p on p.id = s.product_id
+        join product_categories pc on pc.id = p.category_id
         join units u on u.id = p.unit_id
        where p.active
-       order by p.category, p.name`);
+       order by pc.position, pc.name, p.name`);
     res.json(rows);
   })
 );

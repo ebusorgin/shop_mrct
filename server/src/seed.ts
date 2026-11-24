@@ -16,6 +16,18 @@ async function seed(): Promise<void> {
   };
   const [uG, uMl, uPcs] = await Promise.all([unit('г'), unit('мл'), unit('шт')]);
 
+  /** Демо-категория: справочник хранит имя, products — только category_id. */
+  const category = async (name: string): Promise<number> => {
+    const key = name.trim().toLowerCase();
+    const { rows } = await pool.query(
+      `insert into product_categories (name) values ($1)
+       on conflict (name) do update set name = excluded.name
+       returning id`,
+      [key]
+    );
+    return Number(rows[0].id);
+  };
+
   // ---- номенклатура (хранение строго в базовых единицах: г / мл / шт) ----
   const products: [string, string, number, number][] = [
     // name, category, unit, min_stock (в базовых ед.)
@@ -40,11 +52,12 @@ async function seed(): Promise<void> {
     ['Сметана', 'молочное', uG, 2000],
     ['Капуста квашеная', 'готовое', uG, 1000],
   ];
-  for (const [name, category, unitId, minStock] of products) {
+  for (const [name, categoryName, unitId, minStock] of products) {
+    const categoryId = await category(categoryName);
     const { rows } = await pool.query(
-      `insert into products (name, category, unit_id, min_stock) values ($1,$2,$3,$4)
+      `insert into products (name, category_id, unit_id, min_stock) values ($1,$2,$3,$4)
        on conflict (name) do nothing returning id`,
-      [name, category, unitId, minStock]
+      [name, categoryId, unitId, minStock]
     );
     if (rows.length) {
       await pool.query('insert into stock (product_id) values ($1)', [rows[0].id]);

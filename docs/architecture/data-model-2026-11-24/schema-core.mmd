@@ -1,0 +1,127 @@
+erDiagram
+  UNITS ||--o{ PRODUCTS : "unit_id"
+  PRODUCTS ||--|| STOCK : "product_id"
+  PRODUCTS ||--o{ MOVEMENTS : "product_id"
+  PRODUCTS ||--o{ PRODUCT_ALIASES : "product_id"
+  PRODUCT_CATEGORIES ||--o{ PRODUCTS : "category_id"
+  STORES ||--o{ USERS : "store_id"
+  USERS ||--o{ SESSIONS : "user_id"
+  USERS ||--o{ MOVEMENTS : "user_id"
+  USERS ||--o{ AUDIT_LOG : "user_id"
+
+  UNITS {
+    int id PK
+    text code UK "г / мл / шт"
+    text dimension "mass | volume | count"
+    numeric base_factor "всегда 1"
+  }
+
+  PRODUCTS {
+    int id PK
+    text name UK "уникально в БД; приложение проверяет без регистра"
+    int category_id FK "product_categories.id"
+    int unit_id FK
+    numeric min_stock
+    boolean active
+    numeric g_per_pcs
+    numeric ml_per_pcs
+    numeric g_per_ml
+    int shelf_life_days
+    int created_by FK
+    int updated_by FK
+  }
+
+  PRODUCT_CATEGORIES {
+    int id PK
+    text name UK
+    text icon UK "уникальна, если не пустая"
+    text color
+    boolean protected
+    int position
+  }
+
+  PRODUCT_CATALOGS {
+    int id PK
+    text name UK "каталоги готовой продукции"
+    int position
+    text icon UK
+    text color
+    boolean protected
+  }
+
+  PRODUCT_ALIASES {
+    int id PK
+    int product_id FK
+    text alias UK "нормализованное написание"
+    text alias_raw "как в документе"
+    text source "waybill | manual"
+  }
+
+  STOCK {
+    int product_id PK
+    numeric qty "материализованный остаток"
+    numeric avg_cost "средневзвешенная"
+    timestamptz updated_at
+  }
+
+  MOVEMENTS {
+    bigint id PK
+    int product_id FK
+    text type "receipt | writeoff | adjustment"
+    numeric qty "со знаком, базовые единицы"
+    numeric unit_cost
+    text doc_type "waybill | map_batch | map_ship | store_delivery | manual"
+    int doc_id "полиморфная ссылка, без FK"
+    text comment
+    int user_id FK
+    text user_login
+    timestamptz created_at
+  }
+
+  STORES {
+    int id PK "103…110"
+    text code UK "Mix 38103"
+    text name
+    boolean active
+    text address
+    text pib
+    text mbr
+    text account_no
+    timestamptz deleted_at "мягкое удаление"
+  }
+
+  USERS {
+    int id PK
+    text login "уникален без регистра"
+    text password_hash "scrypt"
+    boolean is_admin
+    boolean active
+    text full_name
+    int store_id FK "null = офис"
+  }
+
+  SESSIONS {
+    text token_hash PK "sha256 токена"
+    int user_id FK
+    timestamptz expires_at
+    text user_agent
+  }
+
+  AUDIT_LOG {
+    bigint id PK
+    int user_id FK
+    text user_login
+    text action
+    text entity
+    text entity_id "полиморфная ссылка, text"
+    text title
+    jsonb details
+    timestamptz created_at
+  }
+
+  APP_SETTINGS {
+    text key PK "currency | delivery | gpt"
+    jsonb value
+    timestamptz updated_at
+    text updated_by
+  }

@@ -1,0 +1,96 @@
+digraph prod_ops_impact {
+  graph [
+    rankdir=TB,
+    fontname="Segoe UI",
+    fontsize=12,
+    nodesep=0.4,
+    ranksep=0.6,
+    splines=true,
+    bgcolor="white",
+    pad="0.3"
+  ];
+  node [
+    shape=box,
+    style="rounded,filled",
+    fontname="Segoe UI",
+    fontsize=10,
+    color="#9aa0a6",
+    fillcolor="#f6f7f9"
+  ];
+  edge [
+    fontname="Segoe UI",
+    fontsize=9,
+    color="#5f6368",
+    fontcolor="#3c4043"
+  ];
+
+  subgraph cluster_queried {
+    label="Проверяемая таблица";
+    fontsize=11;
+    color="#ef9a9a";
+    style="rounded,dashed";
+    prod_ops [shape=cylinder, label="prod_ops\n109 строк\nоперация / техкарта", fillcolor="#ffebee"];
+  }
+
+  subgraph cluster_data {
+    label="Прямые данные";
+    fontsize=11;
+    color="#ffcc80";
+    style="rounded,dashed";
+    inputs [shape=cylinder, label="prod_op_inputs\n549 строк\nop_id → prod_ops", fillcolor="#fff3e0"];
+    nodes [shape=cylinder, label="prod_nodes\n109 не-сырьевых узлов\noutput_node_id", fillcolor="#fff3e0"];
+    batches [shape=cylinder, label="map_batches\nистория по op_name\nбез op_id", fillcolor="#eeeeee"];
+  }
+
+  subgraph cluster_services {
+    label="Серверные сервисы";
+    fontsize=11;
+    color="#90caf9";
+    style="rounded,dashed";
+    map_production [label="map-production.ts\nloadGraph · outputQty · expand\nproduceMapBatch · expandNodeNeedTx", fillcolor="#e3f2fd"];
+    map_save [label="map-save.ts\nupsert операций и входов", fillcolor="#e3f2fd"];
+    seed [label="seed.ts\nдемо-операции", fillcolor="#e3f2fd"];
+    usage [label="products.ts\nгде сырьё используется", fillcolor="#e3f2fd"];
+  }
+
+  subgraph cluster_api {
+    label="API и бизнес-процессы";
+    fontsize=11;
+    color="#a5d6a7";
+    style="rounded,dashed";
+    map_api [label="GET/PUT /api/production-map", fillcolor="#e8f5e9"];
+    produce [label="POST /ops/:id/produce\nвыпуск партии", fillcolor="#e8f5e9"];
+    writeoff [label="delivery-writeoff\nраскрытие рецепта", fillcolor="#e8f5e9"];
+    ship [label="shipMapOutput\nпо node_id через producerByOut", fillcolor="#e8f5e9"];
+  }
+
+  subgraph cluster_ui {
+    label="Клиент";
+    fontsize=11;
+    color="#ce93d8";
+    style="rounded,dashed";
+    map_ui [label="production-map.component.ts\n124 упоминания op", fillcolor="#f3e5f5"];
+    recipes_ui [label="recipes.component.ts\n2 упоминания", fillcolor="#f3e5f5"];
+    api_ui [label="api.service.ts\nмодели ops", fillcolor="#f3e5f5"];
+    calc_ui [label="production-map-calc.ts\nрасчёт операций", fillcolor="#f3e5f5"];
+  }
+
+  prod_ops -> inputs [label="op_id (549)"];
+  prod_ops -> nodes [label="output_node_id (109)"];
+  prod_ops -> map_production [label="чтение состава\nи плана партии"];
+  prod_ops -> map_save [label="upsert / пересохранение"];
+  prod_ops -> seed [label="insert демо-данных"];
+  prod_ops -> usage [label="join op_id"];
+  prod_ops -> map_api [label="GET / PUT"];
+  prod_ops -> produce [label="op.id = :id"];
+  prod_ops -> ship [label="producerByOut"];
+  prod_ops -> writeoff [label="expandNodeNeedTx"];
+  prod_ops -> map_ui [label="VOp, блоки карты"];
+  prod_ops -> recipes_ui [label="ссылки на операцию"];
+  prod_ops -> api_ui [label="модели API"];
+  prod_ops -> calc_ui [label="расчёт выхода"];
+  prod_ops -> batches [label="только имя\nбез FK", style=dashed];
+
+  note [shape=note, label="Если удалить prod_ops:\n— prod_op_inputs теряет владельца состава\n— expand/выпуск/списание перестают работать\n— ломаются API, UI, миграция и seed", fillcolor="#fff8e1"];
+  prod_ops -> note [style=invis];
+}

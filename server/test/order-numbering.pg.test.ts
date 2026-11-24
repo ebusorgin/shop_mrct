@@ -30,6 +30,11 @@ const dateOffset = async (days: number): Promise<string> => {
   return rows[0].d;
 };
 
+const currentYear = async (): Promise<number> => {
+  const { rows } = await pool.query<{ y: number }>('select extract(year from current_date)::int as y');
+  return Number(rows[0].y);
+};
+
 const makeStore = async (code: string): Promise<number> => {
   const { rows } = await pool.query<{ id: number }>(
     'insert into stores (code) values ($1) returning id',
@@ -48,6 +53,15 @@ const makeOrder = async (storeId: number, dayOffset: number): Promise<number> =>
   return rows[0].id;
 };
 
+const makeOrderOn = async (storeId: number, date: string): Promise<number> => {
+  const { rows } = await pool.query<{ id: number }>(
+    `insert into store_orders (store_id, delivery_date, comment)
+     values ($1, $2::date, 'тест') returning id`,
+    [storeId, date]
+  );
+  return rows[0].id;
+};
+
 const docOf = async (orderId: number): Promise<string | null> => {
   const { rows } = await pool.query<{ doc: string | null }>(
     'select doc_no::text as doc from store_orders where id = $1',
@@ -56,9 +70,20 @@ const docOf = async (orderId: number): Promise<string | null> => {
   return rows[0].doc;
 };
 
-const sequenceValue = async (): Promise<number> => {
-  const { rows } = await pool.query<{ v: string }>('select last_value::text as v from store_order_doc_seq');
-  return Number(rows[0].v);
+const yearOf = async (orderId: number): Promise<number | null> => {
+  const { rows } = await pool.query<{ y: number | null }>(
+    'select doc_year as y from store_orders where id = $1',
+    [orderId]
+  );
+  return rows[0].y == null ? null : Number(rows[0].y);
+};
+
+const counterValue = async (year: number): Promise<number> => {
+  const { rows } = await pool.query<{ v: string }>(
+    'select last_no::text as v from doc_counters where doc_year = $1',
+    [year]
+  );
+  return Number(rows[0]?.v ?? 0);
 };
 
 const codeOf = async (orderId: number): Promise<string> => {
@@ -91,9 +116,16 @@ before(async () => {
       store_id int not null references stores(id),
       delivery_date date not null,
       doc_no bigint,
+      doc_year int,
       comment text not null default ''
     );
-    create sequence store_order_doc_seq start with 843;
+    create unique index store_orders_doc_year_no_uniq
+      on store_orders (doc_year, doc_no) where doc_no is not null;
+    create table doc_counters (
+      doc_year int primary key,
+      last_no bigint not null default 0,
+      updated_at timestamptz not null default now()
+    );
   `);
 });
 
@@ -104,8 +136,11 @@ after(async () => {
 });
 
 beforeEach(async () => {
-  await pool.query('truncate store_orders, stores restart identity cascade');
-  await pool.query('alter sequence store_order_doc_seq restart with 843');
+  await pool.query('truncate store_orders, stores, doc_counters restart identity cascade');
+  await pool.query(
+    'insert into doc_counters (doc_year, last_no) values ($1, 866)',
+    [await currentYear()]
+  );
 });
 
 test('отчёт выдаёт подряд номера в порядке печати — по коду магазина', async () => {
@@ -120,13 +155,14 @@ test('отчёт выдаёт подряд номера в порядке печ
   const assigned = await numbering.ensureDeliveryDocNumbers(await dateOffset(3));
 
   assert.equal(assigned, 3);
-  assert.equal(await docOf(o3), '843');
-  assert.equal(await docOf(o5), '844');
-  assert.equal(await docOf(o7), '845');
-  assert.equal(await sequenceValue(), 845);
+  assert.equal(await docOf(o3), '867');
+  assert.equal(await docOf(o5), '868');
+  assert.equal(await docOf(o7), '869');
+  assert.equal(await yearOf(o3), await currentYear());
+  assert.equal(await counterValue(await currentYear()), 869);
 });
 
-test('повторная печать не меняет номера и не тратит последовательность', async () => {
+test('повторная печать не меняет номера и не тратит счётчик', async () => {
   const s3 = await makeStore('Mix 38103');
   const s5 = await makeStore('Mix 38105');
   const o3 = await makeOrder(s3, 2);
@@ -138,21 +174,22 @@ test('повторная печать не меняет номера и не т�
 
   assert.equal(second, 0);
   assert.deepEqual([await docOf(o3), await docOf(o5)], first);
-  assert.equal(await sequenceValue(), 844);
+  assert.equal(await counterValue(await currentYear()), 868);
 });
 
 test('уже выданный номер не перезаписывается, новые продолжают счёт', async () => {
+  const y = await currentYear();
   const s3 = await makeStore('Mix 38103');
   const s5 = await makeStore('Mix 38105');
   const o3 = await makeOrder(s3, 4);
   const o5 = await makeOrder(s5, 4);
-  await pool.query('update store_orders set doc_no = 900 where id = $1', [o3]);
+  await pool.query('update store_orders set doc_no = 900, doc_year = $2 where id = $1', [o3, y]);
 
   const assigned = await numbering.ensureDeliveryDocNumbers(await dateOffset(4));
 
   assert.equal(assigned, 1);
   assert.equal(await docOf(o3), '900');
-  assert.equal(await docOf(o5), '843');
+  assert.equal(await docOf(o5), '867');
 });
 
 test('прошедшую дату не нумерует ни отчёт, ни импорт', async () => {
@@ -191,10 +228,10 @@ test('номер при сохранении заказа: выдаётся од
     client.release();
   }
 
-  assert.equal(await docOf(oToday), '843');
-  assert.equal(await docOf(oFuture), '844');
+  assert.equal(await docOf(oToday), '867');
+  assert.equal(await docOf(oFuture), '868');
   assert.equal(await docOf(oPast), null);
-  assert.equal(await sequenceValue(), 844);
+  assert.equal(await counterValue(await currentYear()), 868);
 });
 
 test('импорт нумерует все будущие даты по датам и кодам магазинов', async () => {
@@ -215,11 +252,37 @@ test('импорт нумерует все будущие даты по дата
     client.release();
   }
 
-  assert.equal(await docOf(sooner3), '843');
-  assert.equal(await docOf(sooner5), '844');
-  assert.equal(await docOf(later3), '845');
-  assert.equal(await docOf(later5), '846');
+  assert.equal(await docOf(sooner3), '867');
+  assert.equal(await docOf(sooner5), '868');
+  assert.equal(await docOf(later3), '869');
+  assert.equal(await docOf(later5), '870');
   assert.equal(await docOf(past), null);
+});
+
+test('с нового года счётчик начинается с 1', async () => {
+  const y = await currentYear();
+  const next = `${y + 1}-01-05`;
+  const s3 = await makeStore('Mix 38103');
+  const s5 = await makeStore('Mix 38105');
+  const thisYear = await makeOrder(s3, 0);
+  const next3 = await makeOrderOn(s3, next);
+  const next5 = await makeOrderOn(s5, next);
+
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    assert.equal(await numbering.ensureFutureDocNumbers(client), 3);
+    await client.query('commit');
+  } finally {
+    client.release();
+  }
+
+  assert.equal(await docOf(thisYear), '867');
+  assert.equal(await docOf(next3), '1');
+  assert.equal(await docOf(next5), '2');
+  assert.equal(await yearOf(next3), y + 1);
+  assert.equal(await counterValue(y), 867);
+  assert.equal(await counterValue(y + 1), 2);
 });
 
 test('параллельная печать не выдаёт один номер дважды', async () => {
@@ -234,9 +297,9 @@ test('параллельная печать не выдаёт один номе�
 
   assert.equal(a + b, 6);
   const docs = await Promise.all(orders.map(docOf));
-  assert.deepEqual([...docs].sort(), ['843', '844', '845', '846', '847', '848']);
+  assert.deepEqual([...docs].sort(), ['867', '868', '869', '870', '871', '872']);
   // Номера идут по коду магазина, а не по порядку вставки.
   const byCode = await Promise.all(orders.map(async (id) => ({ code: await codeOf(id), doc: await docOf(id) })));
   byCode.sort((x, y) => x.code.localeCompare(y.code));
-  assert.deepEqual(byCode.map((r) => r.doc), ['843', '844', '845', '846', '847', '848']);
+  assert.deepEqual(byCode.map((r) => r.doc), ['867', '868', '869', '870', '871', '872']);
 });

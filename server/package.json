@@ -8,11 +8,8 @@
     "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json && node -e \"const fs=require('fs');fs.cpSync('sql','dist/sql',{recursive:true});fs.cpSync('assets','dist/assets',{recursive:true})\"",
     "start": "node dist/index.js",
     "db:seed": "tsx src/seed.ts",
-    "migrate:map": "tsx src/migrate-legacy-to-map.ts",
     "catalogs:assign": "tsx scripts/assign-catalogs.ts",
-    "test:legacy": "tsx --test test/legacy-map.pure.test.ts",
-    "test": "node --import tsx --test test/legacy-map.pure.test.ts test/order-numbering.pg.test.ts",
-    "test:pure": "node --import tsx --test test/legacy-map.pure.test.ts",
+    "test": "node --import tsx --test test/order-numbering.pg.test.ts",
     "test:numbering": "node --import tsx --test test/order-numbering.pg.test.ts"
   },
   "dependencies": {

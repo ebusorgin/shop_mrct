@@ -16,7 +16,7 @@ import { ApiError } from '../http';
 import { createGptClient } from './gpt-transport';
 import { runCliLogged } from './qoder-cli';
 
-/** Поле-коэффициент пересчёта размерности (совпадает с именем поля в products/semi_products). */
+/** Поле-коэффициент пересчёта размерности (совпадает с именем поля в products). */
 export type ConvField = 'gPerPcs' | 'mlPerPcs' | 'gPerMl';
 
 interface FieldSpec {

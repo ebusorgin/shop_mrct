@@ -10,7 +10,7 @@ export class ApiService {
 
   // ---- meta ----
   units$(): Observable<M.Unit[]> { return this.http.get<M.Unit[]>(`${this.base}/meta/units`); }
-  categories$(): Observable<string[]> { return this.http.get<string[]>(`${this.base}/meta/categories`); }
+  categories$(): Observable<{ id: number; name: string }[]> { return this.http.get<{ id: number; name: string }[]>(`${this.base}/meta/categories`); }
   /** Справочник категорий номенклатуры (управляется в настройках): имя + иконка и цвет для выбора. */
   categoriesDictionary$(): Observable<{ id: number; name: string; icon?: string; color?: string }[]> {
     return this.http.get<{ id: number; name: string; icon?: string; color?: string }[]>(`${this.base}/meta/categories-dictionary`);

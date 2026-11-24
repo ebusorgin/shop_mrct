@@ -26,9 +26,10 @@ const convCols = (t: string): string =>
   `${t}.g_per_pcs::float8 as "gPerPcs", ${t}.ml_per_pcs::float8 as "mlPerPcs", ${t}.g_per_ml::float8 as "gPerMl"`;
 
 const SQL_PRODUCT = `
-  select p.name, u.code as "unitCode", nullif(trim(p.category), '') as context,
+  select p.name, u.code as "unitCode", nullif(trim(pc.name), '') as context,
          ${convCols('p')}
     from products p
+    left join product_categories pc on pc.id = p.category_id
     left join units u on u.id = p.unit_id
    where p.id = $1`;
 

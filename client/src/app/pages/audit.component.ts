@@ -312,6 +312,8 @@ export class AuditComponent implements OnInit {
     // снимки «до/после» в продуктах и полуфабрикатах идут колонками БД — подписываем и их
     name: 'название',
     category: 'категория',
+    category_id: 'категория',
+    categoryId: 'категория',
     unit_id: 'единица',
     min_stock: 'минимум',
     shelf_life_days: 'срок годности, дн',

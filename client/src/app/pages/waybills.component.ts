@@ -46,12 +46,12 @@ interface ImpDraft {
   edited: boolean;            // человек сам ввёл деньги строки — печатная сверка больше не указатель
   mode: 'match' | 'create';
   productId: number | null;
-  /** Выбранная в карточке категория для фильтра списка товаров ('' — все категории). */
-  pickCat: string;
+  /** Выбранная в карточке категория для фильтра списка товаров (null — все категории). */
+  pickCat: number | null;
   via: string | null;         // name | alias | llm
   candidates: { productId: number; name: string; sim?: number }[];
   newName: string;
-  newCategory: string;
+  newCategoryId: number | null;
   newUnitId: number | null;   // базовая складская единица для новой позиции
   /** Снимок сразу после разбора — кнопка «вернуть как было» в карточке. */
   orig: ImpOrig;
@@ -70,9 +70,9 @@ interface ImpOrig {
   edited: boolean;
   mode: 'match' | 'create';
   productId: number | null;
-  pickCat: string;
+  pickCat: number | null;
   newName: string;
-  newCategory: string;
+  newCategoryId: number | null;
   newUnitId: number | null;
 }
 
@@ -529,7 +529,7 @@ type ImpLineState = 'fix' | 'check' | 'new' | 'ready';
             <select class="m-prod" [(ngModel)]="it.productId" aria-label="Продукт">
               <option [ngValue]="null">— продукт —</option>
               @for (p of products(); track p.id) {
-                <option [ngValue]="p.id">{{ p.category }} · {{ p.name }}</option>
+                <option [ngValue]="p.id">{{ p.categoryName }} · {{ p.name }}</option>
               }
             </select>
             <input class="m-qty" type="number" [(ngModel)]="it.qty" placeholder="Кол-во" aria-label="Количество" />
@@ -857,9 +857,9 @@ type ImpLineState = 'fix' | 'check' | 'new' | 'ready';
                     <label class="rc-pick-field">
                       <span class="rc-pick-label">Категория</span>
                       <select [(ngModel)]="it.pickCat" (ngModelChange)="setPickCat(it, $event)" aria-label="Категория товара">
-                        <option value="">все категории</option>
-                        @for (c of productCategories(); track c.name) {
-                          <option [value]="c.name">{{ c.name }}</option>
+                        <option [ngValue]="null">все категории</option>
+                        @for (c of productCategories(); track c.id) {
+                          <option [ngValue]="c.id">{{ c.name }}</option>
                         }
                       </select>
                     </label>
@@ -886,16 +886,12 @@ type ImpLineState = 'fix' | 'check' | 'new' | 'ready';
                   <div class="create-box">
                     <input class="cb-name" [(ngModel)]="it.newName" (ngModelChange)="onDraftChange()" placeholder="Название на склад" aria-label="Название на склад" />
                     <div class="cb-cat-wrap">
-                      <select class="cb-cat" [(ngModel)]="it.newCategory" (ngModelChange)="onDraftChange()" title="Категория из справочника (настраивается в Настройках: иконка и цвет)" aria-label="Категория">
-                        <option value="прочее">— категория «прочее» —</option>
+                      <select class="cb-cat" [(ngModel)]="it.newCategoryId" (ngModelChange)="onDraftChange()" title="Категория из справочника (настраивается в Настройках: иконка и цвет)" aria-label="Категория">
                         @for (c of categories(); track c.id) {
-                          <option [value]="c.name">{{ c.icon ? c.icon + ' ' : '' }}{{ c.name }}</option>
-                        }
-                        @if (it.newCategory && !catOf(it.newCategory)) {
-                          <option [value]="it.newCategory">{{ it.newCategory }} — нет в справочнике</option>
+                          <option [ngValue]="c.id">{{ c.icon ? c.icon + ' ' : '' }}{{ c.name }}</option>
                         }
                       </select>
-                      @if (catOf(it.newCategory); as cat) {
+                      @if (catOf(it.newCategoryId); as cat) {
                         <span class="cb-cat-badge" [style.background]="cat.color || '#eef2f7'"
                               [title]="'Категория: ' + cat.name + (cat.color ? ' · цвет ' + cat.color : '')">{{ cat.icon || '·' }}</span>
                       }
@@ -1647,7 +1643,7 @@ export class WaybillsComponent implements OnInit {
         : null;
     const lineSum = printed ? it.lineSum : synthesized;
     const pickedId = it.match?.productId ?? it.candidates[0]?.productId ?? null;
-    const pickedCategory = pickedId != null ? this.products().find((p) => p.id === pickedId)?.category ?? '' : '';
+    const pickedCategory = pickedId != null ? this.products().find((p) => p.id === pickedId)?.categoryId ?? null : null;
     const draft: ImpDraft = {
       rawName: it.rawName,
       qty: it.qty,
@@ -1672,7 +1668,7 @@ export class WaybillsComponent implements OnInit {
       via: it.match?.via ?? null,
       candidates: it.candidates,
       newName: it.newHint?.name ?? it.rawName,
-      newCategory: it.newHint?.category ?? 'прочее',
+      newCategoryId: it.newHint?.categoryId ?? this.defaultCategoryId(),
       newUnitId: unitId ?? this.baseUnits()[0]?.id ?? null,
       orig: null as unknown as ImpOrig,
     };
@@ -1690,7 +1686,7 @@ export class WaybillsComponent implements OnInit {
       productId: draft.productId,
       pickCat: draft.pickCat,
       newName: draft.newName,
-      newCategory: draft.newCategory,
+      newCategoryId: draft.newCategoryId,
       newUnitId: draft.newUnitId,
     };
     return draft;
@@ -1700,10 +1696,14 @@ export class WaybillsComponent implements OnInit {
     return this.units().find((u) => u.id === unitId)?.code ?? '';
   }
 
-  /** Категория справочника по имени (регистр/пробелы не важны); null — такой категории ещё нет. */
-  catOf(name: string | null | undefined): CategoryOption | null {
-    const n = (name ?? '').trim().toLowerCase();
-    return n ? this.categories().find((c) => c.name.trim().toLowerCase() === n) ?? null : null;
+  /** Категория справочника по id; null — категория не выбрана. */
+  catOf(id: number | null | undefined): CategoryOption | null {
+    return id == null ? null : this.categories().find((c) => c.id === id) ?? null;
+  }
+
+  /** «Прочее» — категория по умолчанию для новой позиции. */
+  defaultCategoryId(): number | null {
+    return this.categories().find((c) => c.name.trim().toLowerCase() === 'прочее')?.id ?? this.categories()[0]?.id ?? null;
   }
 
   /** Подсказка под количеством: читаемое из базового + как напечатано в документе. */
@@ -1861,7 +1861,7 @@ export class WaybillsComponent implements OnInit {
       return {
         key: 'new',
         label: 'новая позиция',
-        hint: `Создастся товар «${it.newName}»${it.newCategory ? ' · ' + it.newCategory : ''} · хранить в ${unit}`,
+        hint: `Создастся товар «${it.newName}»${this.catOf(it.newCategoryId) ? ' · ' + this.catOf(it.newCategoryId)!.name : ''} · хранить в ${unit}`,
       };
     }
     const product = this.products().find((p) => p.id === it.productId);
@@ -1900,16 +1900,20 @@ export class WaybillsComponent implements OnInit {
     it.mode = 'match';
     it.productId = productId;
     const p = this.products().find((x) => x.id === productId);
-    if (p) it.pickCat = p.category;
+    if (p) it.pickCat = p.categoryId;
     this.touchItems();
   }
 
   /** Категории товаров склада с количеством позиций — отдельное поле в карточке. */
   productCategories = computed(() => {
-    const map = new Map<string, number>();
-    for (const p of this.products()) map.set(p.category, (map.get(p.category) ?? 0) + 1);
+    const map = new Map<number, { name: string; count: number }>();
+    for (const p of this.products()) {
+      const cur = map.get(p.categoryId);
+      if (cur) cur.count++;
+      else map.set(p.categoryId, { name: p.categoryName, count: 1 });
+    }
     return [...map.entries()]
-      .map(([name, count]) => ({ name, count }))
+      .map(([id, v]) => ({ id, name: v.name, count: v.count }))
       .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
   });
 
@@ -1917,16 +1921,16 @@ export class WaybillsComponent implements OnInit {
   pickProducts(it: ImpDraft): Product[] {
     const all = this.products();
     const selected = it.productId != null ? all.find((p) => p.id === it.productId) ?? null : null;
-    const list = it.pickCat ? all.filter((p) => p.category === it.pickCat) : all;
+    const list = it.pickCat != null ? all.filter((p) => p.categoryId === it.pickCat) : all;
     return selected && !list.some((p) => p.id === selected.id) ? [selected, ...list] : list;
   }
 
   /** Категория фильтрует список товаров; выбранный товар из другой категории снимается. */
-  setPickCat(it: ImpDraft, category: string): void {
-    it.pickCat = category;
-    if (category) {
+  setPickCat(it: ImpDraft, categoryId: number | null): void {
+    it.pickCat = categoryId;
+    if (categoryId != null) {
       const current = this.products().find((p) => p.id === it.productId);
-      if (current && current.category !== category) it.productId = null;
+      if (current && current.categoryId !== categoryId) it.productId = null;
     }
     this.touchItems();
   }
@@ -1936,7 +1940,7 @@ export class WaybillsComponent implements OnInit {
     it.productId = productId;
     if (productId != null) {
       const p = this.products().find((x) => x.id === productId);
-      if (p) it.pickCat = p.category;
+      if (p) it.pickCat = p.categoryId;
     }
     this.touchItems();
   }
@@ -1997,7 +2001,7 @@ export class WaybillsComponent implements OnInit {
       it.productId !== o.productId ||
       it.pickCat !== o.pickCat ||
       it.newName !== o.newName ||
-      it.newCategory !== o.newCategory ||
+      it.newCategoryId !== o.newCategoryId ||
       it.newUnitId !== o.newUnitId
     );
   }
@@ -2019,7 +2023,7 @@ export class WaybillsComponent implements OnInit {
       productId: o.productId,
       pickCat: o.pickCat,
       newName: o.newName,
-      newCategory: o.newCategory,
+      newCategoryId: o.newCategoryId,
       newUnitId: o.newUnitId,
     });
     this.touchItems();
@@ -2133,7 +2137,7 @@ export class WaybillsComponent implements OnInit {
         productId: i.mode === 'match' ? i.productId : null,
         create:
           i.mode === 'create'
-            ? { name: i.newName.trim(), category: i.newCategory.trim() || 'прочее', unitId: i.newUnitId }
+            ? { name: i.newName.trim(), categoryId: i.newCategoryId ?? this.defaultCategoryId(), unitId: i.newUnitId }
             : null,
       })),
     };

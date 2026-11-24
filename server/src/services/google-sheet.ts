@@ -27,7 +27,7 @@ export interface GoogleSheetTab {
   /** Строки как в таблице: значения уже отформатированы Google, длина = ширине листа. */
   rows: string[][];
   width: number;
-  /** Фасовка (product_packagings.id) для каждой строки; null — позиция не сопоставлена. */
+  /** Фасовка (prod_packagings.id) для каждой строки; null — позиция не сопоставлена. */
   links: (number | null)[];
   /** Название продукции (техкарта + фасовка) для каждой строки; null — позиция не сопоставлена. */
   names: (string | null)[];
@@ -272,7 +272,6 @@ interface Matchers {
   exactCard: Map<string, number>;
   byBase: Map<string, PackagingRef[]>;
   nameById: Map<number, string>;
-  defaultByCard: Map<number, number>;
 }
 
 /** Индексы для сопоставления: полное название (техкарта + фасовка), базовое и фасовки по id. */
@@ -291,7 +290,6 @@ async function loadMatchers(): Promise<Matchers> {
   const exactCardPick = new Map<string, { id: number; rank: number }>();
   const byBase = new Map<string, PackagingRef[]>();
   const nameById = new Map<number, string>();
-  const defaultByCard = new Map<number, number>();
   for (const row of rows) {
     const ref: PackagingRef = { ...row, qtyBase: Number(row.qtyBase) };
     exactSale.set(normName(`${ref.cardName} ${ref.packagingName}`), ref.id);
@@ -311,12 +309,11 @@ async function loadMatchers(): Promise<Matchers> {
     const picked = exactCardPick.get(cardKey);
     if (!picked || rank > picked.rank) exactCardPick.set(cardKey, { id: ref.id, rank });
     nameById.set(ref.id, saleName(ref));
-    if (ref.isDefault) defaultByCard.set(ref.cardId, ref.id);
     const base = baseName(ref.cardName);
     byBase.set(base, [...(byBase.get(base) ?? []), ref]);
   }
   const exactCard = new Map([...exactCardPick].map(([key, pick]) => [key, pick.id]));
-  return { exactSale, exactCard, byBase, nameById, defaultByCard };
+  return { exactSale, exactCard, byBase, nameById };
 }
 
 /**
@@ -370,7 +367,7 @@ type ManualOverrides = Map<string, Map<string, number | null>>;
 
 /**
  * Ручные решения: лист -> (нормализованное название строки -> id фасовки | null).
- * Старые связи хранили card_id — переводим их в фасовку по умолчанию этой техкарты.
+ * Ключ ручного решения — нормализованное название строки; значение — фасовка карты.
  */
 async function manualOverrides(): Promise<ManualOverrides> {
   const { rows } = await sheetsPool.query<{
@@ -422,9 +419,9 @@ function fillTabDerived(tab: GoogleSheetTab, nameById: Map<number, string>): voi
 /** Что уже лежит в отдельной базе; null — таблицу ещё не скачивали. */
 export async function savedGoogleSheet(): Promise<GoogleSheet | null> {
   const { rows: meta } = await sheetsPool.query<{
-    title: string; url: string; synced_at: Date; unmatched: string[]; links_version: number;
+    title: string; url: string; synced_at: Date; unmatched: string[];
   }>(
-    'select title, url, synced_at, unmatched, links_version from google_sheets where spreadsheet_id = $1',
+    'select title, url, synced_at, unmatched from google_sheets where spreadsheet_id = $1',
     [GOOGLE_SHEET_ID]
   );
   if (!meta.length) return null;
@@ -436,9 +433,6 @@ export async function savedGoogleSheet(): Promise<GoogleSheet | null> {
     [GOOGLE_SHEET_ID]
   );
   const matchers = await loadMatchers();
-  // Сохранённые до фасовок связи — это id техкарт: показываем фасовку по умолчанию.
-  // После ближайшей синхронизации links перезаписываются id фасовок.
-  const legacy = Number(meta[0].links_version) < 1;
   const result: GoogleSheet = {
     title: meta[0].title,
     spreadsheetId: GOOGLE_SHEET_ID,
@@ -448,9 +442,7 @@ export async function savedGoogleSheet(): Promise<GoogleSheet | null> {
       name: tab.name,
       width: tab.width,
       rows: tab.rows,
-      links: legacy
-        ? tab.links.map((id) => (id == null ? null : matchers.defaultByCard.get(id) ?? null))
-        : tab.links,
+      links: tab.links,
       names: [],
       misses: [],
     })),
@@ -484,10 +476,10 @@ export async function setSheetRowLink(
 
   if (packagingId === null) {
     await sheetsPool.query(
-      `insert into google_sheet_manual_links (spreadsheet_id, tab_name, row_name, card_id, packaging_id)
-       values ($1, $2, $3, null, null)
+      `insert into google_sheet_manual_links (spreadsheet_id, tab_name, row_name, packaging_id)
+       values ($1, $2, $3, null)
        on conflict (spreadsheet_id, tab_name, row_name)
-         do update set card_id = null, packaging_id = null, updated_at = now()`,
+         do update set packaging_id = null, updated_at = now()`,
       [GOOGLE_SHEET_ID, tabName, key]
     );
     return null;
@@ -504,10 +496,10 @@ export async function setSheetRowLink(
   );
   if (!packagings.length) throw new ApiError(400, 'Фасовка не найдена');
   await sheetsPool.query(
-    `insert into google_sheet_manual_links (spreadsheet_id, tab_name, row_name, card_id, packaging_id)
-     values ($1, $2, $3, null, $4)
+    `insert into google_sheet_manual_links (spreadsheet_id, tab_name, row_name, packaging_id)
+     values ($1, $2, $3, $4)
      on conflict (spreadsheet_id, tab_name, row_name)
-       do update set card_id = null, packaging_id = excluded.packaging_id, updated_at = now()`,
+       do update set packaging_id = excluded.packaging_id, updated_at = now()`,
     [GOOGLE_SHEET_ID, tabName, key, packagingId]
   );
   const { cardName, qtyBase, unitCode } = packagings[0];
@@ -525,11 +517,11 @@ export async function syncGoogleSheet(): Promise<GoogleSheet> {
   await applyOverridesToSheet(sheet, matchers);
   await sheetsTx(async (client) => {
     await client.query(
-      `insert into google_sheets (spreadsheet_id, title, url, synced_at, unmatched, links_version)
-       values ($1, $2, $3, $4, $5, 1)
+      `insert into google_sheets (spreadsheet_id, title, url, synced_at, unmatched)
+       values ($1, $2, $3, $4, $5)
        on conflict (spreadsheet_id) do update
          set title = excluded.title, url = excluded.url, synced_at = excluded.synced_at,
-             unmatched = excluded.unmatched, links_version = 1`,
+             unmatched = excluded.unmatched`,
       [sheet.spreadsheetId, sheet.title, sheet.url, sheet.loadedAt, JSON.stringify(sheet.unmatched)]
     );
     await client.query('delete from google_sheet_tabs where spreadsheet_id = $1', [sheet.spreadsheetId]);

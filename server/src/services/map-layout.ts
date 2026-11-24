@@ -145,7 +145,10 @@ export async function aiLayout(
   const categoryById = new Map<number, string>();
   if (refIds.length) {
     const { rows } = await pool.query<{ id: number; category: string | null }>(
-      'select id, category from products where id = any($1::int[])',
+      `select p.id, pc.name as category
+         from products p
+         join product_categories pc on pc.id = p.category_id
+        where p.id = any($1::int[])`,
       [refIds]
     );
     for (const r of rows) categoryById.set(Number(r.id), (r.category ?? '').trim() || 'прочее');

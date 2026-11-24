@@ -87,9 +87,13 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
                       hintTitle="Складская категория"
                       [appHint]="'Группа для фильтров склада, выбора сырья в рецептуре и облаков на карте производства. На расчёты, списание и цены не влияет. «Без категории» означает «прочее».'">?</button>
             </span>
-            <select [(ngModel)]="edit.category">
-              <option value="">— без категории («прочее») —</option>
-              @for (c of categoryOptions(); track c) { <option [value]="c">{{ c }}</option> }
+            <select [(ngModel)]="edit.categoryId">
+              <option [ngValue]="defaultCategoryId()">— «прочее» —</option>
+              @for (c of categories(); track c.id) {
+                @if (c.id !== defaultCategoryId()) {
+                  <option [ngValue]="c.id">{{ c.icon ? c.icon + ' ' : '' }}{{ c.name }}</option>
+                }
+              }
             </select>
           </label>
           <label class="f">
@@ -238,7 +242,11 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
   saving = signal(false);
   loaded = signal(false);
   units = signal<Unit[]>([]);
-  categories = signal<string[]>([]);
+  categories = signal<{ id: number; name: string; icon?: string; color?: string }[]>([]);
+  /** «Прочее» — категория по умолчанию; её id приходит из справочника. */
+  defaultCategoryId = computed(() =>
+    this.categories().find((c) => c.name.trim().toLowerCase() === 'прочее')?.id ?? null
+  );
   /** Ждём GPT по трём коэффициентам — один запрос на поле, ответы могут идти десятки секунд. */
   asking = signal(false);
   aiLines = signal<AiLine[]>([]);
@@ -250,10 +258,10 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
   aliasDraft = signal('');
 
   edit: {
-    id: number | null; name: string; category: string; unitId: number | null; minStock: number; active: boolean;
+    id: number | null; name: string; categoryId: number | null; unitId: number | null; minStock: number; active: boolean;
     shelfLifeDays: number | null;
     gPerPcs: number | null; mlPerPcs: number | null; gPerMl: number | null;
-  } = { id: null, name: '', category: '', unitId: null, minStock: 0, active: true,
+  } = { id: null, name: '', categoryId: null, unitId: null, minStock: 0, active: true,
       shelfLifeDays: null, gPerPcs: null, mlPerPcs: null, gPerMl: null };
 
   /** Только базовые единицы (г/мл/шт) — в них склад хранит остатки. */
@@ -263,8 +271,8 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
   ngOnInit(): void {
     this.api.units$().subscribe((u) => this.units.set(u));
     this.api.categoriesDictionary$().subscribe((list) => {
-      this.categories.set(list.map((c) => c.name));
-      this.canonicalizeCategory();
+      this.categories.set(list);
+      if (this.edit.categoryId == null) this.edit.categoryId = this.defaultCategoryId();
     });
     if (this.productId === null) {
       this.loaded.set(true);
@@ -273,12 +281,11 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
     this.api.product$(this.productId).subscribe({
       next: (p) => {
         this.edit = {
-          id: p.id, name: p.name, category: (p.category ?? '').trim(), unitId: p.unitId, minStock: p.minStock, active: p.active,
+          id: p.id, name: p.name, categoryId: p.categoryId ?? null, unitId: p.unitId, minStock: p.minStock, active: p.active,
           shelfLifeDays: p.shelfLifeDays ?? null,
           gPerPcs: p.gPerPcs ?? null, mlPerPcs: p.mlPerPcs ?? null, gPerMl: p.gPerMl ?? null,
         };
         this.aliases.set(Array.isArray(p.aliases) ? p.aliases : []);
-        this.canonicalizeCategory();
         this.loaded.set(true);
         // edit — обычный объект, для OnPush-вьюхи это не триггер перерисовки
         this.cdr.markForCheck();
@@ -287,23 +294,9 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
     });
   }
 
-  /** Варианты выбора: справочник + текущее значение, если его там нет (старые данные). */
-  categoryOptions(): string[] {
-    const list = this.categories();
-    const cur = this.edit.category.trim();
-    if (cur && !list.some((c) => c.toLowerCase() === cur.toLowerCase())) return [cur, ...list];
-    return list;
-  }
-
-  /** «Прочее» показываем пустым пунктом; имя категории приводим к написанию из справочника. */
-  private canonicalizeCategory(): void {
-    const cur = this.edit.category.trim();
-    if (!cur || cur.toLowerCase() === 'прочее') {
-      this.edit.category = '';
-      return;
-    }
-    const match = this.categories().find((c) => c.toLowerCase() === cur.toLowerCase());
-    this.edit.category = match ?? cur;
+  /** Имя категории нужно только как текстовый контекст для ИИ. */
+  private categoryContext(): string | null {
+    return this.categories().find((c) => c.id === this.edit.categoryId)?.name ?? null;
   }
 
   /**
@@ -322,7 +315,7 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
     const unitCode = this.units().find((u) => u.id === this.edit.unitId)?.code ?? null;
     const base = this.edit.id
       ? { sourceType: 'raw' as const, refId: this.edit.id }
-      : { sourceType: 'raw' as const, name, unitCode, context: this.edit.category.trim() || null };
+      : { sourceType: 'raw' as const, name, unitCode, context: this.categoryContext() };
     this.api.askCoefficients$(base).subscribe({
       next: (res) => {
         const lines: AiLine[] = [];
@@ -386,7 +379,7 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
       v === null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v);
     const body: Record<string, unknown> = {
       name: this.edit.name,
-      category: this.edit.category || 'прочее',
+      categoryId: this.edit.categoryId ?? this.defaultCategoryId(),
       unitId: this.edit.unitId,
       minStock: this.edit.minStock,
       shelfLifeDays: conv(this.edit.shelfLifeDays as number | string | null),

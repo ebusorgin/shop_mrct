@@ -231,9 +231,9 @@ function inkOn(hex: string): string {
               <input [ngModel]="query()" (ngModelChange)="query.set($event)" placeholder="Поиск по названию…" />
               @if (query()) { <button type="button" class="raw-clear" (click)="query.set('')" title="Очистить">✕</button> }
             </div>
-            <select class="raw-cat" [ngModel]="rawCat()" (ngModelChange)="rawCat.set($event)" title="Фильтр по каталогу">
-              <option value="">Все каталоги</option>
-              @for (c of rawCats(); track c) { <option [value]="c">{{ c }}</option> }
+            <select class="raw-cat" [ngModel]="rawCat()" (ngModelChange)="rawCat.set($event)" title="Фильтр по категории">
+              <option [ngValue]="null">Все категории</option>
+              @for (c of rawCats(); track c.id) { <option [ngValue]="c.id">{{ c.name }}</option> }
             </select>
             <label class="raw-filter">
               <input type="checkbox" [ngModel]="onlyUnused()" (ngModelChange)="onlyUnused.set($event)" />
@@ -1503,13 +1503,17 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
   onMapRefIds = computed(
     () => new Set(this.nodes().filter((n) => n.kind === 'product' && n.refId != null).map((n) => n.refId))
   );
-  rawCat = signal('');
+  rawCat = signal<number | null>(null);
   /** Показывать только сырьё, которого ещё нет на карте. */
   onlyUnused = signal(false);
-  /** Каталоги, которые реально встречаются у активного сырья. */
-  rawCats = computed(() =>
-    [...new Set(this.products().map((p) => p.category).filter((c) => !!c))].sort((a, b) => a.localeCompare(b, 'ru'))
-  );
+  /** Категории, которые реально встречаются у активного сырья. */
+  rawCats = computed(() => {
+    const map = new Map<number, string>();
+    for (const p of this.products()) map.set(p.categoryId, p.categoryName);
+    return [...map.entries()]
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+  });
 
   pan = signal({ x: 0, y: 0 });
   panning = signal(false);
@@ -1570,7 +1574,7 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
     return this.products().filter(
       (p) =>
         (!q || p.name.toLowerCase().includes(q)) &&
-        (!cat || p.category === cat) &&
+        (cat == null || p.categoryId === cat) &&
         (!unusedOnly || !onMap.has(p.id))
     );
   });
@@ -1587,23 +1591,25 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
   /** Облака сырья по категориям — рамка вокруг сгруппированных карточек. */
   rawClouds = computed(() => {
     const byId = new Map(this.products().map((p) => [p.id, p]));
-    const groups = new Map<string, VNode[]>();
+    const groups = new Map<number, { label: string; list: VNode[] }>();
     for (const n of this.nodes()) {
       if (n.kind !== 'product' || n.refId == null) continue;
-      const category = (byId.get(n.refId)?.category ?? '').trim() || 'прочее';
-      const arr = groups.get(category) ?? [];
-      arr.push(n);
-      groups.set(category, arr);
+      const product = byId.get(n.refId);
+      const id = product?.categoryId ?? 0;
+      const label = product?.categoryName ?? 'прочее';
+      const group = groups.get(id) ?? { label, list: [] };
+      group.list.push(n);
+      groups.set(id, group);
     }
     return [...groups.entries()]
-      .map(([label, list]) => {
+      .map(([id, { label, list }]) => {
         const xs = list.map((n) => n.x);
         const ys = list.map((n) => n.y);
         const x = Math.min(...xs) - 18;
         const y = Math.min(...ys) - 34;
         const w = Math.max(...xs) - Math.min(...xs) + 236 + 36;
         const h = Math.max(...ys) - Math.min(...ys) + 92 + 34;
-        return { key: label, label, x, y, w, h, count: list.length };
+        return { key: id, label, x, y, w, h, count: list.length };
       })
       .sort((a, b) => a.label.localeCompare(b.label, 'ru'));
   });

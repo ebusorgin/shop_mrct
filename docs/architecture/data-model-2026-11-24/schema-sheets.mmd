@@ -1,0 +1,38 @@
+erDiagram
+  GOOGLE_SHEETS ||--o{ GOOGLE_SHEET_TABS : "spreadsheet_id"
+  GOOGLE_SHEET_TABS }o..o{ PROD_PACKAGINGS : "links[] (cross-db, без FK)"
+  GOOGLE_SHEET_MANUAL_LINKS }o..o| PROD_PACKAGINGS : "packaging_id (cross-db, без FK)"
+
+  GOOGLE_SHEETS {
+    text spreadsheet_id PK "один документ"
+    text title
+    text url
+    timestamptz synced_at
+    jsonb unmatched "названия без фасовки"
+  }
+
+  GOOGLE_SHEET_TABS {
+    text spreadsheet_id PK
+    int position PK "порядок листа"
+    text name "DD.MM"
+    int width
+    jsonb rows "строки как в Google"
+    jsonb links "id фасовки на каждую строку"
+  }
+
+  GOOGLE_SHEET_MANUAL_LINKS {
+    text spreadsheet_id PK
+    text tab_name PK
+    text row_name PK "нормализованное название"
+    int packaging_id "prod_packagings.id; null = не сопоставлять"
+    timestamptz updated_at
+  }
+
+  PROD_PACKAGINGS {
+    int id PK "id-пространство основной БД"
+    int node_id
+    numeric qty_base
+    numeric price
+    boolean available
+    boolean archived
+  }

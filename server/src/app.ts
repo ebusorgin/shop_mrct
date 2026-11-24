@@ -21,7 +21,6 @@ import { settingsRouter } from './routes/settings';
 import { aiRouter } from './routes/ai';
 import { qoderRouter } from './routes/qoder';
 import { requireAdmin, requireAuth, requireOffice } from './services/auth';
-import { requireMapMigrated } from './services/map-migration';
 import { qoderCliVersion } from './services/qoder-cli';
 import { currencySettings } from './services/settings';
 
@@ -46,8 +45,6 @@ export function createApp(): express.Express {
   app.get('/api/currency', wrap(async (_req, res) => {
     res.json(await currencySettings());
   }));
-  // заказы живут на фасовках карты: без миграции отвечаем понятной ошибкой
-  app.use(['/api/store/order-catalog', '/api/store/orders', '/api/orders'], requireMapMigrated);
   // страница своего магазина — только для магазинных сотрудников
   app.use('/api/store', storeRouter);
   // офисные разделы: магазинному сотруднику закрыты (он видит только свою точку)

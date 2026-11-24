@@ -1,0 +1,114 @@
+digraph data_flow {
+  graph [
+    rankdir=TB,
+    fontname="Segoe UI",
+    fontsize=12,
+    nodesep=0.4,
+    ranksep=0.65,
+    splines=true,
+    bgcolor="white",
+    pad="0.3"
+  ];
+  node [
+    shape=box,
+    style="rounded,filled",
+    fontname="Segoe UI",
+    fontsize=10,
+    color="#9aa0a6",
+    fillcolor="#f6f7f9"
+  ];
+  edge [
+    fontname="Segoe UI",
+    fontsize=9,
+    color="#5f6368",
+    fontcolor="#3c4043"
+  ];
+
+  subgraph cluster_sources {
+    label="Источники";
+    fontsize=11;
+    color="#c5cae9";
+    style="rounded,dashed";
+    gsheet [shape=cloud, label="Google Sheet\nлисты DD.MM", fillcolor="#f3e5f5"];
+    scan [shape=note, label="Фото / PDF накладной", fillcolor="#fff8e1"];
+    human [label="Офис / магазин\nручной ввод", fillcolor="#e8f0fe"];
+  }
+
+  subgraph cluster_sheets {
+    label="mixmarkt_sheets";
+    fontsize=11;
+    color="#80cbc4";
+    style="rounded,dashed";
+    s_meta [shape=cylinder, label="google_sheets\ntitle · unmatched", fillcolor="#e0f2f1"];
+    s_tabs [shape=cylinder, label="google_sheet_tabs\nrows jsonb · links jsonb", fillcolor="#e0f2f1"];
+    s_manual [shape=cylinder, label="google_sheet_manual_links\ntab_name + row_name → packaging_id", fillcolor="#e0f2f1"];
+  }
+
+  subgraph cluster_core {
+    label="mixmarkt_crm — справочники и склад";
+    fontsize=11;
+    color="#90a4ae";
+    style="rounded,dashed";
+    products [shape=cylinder, label="products · product_aliases\nunits · stock · movements", fillcolor="#e0f2f1"];
+    suppliers [shape=cylinder, label="suppliers\nsupplier_invoices", fillcolor="#e0f2f1"];
+    waybills [shape=cylinder, label="waybills · waybill_items", fillcolor="#e0f2f1"];
+  }
+
+  subgraph cluster_map {
+    label="mixmarkt_crm — производственная карта";
+    fontsize=11;
+    color="#90a4ae";
+    style="rounded,dashed";
+    map [shape=cylinder, label="prod_nodes · prod_ops\nprod_op_inputs", fillcolor="#e0f2f1"];
+    packs [shape=cylinder, label="prod_packagings\nprod_packaging_tare", fillcolor="#e0f2f1"];
+    batches [shape=cylinder, label="map_batches\nmap_batch_items", fillcolor="#e0f2f1"];
+  }
+
+  subgraph cluster_orders {
+    label="mixmarkt_crm — заказы и отчёты";
+    fontsize=11;
+    color="#90a4ae";
+    style="rounded,dashed";
+    orders [shape=cylinder, label="store_orders\nstore_order_items\n(слепки цен)", fillcolor="#e0f2f1"];
+    writeoff [shape=cylinder, label="store_delivery_writeoffs", fillcolor="#e0f2f1"];
+    report [shape=note, label="Otpremnica\nJSON / PDF / ZIP", fillcolor="#fff8e1"];
+  }
+
+  subgraph cluster_observability {
+    label="Служебные данные";
+    fontsize=11;
+    color="#b0bec5";
+    style="rounded,dashed";
+    audit [shape=cylinder, label="audit_log\napp_settings", fillcolor="#eceff1"];
+    chat [shape=cylinder, label="qoder_dialogs\nqoder_messages", fillcolor="#eceff1"];
+  }
+
+  gsheet -> s_meta [label="sync: batchGet"];
+  s_meta -> s_tabs [label="1:N по position"];
+  s_tabs -> s_manual [label="ручные решения\nповерх автоподбора", style=dashed];
+  s_tabs -> packs [label="links[] = prod_packagings.id\n(кросс-БД, без FK)", style=dashed];
+  s_manual -> packs [label="packaging_id\n(кросс-БД, без FK)", style=dashed];
+  s_tabs -> orders [label="импорт истории:\nстолбцы магазинов → qty", style=dashed];
+  s_manual -> orders [label="строка листа → фасовка", style=dashed];
+
+  scan -> products [label="parse: товар / псевдоним\n(без движений)"];
+  scan -> suppliers [label="PIB / GLN / счёт / имя"];
+  human -> products [label="confirmImport:\nновый товар + stock"];
+  human -> waybills [label="ingestWaybill"];
+  waybills -> products [label="applyMovement receipt\nqty, unit_cost"];
+  products -> suppliers [label="waybill_items.product_id"];
+  waybills -> suppliers [label="supplier_id"];
+
+  map -> packs [label="node_id"];
+  packs -> orders [label="store_order_items.packaging_id"];
+  orders -> report [label="order_report:"];
+  report -> orders [label="snapshot / line_order"];
+  orders -> writeoff [label="expandNodeNeedTx"];
+  map -> writeoff [label="раскрытие рецепта"];
+  writeoff -> products [label="movements writeoff\nstore_delivery"];
+  map -> batches [label="produce / reverse"];
+  batches -> products [label="movements writeoff / receipt\nmap_batch"];
+  products -> audit [label="кто, что, когда"];
+  map -> audit [label="audit_log"];
+  human -> chat [label="администратор"];
+}

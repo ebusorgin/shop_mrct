@@ -693,12 +693,8 @@ interface EditorSnapshot {
                               <label class="f">Складская категория
                                 <select [ngModel]="componentEditCategory()"
                                         (ngModelChange)="componentEditCategory.set($event)">
-                                  <option value="прочее">прочее</option>
                                   @for (c of rawCategories(); track c.id) {
-                                    <option [value]="c.name">{{ c.icon ? c.icon + ' ' : '' }}{{ c.name }}</option>
-                                  }
-                                  @if (hasCurrentCategory()) {
-                                    <option [value]="componentEditCategory()">{{ componentEditCategory() }}</option>
+                                    <option [ngValue]="c.id">{{ c.icon ? c.icon + ' ' : '' }}{{ c.name }}</option>
                                   }
                                 </select>
                               </label>
@@ -1091,12 +1087,18 @@ export class RecipesComponent implements OnInit {
 
   readonly baseUnits = computed(() => this.units().filter((u) => u.baseFactor === 1));
 
-  /** Тара: активные складские позиции категории «упаковка». */
-  readonly tareOptions = computed(() =>
-    this.products()
-      .filter((p) => p.category.trim().toLowerCase() === 'упаковка')
-      .sort((a, b) => a.name.localeCompare(b.name, 'ru'))
+  /** id категории «упаковка» из справочника — по нему фильтруем тару. */
+  readonly packagingCategoryId = computed(() =>
+    this.rawCategories().find((c) => c.name.trim().toLowerCase() === 'упаковка')?.id ?? null
   );
+
+  /** Тара: активные складские позиции категории «упаковка». */
+  readonly tareOptions = computed(() => {
+    const packagingId = this.packagingCategoryId();
+    return this.products()
+      .filter((p) => packagingId != null && p.categoryId === packagingId)
+      .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+  });
   /** Каталог нужен только когда у рецептуры есть заполненная фасовка. */
   readonly showCatalog = computed(() =>
     this.draftPackagings().some((p) => Number(p.qtyBase) > 0)
@@ -1107,7 +1109,7 @@ export class RecipesComponent implements OnInit {
   readonly componentEditNameEn = signal('');
   readonly componentEditNameSr = signal('');
   readonly componentEditCatalogId = signal<number | null>(null);
-  readonly componentEditCategory = signal('');
+  readonly componentEditCategory = signal<number | null>(null);
   readonly componentEditSaving = signal(false);
   readonly rawCategories = signal<RawCategory[]>([]);
   private rawCategoriesLoaded = false;
@@ -1386,7 +1388,7 @@ export class RecipesComponent implements OnInit {
       let group: string | undefined;
       let rank = 0;
       if (kind === 'raw') {
-        group = this.products().find((p) => p.id === n.refId)?.category?.trim() || 'прочее';
+        group = this.products().find((p) => p.id === n.refId)?.categoryName?.trim() || 'прочее';
         rank = group === 'прочее' ? 999 : 0;
       } else if (kind === 'dish') {
         const cat = this.catalogOf(n.catalogId);
@@ -1502,6 +1504,15 @@ export class RecipesComponent implements OnInit {
     } catch {
       /* приватный режим */
     }
+    this.api.rawCategories$().subscribe({
+      next: (cats) => {
+        this.rawCategories.set(cats);
+        this.rawCategoriesLoaded = true;
+      },
+      error: () => {
+        this.rawCategoriesLoaded = false;
+      },
+    });
     this.reload();
   }
 
@@ -2089,7 +2100,7 @@ export class RecipesComponent implements OnInit {
     this.componentEditNameEn.set(node.nameEn ?? '');
     this.componentEditNameSr.set(node.nameSr ?? '');
     this.componentEditCatalogId.set(node.catalogId);
-    this.componentEditCategory.set('прочее');
+    this.componentEditCategory.set(this.defaultRawCategoryId());
     this.err.set('');
     if (node.kind === 'product' && !this.rawCategoriesLoaded) {
       this.rawCategoriesLoaded = true;
@@ -2106,9 +2117,8 @@ export class RecipesComponent implements OnInit {
     this.componentEdit.set(null);
   }
 
-  hasCurrentCategory(): boolean {
-    const cat = this.componentEditCategory();
-    return !!cat && cat !== 'прочее' && !this.rawCategories().some((c) => c.name === cat);
+  defaultRawCategoryId(): number | null {
+    return this.rawCategories().find((c) => c.name.trim().toLowerCase() === 'прочее')?.id ?? this.rawCategories()[0]?.id ?? null;
   }
 
   saveComponentEdit(): void {
@@ -2123,13 +2133,20 @@ export class RecipesComponent implements OnInit {
 
     if (state.kind === 'raw') {
       if (state.productId == null) return;
-      const category = this.componentEditCategory().trim() || 'прочее';
+      const categoryId = this.componentEditCategory() ?? this.defaultRawCategoryId();
+      const categoryName = this.rawCategories().find((c) => c.id === categoryId)?.name ?? 'прочее';
+      const patch: Record<string, unknown> = { name };
+      if (categoryId != null) patch['categoryId'] = categoryId;
       this.componentEditSaving.set(true);
-      this.api.patchProduct(state.productId, { name, category }).subscribe({
+      this.api.patchProduct(state.productId, patch).subscribe({
         next: () => {
           this.componentEditSaving.set(false);
           this.products.update((list) =>
-            list.map((p) => (p.id === state.productId ? { ...p, name, category } : p))
+            list.map((p) =>
+              p.id === state.productId
+                ? { ...p, name, ...(categoryId != null ? { categoryId, categoryName } : {}) }
+                : p
+            )
           );
           this.map.update((m) =>
             m

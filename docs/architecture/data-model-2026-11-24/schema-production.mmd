@@ -1,0 +1,113 @@
+erDiagram
+  PRODUCTS ||--o{ PROD_NODES : "ref_id (только kind=product, без FK)"
+  PRODUCT_CATALOGS ||--o{ PROD_NODES : "catalog_id (без FK)"
+  UNITS ||--o{ PROD_NODES : "unit_id (без FK)"
+  PROD_NODES ||--o{ PROD_OPS : "output_node_id"
+  PROD_OPS ||--o{ PROD_OP_INPUTS : "op_id"
+  PROD_NODES ||--o{ PROD_OP_INPUTS : "node_id"
+  PROD_NODES ||--o{ PROD_PACKAGINGS : "node_id"
+  PROD_PACKAGINGS ||--o{ PROD_PACKAGING_TARE : "packaging_id"
+  PRODUCTS ||--o{ PROD_PACKAGING_TARE : "product_id"
+  MAP_BATCHES ||--o{ MAP_BATCH_ITEMS : "batch_id (программно)"
+
+  PROD_NODES {
+    int id PK
+    text kind "product | state | output"
+    int ref_id "products.id только для kind=product; без FK"
+    text name
+    text name_en
+    text name_sr
+    int catalog_id "product_catalogs.id; без FK"
+    int unit_id "units.id; без FK"
+    int position
+    numeric portion_qty
+    numeric price
+    text note
+    boolean archived
+  }
+
+  PROD_OPS {
+    int id PK
+    text name
+    numeric yield_pct "0…100; в расчёте не используется"
+    numeric labor_hours
+    int output_node_id "prod_nodes.id; без FK"
+    numeric plan_qty
+    int plan_unit_id "units.id; без FK"
+    text note
+    int position
+  }
+
+  PROD_OP_INPUTS {
+    int id PK
+    int op_id "prod_ops.id; без FK"
+    int node_id "prod_nodes.id; без FK"
+    numeric qty
+    boolean in_mass
+    numeric loss_pct
+  }
+
+  PROD_PACKAGINGS {
+    int id PK
+    int node_id "prod_nodes.id; без FK"
+    text name
+    numeric qty_base
+    int min_order
+    boolean is_default "ровно одна на node_id"
+    numeric price
+    text price_basis "unit | portion | piece"
+    numeric cost
+    boolean available
+    int position
+    boolean archived
+    text title
+    text title_en
+    text title_sr
+  }
+
+  PROD_PACKAGING_TARE {
+    int packaging_id PK
+    int product_id PK
+    int position
+  }
+
+  MAP_BATCHES {
+    int id PK
+    text op_name "снимок имени, не op_id"
+    text output_name "снимок имени, не node_id"
+    numeric qty
+    int unit_id "без FK"
+    numeric cost_total
+    text status "posted | reversed"
+    text created_login
+  }
+
+  MAP_BATCH_ITEMS {
+    int id PK
+    int batch_id "map_batches.id; без FK"
+    int product_id "products.id; без FK"
+    numeric qty
+    numeric unit_cost
+  }
+
+  MAP_META {
+    int id PK "всегда 1"
+    int version "оптимистичная блокировка"
+    timestamptz updated_at
+  }
+
+  PRODUCTS {
+    int id PK "складское сырьё"
+    text name UK
+    int unit_id FK
+  }
+
+  PRODUCT_CATALOGS {
+    int id PK
+    text name UK
+  }
+
+  UNITS {
+    int id PK
+    text code UK
+  }

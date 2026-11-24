@@ -384,7 +384,7 @@ settingsRouter.post(
 );
 
 // ============ КАТЕГОРИИ СЫРЬЯ (номенклатура склада, products) ============
-// Словарь product_categories задаёт набор имён; products.category — текст-носитель.
+// Словарь product_categories — единственный владелец категории; products.category_id — FK на него.
 // «прочее» — корзина нераспределённого (не заносится в словарь). Matching — без регистра.
 
 /** Список категорий сырья с количеством активных позиций. */
@@ -395,7 +395,7 @@ settingsRouter.get(
       `select pc.id, pc.name, pc.icon, pc.color, pc.protected, pc.position,
               count(p.id) filter (where p.active)::int as "productCount"
          from product_categories pc
-         left join products p on lower(btrim(p.category)) = pc.name
+         left join products p on p.category_id = pc.id
         group by pc.id, pc.name, pc.icon, pc.color, pc.protected, pc.position
         order by pc.position, pc.name`
     );
@@ -481,7 +481,6 @@ settingsRouter.patch(
       if (name !== cur[0].name) {
         const { rows: clash } = await client.query('select 1 from product_categories where name = $2 and id <> $1', [id, name]);
         if (clash.length) throw new ApiError(409, 'Такая категория уже есть');
-        await client.query('update products set category = $2 where lower(btrim(category)) = $1', [cur[0].name, name]);
       }
       await client.query('update product_categories set name = $2, icon = $3, color = $4 where id = $1', [id, name, icon, color]);
     });
@@ -504,7 +503,11 @@ settingsRouter.delete(
       if (cur[0].protected) {
         throw new ApiError(409, 'Системную категорию нельзя удалить');
       }
-      await client.query("update products set category = 'прочее' where lower(btrim(category)) = $1", [cur[0].name]);
+      const { rows: fallback } = await client.query(
+        "select id from product_categories where lower(btrim(name)) = 'прочее' limit 1"
+      );
+      if (!fallback.length) throw new ApiError(500, 'В справочнике нет категории «прочее»');
+      await client.query('update products set category_id = $2 where category_id = $1', [id, fallback[0].id]);
       await client.query('delete from product_categories where id = $1', [id]);
     });
     await audit(req.user, { action: 'delete', entity: 'setting', entityId: `rawcat:${id}`, title: 'Категория сырья удалена' });
@@ -517,10 +520,9 @@ settingsRouter.get(
   '/raw-products-all',
   wrap(async (_req, res) => {
     const { rows } = await pool.query(
-      `select p.id, p.name, pc.id as "categoryId", u.code as "unitCode",
+      `select p.id, p.name, p.category_id as "categoryId", u.code as "unitCode",
               p.min_stock::float8 as "minStock", p.shelf_life_days as "shelfLifeDays"
          from products p
-         left join product_categories pc on pc.name = lower(btrim(p.category))
          left join units u on u.id = p.unit_id
         where p.active
         order by p.name`
@@ -529,7 +531,7 @@ settingsRouter.get(
   })
 );
 
-// ============ КАТАЛОГ ПРОДУКЦИИ (готовые продукты, tech_cards) ============
+// ============ КАТАЛОГ ПРОДУКЦИИ (product_catalogs) ============
 
 /** Иконка каталога — эмодзи, не больше нескольких символов. */
 function catalogIcon(v: unknown): string {

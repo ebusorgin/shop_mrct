@@ -1,38 +1,69 @@
 /**
- * Сквозная нумерация отчётов-отгрузок (Otpremnica).
+ * Нумерация отчётов-отгрузок (Otpremnica): порядковый номер внутри года.
  *
- * Номер выдаётся один раз из последовательности store_order_doc_seq и дальше
- * не меняется: повторное сохранение заказа, перестройка отчёта и перестановка
- * строк его не трогают. Нумеруются только заказы на сегодня и вперёд — у старых
- * заказов без номера остаётся прежний вид «год-id».
+ * Год берётся из delivery_date, поэтому заказ на январь 2027, оформленный
+ * в декабре 2026, сразу получает 2027-1. Счётчик года хранится в doc_counters
+ * и увеличивается в той же транзакции, что и запись номера: откат транзакции
+ * откатывает и номер, поэтому дыр в нумерации не остаётся.
+ *
+ * Номер выдаётся один раз: повторное сохранение, перестройка отчёта и
+ * перестановка строк его не меняют. Старые заказы без номера сохраняют
+ * прежний вид «год-id» в отчёте.
  */
 import type { PoolClient } from 'pg';
 import { tx } from '../db';
 
-/** Выдаёт номера перечисленным заказам в заданном порядке; уже выданные пропускает. */
-async function assignDocNumbers(client: PoolClient, ids: number[]): Promise<number> {
+/** Следующий номер для года: атомарный upsert строки счётчика. */
+async function nextDocNo(client: PoolClient, year: number): Promise<number> {
+  const { rows } = await client.query<{ last_no: string }>(
+    `insert into doc_counters (doc_year, last_no)
+     values ($1, 1)
+     on conflict (doc_year) do update
+       set last_no = doc_counters.last_no + 1,
+           updated_at = now()
+     returning last_no`,
+    [year]
+  );
+  return Number(rows[0].last_no);
+}
+
+/** Выдать номера перечисленным заказам в заданном порядке; уже выданные пропускает. */
+async function assignDocNumbers(
+  client: PoolClient,
+  rows: { id: number; doc_year: number }[]
+): Promise<number> {
   let assigned = 0;
-  for (const id of ids) {
+  for (const row of rows) {
+    const docNo = await nextDocNo(client, Number(row.doc_year));
     const { rowCount } = await client.query(
       `update store_orders
-          set doc_no = nextval('store_order_doc_seq')
+          set doc_no = $2, doc_year = $3
         where id = $1 and doc_no is null`,
-      [id]
+      [row.id, docNo, row.doc_year]
     );
-    if (rowCount) assigned++;
+    if (!rowCount) {
+      // Заказ уже получил номер параллельно — откатываем и счётчик, и весь транш.
+      throw new Error(`Заказ #${row.id} уже получил номер`);
+    }
+    assigned++;
   }
   return assigned;
 }
 
 /** Номер при сохранении заказа магазином: один раз, только на сегодня и вперёд. */
 export async function assignOrderDocNumber(client: PoolClient, orderId: number): Promise<boolean> {
-  const { rowCount } = await client.query(
-    `update store_orders
-        set doc_no = nextval('store_order_doc_seq')
-      where id = $1 and doc_no is null and delivery_date >= current_date`,
+  const { rows } = await client.query<{ doc_year: number }>(
+    `select extract(year from delivery_date)::int as doc_year
+       from store_orders
+      where id = $1
+        and doc_no is null
+        and delivery_date >= current_date
+      for update`,
     [orderId]
   );
-  return Boolean(rowCount);
+  if (!rows.length) return false;
+  await assignDocNumbers(client, [{ id: orderId, doc_year: Number(rows[0].doc_year) }]);
+  return true;
 }
 
 /**
@@ -44,8 +75,8 @@ export async function assignOrderDocNumber(client: PoolClient, orderId: number):
  */
 export async function ensureDeliveryDocNumbers(deliveryDate: string): Promise<number> {
   return tx(async (client) => {
-    const { rows } = await client.query<{ id: number }>(
-      `select o.id
+    const { rows } = await client.query<{ id: number; doc_year: number }>(
+      `select o.id, extract(year from o.delivery_date)::int as doc_year
          from store_orders o
          join stores s on s.id = o.store_id
         where o.delivery_date = $1::date
@@ -55,22 +86,22 @@ export async function ensureDeliveryDocNumbers(deliveryDate: string): Promise<nu
           for update of o`,
       [deliveryDate]
     );
-    return assignDocNumbers(client, rows.map((row) => row.id));
+    return assignDocNumbers(client, rows.map((row) => ({ id: Number(row.id), doc_year: Number(row.doc_year) })));
   });
 }
 
 /**
- * Номера для всех будущих заказов без doc_no — после импорта Google-таблицы.
+ * Номера для всех будущих заказов без номера — после импорта Google-таблицы.
  * Порядок: дата доставки, код магазина, id. Выполняется в транзакции импорта.
  */
 export async function ensureFutureDocNumbers(client: PoolClient): Promise<number> {
-  const { rows } = await client.query<{ id: number }>(
-    `select o.id
+  const { rows } = await client.query<{ id: number; doc_year: number }>(
+    `select o.id, extract(year from o.delivery_date)::int as doc_year
        from store_orders o
        join stores s on s.id = o.store_id
       where o.doc_no is null
         and o.delivery_date >= current_date
       order by o.delivery_date, s.code, o.id`
   );
-  return assignDocNumbers(client, rows.map((row) => row.id));
+  return assignDocNumbers(client, rows.map((row) => ({ id: Number(row.id), doc_year: Number(row.doc_year) })));
 }

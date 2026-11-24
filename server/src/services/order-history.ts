@@ -184,6 +184,22 @@ export async function importOrderHistory(): Promise<OrderHistoryResult> {
         [orderId, [...order.items.keys()], [...order.items.values()]]
       );
     }
+
+    // Новым заказам на сегодня и вперёд — номера по порядку отчёта, продолжая последовательность.
+    const { rows: unnumbered } = await client.query<{ id: number }>(
+      `select o.id
+         from store_orders o
+         join stores s on s.id = o.store_id
+        where o.doc_no is null and o.delivery_date >= current_date
+        order by o.delivery_date, s.code, o.id`
+    );
+    for (const { id } of unnumbered) {
+      await client.query(
+        `update store_orders set doc_no = nextval('store_order_doc_seq')
+          where id = $1 and doc_no is null`,
+        [id]
+      );
+    }
   });
 
   const dates = [...new Set(orders.map((order) => order.date))].sort();

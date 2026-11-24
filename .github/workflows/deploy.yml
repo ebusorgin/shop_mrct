@@ -1,5 +1,6 @@
 # Автодеплой на боевой сервер.
-# Пуш в main -> сборка на раннере GitHub -> архив уезжает по SSH -> система применяет релиз.
+# Пуш в main -> тесты на PostgreSQL -> сборка на раннере GitHub -> архив уезжает по SSH ->
+# система применяет релиз. Красные тесты блокируют сборку и выкладку.
 # Нужен один секрет репозитория: DEPLOY_SSH_KEY (приватный ключ пользователя deployer
 # на сервере; публичная часть уже в /home/deployer/.ssh/authorized_keys).
 name: Deploy
@@ -22,8 +23,49 @@ env:
   DEPLOY_HOST_KEY: "37.230.115.170 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAII+e5qh2VNAzq0he/w1Ztp1i182KyYPaTlrwIpQqALnM"
 
 jobs:
+  test:
+    name: Тесты
+    runs-on: ubuntu-latest
+    # Как на проде: PostgreSQL 16. Тесты создают и удаляют свою временную базу.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: 5432
+      PGUSER: postgres
+      PGPASSWORD: postgres
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Сервер — зависимости
+        working-directory: server
+        run: npm ci --no-audit --no-fund
+
+      - name: Тесты сервера
+        working-directory: server
+        run: npm test
+
   build:
     name: Сборка
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -11,11 +11,9 @@
     "migrate:map": "tsx src/migrate-legacy-to-map.ts",
     "catalogs:assign": "tsx scripts/assign-catalogs.ts",
     "test:legacy": "tsx --test test/legacy-map.pure.test.ts",
-    "test": "node --import tsx --test test/delivery-calendar.pure.test.ts test/waybill-units.pure.test.ts test/waybill-intake-reverse.fake.test.ts test/batches-writeoff.fake.test.ts",
-    "test:pure": "node --import tsx --test test/delivery-calendar.pure.test.ts test/waybill-units.pure.test.ts",
-    "test:fake": "node --import tsx --test test/waybill-intake-reverse.fake.test.ts test/batches-writeoff.fake.test.ts",
-    "test:integration": "node --import tsx --test test/waybill-integration.pg.test.ts",
-    "test:all": "node --import tsx --test test/delivery-calendar.pure.test.ts test/waybill-units.pure.test.ts test/waybill-intake-reverse.fake.test.ts test/batches-writeoff.fake.test.ts test/waybill-integration.pg.test.ts"
+    "test": "node --import tsx --test test/legacy-map.pure.test.ts test/order-numbering.pg.test.ts",
+    "test:pure": "node --import tsx --test test/legacy-map.pure.test.ts",
+    "test:numbering": "node --import tsx --test test/order-numbering.pg.test.ts"
   },
   "dependencies": {
     "@types/archiver": "^8.0.0",

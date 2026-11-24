@@ -14,6 +14,7 @@ import { ApiError, wrap } from '../http';
 import { audit } from '../services/audit';
 import { requireStore } from '../services/auth';
 import { orderArchive } from '../services/order-archive';
+import { assignOrderDocNumber } from '../services/order-numbering';
 import { orderReport } from '../services/order-report';
 import { deliveryWindows } from '../services/order-window';
 import { packagingLabel, packagingWeight } from '../services/packagings';
@@ -229,12 +230,7 @@ storeRouter.put(
       }
       // Номер отчёта-отгрузки выдаётся один раз: обновление заказа его не меняет
       // и не расходует номер (nextval вычисляется только для строки без doc_no).
-      await client.query(
-        `update store_orders
-            set doc_no = nextval('store_order_doc_seq')
-          where id = $1 and doc_no is null and delivery_date >= current_date`,
-        [id]
-      );
+      await assignOrderDocNumber(client, id);
       await client.query('delete from store_order_items where order_id = $1', [id]);
       for (const item of items) {
         await client.query(

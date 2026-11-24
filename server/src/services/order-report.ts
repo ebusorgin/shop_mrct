@@ -4,8 +4,9 @@
  * ставка PDV задаётся параметром отчёта (по умолчанию 20 %).
  * storeId = null — документы по всем магазинам, у которых есть заказ на дату.
  */
-import { pool, tx } from '../db';
+import { pool } from '../db';
 import { sheetsPool } from '../db-sheets';
+import { ensureDeliveryDocNumbers } from './order-numbering';
 import { freezeOrderSnapshots } from './order-price-snapshot';
 
 export const VAT_RATE = 20;
@@ -160,40 +161,6 @@ async function sheetLineOrder(deliveryDate: string): Promise<Map<number, number>
   } catch {
     return null;
   }
-}
-
-/**
- * Сквозная нумерация отчётов-отгрузок: заказы даты доставки получают номер
- * в том же порядке, в котором печатаются документы (код магазина, затем id).
- * Уже выданный номер не меняется, прошлые даты не трогаем: у старых заказов
- * без номера остаётся прежний вид «год-id». Вызывается при построении отчёта,
- * чтобы печать за день до доставки не требовала ручной перенумерации.
- * Нумеруем всю дату целиком, даже если отчёт открыт по одному магазину —
- * иначе номер, выданный магазину раньше других, сломал бы порядок печати.
- */
-export async function ensureDeliveryDocNumbers(deliveryDate: string): Promise<number> {
-  return tx(async (client) => {
-    const { rows } = await client.query<{ id: number; docNo: string | null }>(
-      `select o.id, o.doc_no as "docNo"
-         from store_orders o
-         join stores s on s.id = o.store_id
-        where o.delivery_date = $1::date
-          and o.delivery_date >= current_date
-        order by s.code, o.id
-          for update of o`,
-      [deliveryDate]
-    );
-    let assigned = 0;
-    for (const row of rows) {
-      if (row.docNo != null) continue;
-      await client.query(
-        'update store_orders set doc_no = nextval(\'store_order_doc_seq\') where id = $1',
-        [row.id]
-      );
-      assigned++;
-    }
-    return assigned;
-  });
 }
 
 export async function orderReport(

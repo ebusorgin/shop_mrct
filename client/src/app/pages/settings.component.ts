@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, DestroyRef, OnInit, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, ElementRef, OnInit, computed, inject, signal, viewChild } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Subscription, finalize } from 'rxjs';
 import { FormsModule } from '@angular/forms';
@@ -11,7 +11,7 @@ import { fmtMoney, fmtQty, httpErr, trim } from '../core/format';
 import { CURRENCY_PRESETS, setCurrencySymbol } from '../core/currency';
 import { packagingLabel } from '../core/packaging-label';
 import { PasswordFormComponent } from '../shared/password-form.component';
-import { PickOption, PickerComponent } from '../shared/picker.component';
+import { PickOption } from '../shared/picker.component';
 import { TabItem, TabStripComponent } from '../shared/tab-strip.component';
 import { AuditComponent } from './audit.component';
 import { QoderChatComponent } from './qoder-chat.component';
@@ -29,7 +29,6 @@ interface LinkPackaging {
   nodeName: string;
   title: string | null;
   qtyBase: number;
-  minOrder: number;
   available: boolean;
   price: number;
   unitCode: string;
@@ -81,7 +80,7 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
 @Component({
   selector: 'app-settings',
   standalone: true,
-  imports: [CommonModule, FormsModule, TranslatePipe, PasswordFormComponent, PickerComponent, TabStripComponent, AuditComponent, QoderChatComponent],
+  imports: [CommonModule, FormsModule, TranslatePipe, PasswordFormComponent, TabStripComponent, AuditComponent, QoderChatComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styles: [`
     .cat-badge { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; border-radius:8px; margin-right:8px; font-size:15px; line-height:1; vertical-align:middle; }
@@ -268,12 +267,32 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
     .excel-grid .link-price { display:inline-block; margin-left:5px; padding:0 5px; border-radius:8px; background:var(--green-soft); color:var(--green); font-size:10px; font-weight:700; line-height:16px; vertical-align:middle; }
     .excel-grid .link-off { display:inline-block; margin-left:5px; padding:0 5px; border-radius:8px; background:var(--amber-soft); color:var(--amber); font-size:10px; font-weight:700; line-height:16px; vertical-align:middle; }
     .link-scrim { position:fixed; inset:0; z-index:80; }
-    .link-pop { position:fixed; z-index:81; width:300px; padding:8px; background:var(--panel); border:1px solid var(--border); border-radius:10px; box-shadow:0 12px 30px rgba(10,18,32,.22); }
-    .link-pop-head { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; margin-bottom:6px; font-size:12px; }
-    .link-pop-head span { overflow:hidden; text-overflow:ellipsis; }
-    .link-pop-hint { margin:-2px 0 6px; font-size:11px; color:var(--muted); }
-    .link-pop-x { border:0; background:transparent; color:var(--muted); font-size:14px; cursor:pointer; line-height:1; }
-    .link-unset { width:100%; margin-top:6px; padding:6px; border:1px solid var(--border); border-radius:8px; background:#fff; color:var(--red); font:inherit; font-size:12px; cursor:pointer; }
+    .link-pop { position:fixed; z-index:81; width:min(430px, calc(100vw - 16px)); max-height:min(72vh, 560px); display:flex; flex-direction:column;
+                padding:12px; background:var(--panel); border:1px solid var(--border); border-radius:14px; box-shadow:0 18px 50px rgba(10,18,32,.28); }
+    .link-pop-head { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; margin-bottom:10px; }
+    .link-pop-head b { display:block; font-size:14px; letter-spacing:-.01em; }
+    .link-pop-head span { display:block; margin-top:3px; font-size:11.5px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .link-pop-x { border:0; background:transparent; color:var(--muted); cursor:pointer; font-size:14px; line-height:1; padding:2px 4px; border-radius:6px; }
+    .link-pop-x:hover { background:#eef3f8; color:var(--ink); }
+    .link-search { margin-bottom:8px; }
+    .link-search input { width:100%; padding:8px 10px; font-size:13px; border:1px solid var(--border); border-radius:9px; background:#fbfcfd; }
+    .link-search input:focus { outline:none; border-color:var(--brand-blue); background:#fff; box-shadow:0 0 0 3px var(--accent-soft); }
+    .link-list { flex:1; min-height:0; overflow:auto; display:flex; flex-direction:column; gap:4px; margin:0 -4px; padding:0 4px; }
+    .link-opt { display:flex; flex-direction:column; gap:3px; width:100%; text-align:left; padding:8px 10px; border:1px solid transparent;
+                border-radius:9px; background:#fff; font:inherit; color:var(--text); cursor:pointer; }
+    .link-opt:hover { background:#f6fafe; border-color:#cfe0ef; }
+    .link-opt.on { border-color:var(--brand-blue); background:#f2f8fc; }
+    .link-opt:disabled { opacity:.6; cursor:progress; }
+    .lo-main { display:flex; align-items:baseline; justify-content:space-between; gap:8px; }
+    .lo-name { font-size:13.5px; font-weight:600; line-height:1.25; }
+    .lo-price { flex:none; font-size:11px; font-weight:700; color:var(--green); background:var(--green-soft); border-radius:999px; padding:1px 7px; }
+    .lo-sub { display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:11px; color:var(--muted); }
+    .lo-unit { color:var(--accent); background:var(--accent-soft); border-radius:999px; padding:0 6px; font-weight:600; }
+    .lo-note { color:var(--amber); background:var(--amber-soft); border-radius:999px; padding:0 6px; font-weight:600; }
+    .link-empty { margin:0; padding:18px 8px; text-align:center; font-size:12.5px; color:var(--muted); }
+    .link-foot { margin-top:8px; font-size:11px; color:var(--muted); }
+    .link-unset { width:100%; margin-top:8px; padding:7px; border:1px solid #e5b4b4; border-radius:9px; background:#fff; color:#b03a2e; font:inherit; font-size:12.5px; cursor:pointer; }
+    .link-unset:hover { background:#fdf4f4; }
     .link-unset:disabled { opacity:.6; cursor:progress; }
     .sheet-unmatched { padding:8px 12px; border-bottom:1px solid var(--border); background:var(--amber-soft); color:#7a5b00; font-size:12px; line-height:1.5; }
     /* Наклейки */
@@ -319,7 +338,13 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
     .excel-grid .row-num { position:sticky; left:0; z-index:1; min-width:38px; width:38px; background:#f8f9fa; color:#9aa0a6; text-align:center; font-weight:400; }
     .excel-grid tbody tr:hover td { background:#f6faff; }
     .excel-grid .no-rows { padding:18px; color:var(--muted); text-align:center; }
-    .excel-tabs { display:flex; overflow-x:auto; border-top:1px solid var(--border); background:#f3f2f1; scrollbar-width:thin; }
+    .excel-tabs-bar { display:flex; align-items:stretch; border-top:1px solid var(--border); background:#f3f2f1; }
+    .excel-tabs-bar .tabs-arrow { flex:none; width:30px; border:0; background:#f3f2f1; color:#5f6368; font:inherit; font-size:16px; line-height:1;
+                                     cursor:pointer; }
+    .excel-tabs-bar .tabs-arrow:hover { background:#e4e4e4; color:#217346; }
+    .excel-tabs-bar .tabs-arrow:first-child { border-right:1px solid #dcdcdc; }
+    .excel-tabs-bar .tabs-arrow:last-child { border-left:1px solid #dcdcdc; }
+    .excel-tabs { display:flex; flex:1; min-width:0; overflow-x:auto; background:#f3f2f1; scrollbar-width:thin; scroll-behavior:smooth; }
     .excel-tabs button { flex:0 0 auto; padding:7px 14px; border:0; border-right:1px solid #dcdcdc; background:transparent; color:#4a4a4a; font:inherit; font-size:12px; cursor:pointer; }
     .excel-tabs button:hover { background:#e8e8e8; }
     .excel-tabs button.on { background:#fff; color:#217346; font-weight:700; box-shadow:inset 0 -2px 0 #217346; }
@@ -861,9 +886,6 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
                         <th class="link-col">ID</th>
                         <th class="local-name">localName</th>
                       }
-                      @if ($index === sheetMinColumn()) {
-                        <th class="local-min">Min Заказ(local)</th>
-                      }
                       <th class="col-letter">{{ excelColumn($index) }}</th>
                     }
                   </tr>
@@ -873,8 +895,7 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
                     <tr>
                       <th class="row-num">{{ rowIndex + 1 }}</th>
                       @for (cell of row; track $index) {
-                        @if ($index === 1) {
-                          @if (sheetLink(rowIndex); as id) {
+                        @if ($index === 1) {                          @if (sheetLink(rowIndex); as id) {
                             <td class="link-id">{{ id }}</td>
                             <td class="local-name">
                               {{ sheetLocalName(rowIndex) || '—' }}
@@ -892,13 +913,6 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
                             <td class="local-name miss"></td>
                           }
                         }
-                        @if ($index === sheetMinColumn()) {
-                          @if (sheetMinOrder(rowIndex); as minOrder) {
-                            <td class="local-min">{{ minOrder }}</td>
-                          } @else {
-                            <td class="local-min miss">—</td>
-                          }
-                        }
                         <td [class.num]="isNumber(cell)">
                           {{ cell }}
                           @if (sheetStoreId(rowIndex, $index); as storeId) {
@@ -908,30 +922,57 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
                       }
                     </tr>
                   } @empty {
-                    <tr><td class="no-rows" [attr.colspan]="sheetColumns().length + 4">Пустой лист — данных нет</td></tr>
+                    <tr><td class="no-rows" [attr.colspan]="sheetColumns().length + 3">Пустой лист — данных нет</td></tr>
                   }
                 </tbody>
               </table>
             </div>
-            <div class="excel-tabs" role="tablist" aria-label="Листы документа">
-              @for (item of sheetTabs(); track item.name) {
-                <button type="button" role="tab" [class.on]="item.name === sheet.name"
-                        [attr.aria-selected]="item.name === sheet.name"
-                        [attr.title]="item.misses.length ? 'Нераспознанных блюд: ' + item.misses.length : null"
-                        (click)="openSheet(item.name, $event)">{{ item.name }}@if (item.misses.length) {<span class="tab-badge">{{ item.misses.length }}</span>}</button>
-              }
+            <div class="excel-tabs-bar">
+              <button type="button" class="tabs-arrow" aria-label="Прокрутить вкладки влево" (click)="scrollTabsBy(-1)">‹</button>
+              <div class="excel-tabs" #sheetTabsStrip role="tablist" aria-label="Листы документа">
+                @for (item of sheetTabs(); track item.name) {
+                  <button type="button" role="tab" [class.on]="item.name === sheet.name"
+                          [attr.aria-selected]="item.name === sheet.name"
+                          [attr.title]="item.misses.length ? 'Нераспознанных блюд: ' + item.misses.length : null"
+                          (click)="openSheet(item.name, $event)">{{ item.name }}@if (item.misses.length) {<span class="tab-badge">{{ item.misses.length }}</span>}</button>
+                }
+              </div>
+              <button type="button" class="tabs-arrow" aria-label="Прокрутить вкладки вправо" (click)="scrollTabsBy(1)">›</button>
             </div>
             @if (linkTarget(); as target) {
               <div class="link-scrim" (click)="closeLinkPicker()"></div>
               <div class="link-pop" [style.left.px]="target.x" [style.top.px]="target.y"
                    role="dialog" aria-label="Сопоставление с фасовкой">
                 <div class="link-pop-head">
-                  <span>Строка {{ target.row + 1 }}: «{{ target.rowName }}»</span>
+                  <div>
+                    <b>Сопоставить позицию</b>
+                    <span>Строка {{ target.row + 1 }} · «{{ target.rowName }}»</span>
+                  </div>
                   <button type="button" class="link-pop-x" aria-label="Закрыть" (click)="closeLinkPicker()">✕</button>
                 </div>
-                <div class="link-pop-hint">Выбранная фасовка и её цена попадут в заказ.</div>
-                <app-picker [options]="linkOptions()" [selectedId]="target.packagingId" [autoOpen]="true"
-                            placeholder="Найти фасовку…" (picked)="pickLink($event)"></app-picker>
+                <div class="link-search">
+                  <input autofocus [ngModel]="linkQuery()" (ngModelChange)="linkQuery.set($event)"
+                         (keydown.escape)="closeLinkPicker()" placeholder="Поиск: название или каталог…" />
+                </div>
+                <div class="link-list">
+                  @for (o of linkVisible(); track o.id) {
+                    <button type="button" class="link-opt" [class.on]="o.id === target.packagingId"
+                            [disabled]="linkSaving()" (click)="pickLink(o)">
+                      <span class="lo-main">
+                        <span class="lo-name">{{ o.label }}</span>
+                        @if (o.price) { <span class="lo-price">{{ o.price }}</span> }
+                      </span>
+                      <span class="lo-sub">
+                        @if (o.group) { <span>{{ o.group }}</span> }
+                        @if (o.unit) { <span class="lo-unit">{{ o.unit }}</span> }
+                        @if (o.note) { <span class="lo-note">{{ o.note }}</span> }
+                      </span>
+                    </button>
+                  } @empty {
+                    <p class="link-empty">Ничего не найдено — попробуйте другое название</p>
+                  }
+                </div>
+                <div class="link-foot">Найдено {{ linkVisible().length }} из {{ linkOptions().length }}</div>
                 @if (target.packagingId != null) {
                   <button type="button" class="link-unset" [disabled]="linkSaving()" (click)="clearLink()">
                     Снять сопоставление
@@ -1097,6 +1138,7 @@ export class SettingsComponent implements OnInit {
   readonly sheetDoc = signal<GoogleSheet | null>(null);
   /** Имя открытого листа; пусто — показывается первый. */
   sheetTab = signal('');
+  private readonly sheetTabsRef = viewChild<ElementRef<HTMLElement>>('sheetTabsStrip');
   sheetBusy = signal(false);
   /** Импорт истории заказов из листов — отдельный счётчик, чтобы кнопки не блокировали друг друга. */
   historyBusy = signal(false);
@@ -1111,37 +1153,46 @@ export class SettingsComponent implements OnInit {
   });
 
   /**
-   * Вкладка ближайшего будущего дня. Дата берётся из имени листа: «21.11», «5.11»,
-   * «22,11 (копия)». Год не указан — считаем текущим; если дата уже прошла, берём следующий.
+   * Вкладка, ближайшая к сегодняшнему дню. Имена листов — «21.11», «5.11», «28,11»;
+   * год в имени не указан, а история заказов начинается с 2025 года. Поэтому идём
+   * по листам в порядке вкладок и набавляем год при переходе через декабрь → январь.
+   * Копии («22.11 (копия)») и служебные листы пропускаем.
    */
   private defaultSheetTab(tabs: GoogleSheet['tabs']): string {
+    const startYear = 2025;
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+    let year = startYear;
+    let prevKey = 0;
+    let prevMonth = 0;
     let bestName = '';
-    let bestTime = Number.POSITIVE_INFINITY;
+    let bestDiff = Number.POSITIVE_INFINITY;
+    let bestFuture = false;
     for (const tab of tabs) {
-      const date = this.tabDate(tab.name, today);
-      if (!date) continue;
-      if (date.getTime() <= today.getTime()) continue;
-      if (date.getTime() < bestTime) {
-        bestTime = date.getTime();
+      const name = String(tab.name).trim();
+      if (/копия/i.test(name)) continue;
+      const m = name.match(/^(\d{1,2})\s*[.,]\s*(\d{1,2})$/);
+      if (!m) continue;
+      const day = Number(m[1]);
+      const month = Number(m[2]);
+      if (day < 1 || day > 31 || month < 1 || month > 12) continue;
+      const key = month * 100 + day;
+      // Год меняется только на стыке декабрь → январь; одиночные вкладки,
+      // вставленные не по порядку (например, 07.03 после 21.03), год не сдвигают.
+      if (prevKey && key < prevKey && prevMonth >= 10 && month <= 3) year += 1;
+      prevKey = key;
+      prevMonth = month;
+      const date = new Date(year, month - 1, day);
+      if (date.getDate() !== day || date.getMonth() !== month - 1) continue;
+      const diff = Math.abs(date.getTime() - today.getTime());
+      const future = date.getTime() >= today.getTime();
+      if (diff < bestDiff || (diff === bestDiff && future && !bestFuture)) {
         bestName = tab.name;
+        bestDiff = diff;
+        bestFuture = future;
       }
     }
     return bestName || tabs[0]?.name || '';
-  }
-
-  /** Дата из имени листа; null — имени не похоже на день/месяц. */
-  private tabDate(name: string, today: Date): Date | null {
-    const m = String(name).match(/(\d{1,2})\s*[.,]\s*(\d{1,2})/);
-    if (!m) return null;
-    const day = Number(m[1]);
-    const month = Number(m[2]);
-    if (day < 1 || day > 31 || month < 1 || month > 12) return null;
-    const date = new Date(today.getFullYear(), month - 1, day);
-    if (date.getDate() !== day || date.getMonth() !== month - 1) return null;
-    if (date.getTime() <= today.getTime()) date.setFullYear(today.getFullYear() + 1);
-    return date;
   }
   /** Колонки рисуются по ширине листа, даже если строк нет. */
   readonly sheetColumns = computed(() => Array.from({ length: this.sheetActive()?.width ?? 0 }));
@@ -1154,8 +1205,7 @@ export class SettingsComponent implements OnInit {
     }
     return null;
   });
-  /** Колонка листа с заголовком «Min Заказ»: локальный минимум вставляется прямо перед ней. */
-  readonly sheetMinColumn = computed(() => this.sheetMinHeader()?.column ?? -1);
+  /** Колонка листа с заголовком «Min Заказ» нужна только для поиска колонок магазинов. */
   readonly sheetLoadedLabel = computed(() => {
     const loadedAt = this.sheetDoc()?.loadedAt;
     return loadedAt ? this.sheetFormat.format(new Date(loadedAt)) : '';
@@ -1188,12 +1238,6 @@ export class SettingsComponent implements OnInit {
   }
 
   /** Минимальный заказ связанной фасовки; null — позиция не сопоставлена. */
-  sheetMinOrder(rowIndex: number): number | null {
-    const id = this.sheetLink(rowIndex);
-    if (id === null) return null;
-    return this.linkPackages().find((pk) => pk.id === id)?.minOrder ?? null;
-  }
-
   private sheetLinkPackaging(rowIndex: number): LinkPackaging | null {
     const id = this.sheetLink(rowIndex);
     return id === null ? null : this.linkPackages().find((pk) => pk.id === id) ?? null;
@@ -1261,8 +1305,17 @@ export class SettingsComponent implements OnInit {
     y: number;
   } | null>(null);
   readonly linkSaving = signal(false);
+  readonly linkQuery = signal('');
   readonly linkPackages = signal<LinkPackaging[]>([]);
   private cardsRequested = false;
+
+  readonly linkVisible = computed<PickOption[]>(() => {
+    const q = this.linkQuery().trim().toLowerCase();
+    if (!q) return this.linkOptions();
+    return this.linkOptions().filter((o) =>
+      `${o.label} ${o.group ?? ''}`.toLowerCase().includes(q)
+    );
+  });
 
   readonly linkOptions = computed<PickOption[]>(() =>
     this.linkPackages()
@@ -1281,7 +1334,7 @@ export class SettingsComponent implements OnInit {
   private ensureCards(): void {
     if (this.cardsRequested) return;
     this.cardsRequested = true;
-    this.api.mapPackagings$().pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+    this.api.sheetSkus$().pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: (packagings) => this.linkPackages.set(packagings),
       error: (e) => {
         this.cardsRequested = false;
@@ -1296,19 +1349,29 @@ export class SettingsComponent implements OnInit {
     const rowName = (sheet.rows[rowIndex]?.[1] ?? '').trim();
     if (!rowName) return;
     this.ensureCards();
+    this.linkQuery.set('');
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const width = Math.min(430, vw - 16);
+    const maxH = Math.min(560, Math.floor(vh * 0.72));
+    const below = rect.bottom + 6;
+    const above = rect.top - maxH - 6;
+    let y = below + maxH <= vh - 8 ? below : above;
+    y = Math.max(8, Math.min(y, Math.max(8, vh - maxH - 8)));
     this.linkTarget.set({
       tab: sheet.name,
       row: rowIndex,
       rowName,
       packagingId: sheet.links?.[rowIndex] ?? null,
-      x: Math.max(8, Math.min(rect.left, window.innerWidth - 308)),
-      y: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 340)),
+      x: Math.max(8, Math.min(rect.left, vw - width - 8)),
+      y,
     });
   }
 
   closeLinkPicker(): void {
     this.linkTarget.set(null);
+    this.linkQuery.set('');
   }
 
   pickLink(option: PickOption): void {
@@ -1377,6 +1440,7 @@ export class SettingsComponent implements OnInit {
         this.sheetTab.set(
           doc?.tabs.some((tab) => tab.name === current) ? current : this.defaultSheetTab(doc?.tabs ?? [])
         );
+        setTimeout(() => this.revealActiveTab(), 0);
       },
       error: (e) => this.sheetErr.set(`Не удалось загрузить сохранённую таблицу: ${httpErr(e)}`),
     });
@@ -1390,6 +1454,26 @@ export class SettingsComponent implements OnInit {
       wrap.scrollTop = 0;
       wrap.scrollLeft = 0;
     }
+    setTimeout(() => this.revealActiveTab(), 0);
+  }
+
+  /** Горизонтальная прокрутка ленты листов стрелками. */
+  scrollTabsBy(direction: 1 | -1): void {
+    const el = this.sheetTabsRef()?.nativeElement;
+    if (!el) return;
+    el.scrollBy({ left: direction * Math.max(180, el.clientWidth * 0.7), behavior: 'smooth' });
+  }
+
+  /** Активная вкладка всегда видна: лента прокручивается к ней по центру. */
+  private revealActiveTab(): void {
+    const el = this.sheetTabsRef()?.nativeElement;
+    if (!el) return;
+    const active = el.querySelector<HTMLElement>('button.on');
+    if (!active) return;
+    const wrapRect = el.getBoundingClientRect();
+    const activeRect = active.getBoundingClientRect();
+    const delta = activeRect.left - wrapRect.left - (wrapRect.width - activeRect.width) / 2;
+    el.scrollBy({ left: delta, behavior: 'smooth' });
   }
 
   /** «Синхронизировать»: скачать таблицу заново и заменить сохранённые листы в отдельной базе. */
@@ -1415,6 +1499,7 @@ export class SettingsComponent implements OnInit {
           });
         }
         this.sheetMsg.set(`Таблица обновлена: листов ${doc.tabs.length} · сопоставлено ${matched.size} из ${matched.size + doc.unmatched.length}`);
+        setTimeout(() => this.revealActiveTab(), 0);
       },
       error: (e) => this.sheetErr.set(`Не удалось синхронизировать: ${httpErr(e)}`),
     });

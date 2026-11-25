@@ -5,7 +5,7 @@ import { ActivatedRoute, RouterLink } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { ApiService } from '../core/api.service';
 import { httpErr } from '../core/format';
-import { OrderReport, ReportDoc, ReportLine } from '../core/models';
+import { OrderReport, PointCard, ReportDoc, ReportLine } from '../core/models';
 import { DeliveryWriteoffComponent } from './delivery-writeoff.component';
 import { RecipesComponent } from '../pages/recipes.component';
 
@@ -22,6 +22,26 @@ function isoToday(): string {
   const d = new Date();
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** Ключ сортировки строк документа (как по столбцам Excel). */
+type SortKey = 'name' | 'unit' | 'qty' | 'price' | 'rate' | 'vat' | 'gross';
+
+/** Сектор 3D-пирога: значение и цвета торца/стенки. */
+interface PiePart {
+  key: string;
+  label: string;
+  value: number;
+  fill: string;
+  side: string;
+}
+
+/** Сектор с посчитанной геометрией SVG. */
+interface PieSlice extends PiePart {
+  pct: number;
+  mid: number;
+  top: string;
+  wall: string;
 }
 
 /**
@@ -46,12 +66,15 @@ export class OrderReportComponent implements OnInit {
   readonly storeMode = this.route.snapshot.data['storeMode'] === true;
 
   readonly date = this.route.snapshot.queryParamMap.get('date') ?? '';
-  readonly storeId = (() => {
+  /** undefined — все магазины; число — один магазин. */
+  readonly storeId = signal<number | undefined>((() => {
     if (this.storeMode) return undefined;
     const raw = this.route.snapshot.queryParamMap.get('storeId');
     const n = raw ? Number(raw) : NaN;
     return Number.isInteger(n) && n > 0 ? n : undefined;
-  })();
+  })());
+  /** Точки для выбора магазина в шапке отчёта. */
+  readonly stores = signal<PointCard[]>([]);
 
   /** Куда вернуться по «←»: в кабинет магазина или в офисный архив. */
   readonly backLink = this.storeMode ? '/store/history' : '/orders';
@@ -63,6 +86,8 @@ export class OrderReportComponent implements OnInit {
   priceMode = signal<'sale' | 'cost'>('sale');
   /** Ставка PDV для отчёта; по умолчанию 20 %. */
   vatRate = signal(20);
+  /** Язык названий позиций в документе: сербский по умолчанию. */
+  lang = signal<'ru' | 'en' | 'sr'>('sr');
   vatInput: number | null = 20;
   settingsErr = signal('');
 
@@ -93,17 +118,79 @@ export class OrderReportComponent implements OnInit {
   /** Скачивание zip-архива с PDF-документами даты. */
   pdfBusy = signal(false);
   pdfErr = signal('');
-  /** Состояние слепка цен и названий на дату доставки (офис). */
-  snapshotInfo = signal<{
-    date: string; total: number; frozen: number; named: number; frozenAt: string | null; past: boolean;
-  } | null>(null);
-  snapBusy = signal(false);
-  snapErr = signal('');
   /** Прошлая доставка — история: количество в таких заказах не редактируется. */
   readonly qtyLocked = computed(() => !this.date || this.date < isoToday());
   orderNote = signal('');
 
-  documents = computed(() => this.report()?.documents ?? []);
+  /** Документы отчёта: загружаются все, селект в шапке фильтрует их на клиенте.
+   *  Показываем только активные магазины (в кабинете магазина фильтр не применяется). */
+  documents = computed<ReportDoc[]>(() => {
+    const all = this.report()?.documents ?? [];
+    if (this.storeMode) return all;
+    const known = this.stores();
+    const active = known.length ? new Set(known.filter((s) => s.active).map((s) => s.id)) : null;
+    const visible = active ? all.filter((d) => active.has(d.storeId)) : all;
+    const id = this.storeId();
+    return id == null ? visible : visible.filter((d) => d.storeId === id);
+  });
+
+  /** Пункты селекта: активные магазины, у которых есть заказ/документ на эту дату. */
+  readonly storeOptions = computed<PointCard[]>(() => {
+    const docs = this.report()?.documents ?? [];
+    const ids = new Set(docs.map((d) => d.storeId));
+    return this.stores()
+      .filter((s) => s.active && ids.has(s.id))
+      .sort((a, b) => a.code.localeCompare(b.code, 'ru'));
+  });
+
+  /** Сортировка строк как в Excel: по клику на заголовок, только в просмотре и печати. */
+  sort = signal<{ key: SortKey; dir: 'asc' | 'desc' } | null>(null);
+
+  readonly viewDocuments = computed<ReportDoc[]>(() => {
+    const s = this.sort();
+    const docs = this.documents();
+    if (!s) return docs;
+    const sign = s.dir === 'asc' ? 1 : -1;
+    const value = (line: ReportLine): string | number => {
+      switch (s.key) {
+        case 'name':
+          return line.name;
+        case 'unit':
+          return this.unitLabel(line.unit);
+        case 'qty':
+          return line.qty;
+        case 'price':
+          return line.price;
+        case 'rate':
+          return line.vatRate;
+        case 'vat':
+          return line.vat;
+        case 'gross':
+          return line.gross;
+      }
+    };
+    return docs.map((doc) => ({
+      ...doc,
+      lines: [...doc.lines].sort((a, b) => {
+        const va = value(a);
+        const vb = value(b);
+        if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * sign;
+        return String(va).localeCompare(String(vb), 'ru', { sensitivity: 'base' }) * sign;
+      }),
+    }));
+  });
+
+  sortBy(key: SortKey): void {
+    const cur = this.sort();
+    this.sort.set(cur?.key === key
+      ? { key, dir: cur.dir === 'asc' ? 'desc' : 'asc' }
+      : { key, dir: 'asc' });
+  }
+
+  sortMark(key: SortKey): string {
+    const s = this.sort();
+    return s?.key === key ? (s.dir === 'asc' ? '▲' : '▼') : '';
+  }
 
   /** Сводка по всем документам даты: вес, нетто, налог и сумма к оплате. */
   totalWeight = computed(() => {
@@ -113,6 +200,128 @@ export class OrderReportComponent implements OnInit {
   totalNet = computed(() => Math.round(this.documents().reduce((s, d) => s + d.net, 0) * 100) / 100);
   totalVat = computed(() => Math.round(this.documents().reduce((s, d) => s + d.vat, 0) * 100) / 100);
   totalGross = computed(() => Math.round(this.documents().reduce((s, d) => s + d.gross, 0) * 100) / 100);
+
+  /** Себестоимость строк отчёта (только офисный отчёт) — основа маржи. */
+  totalCost = computed(() =>
+    Math.round(this.documents().reduce((s, d) => s + d.lines.reduce((x, l) => x + (l.costTotal ?? 0), 0), 0) * 100) / 100
+  );
+
+  /** Вкладка блока экономики: 'total' — весь отчёт, иначе ключ категории (c<id>). */
+  finTab = signal<string>('total');
+
+  /** Категории, реально присутствующие в отчёте: вкладки идут в порядке каталогов рецептур. */
+  categoryStats = computed(() => {
+    const groups = new Map<
+      string,
+      { key: string; label: string; position: number; net: number; cost: number; vat: number }
+    >();
+    for (const doc of this.documents()) {
+      for (const line of doc.lines) {
+        const key = line.categoryId != null ? `c${line.categoryId}` : 'none';
+        let g = groups.get(key);
+        if (!g) {
+          g = {
+            key,
+            label: line.categoryName || 'Без категории',
+            position: line.categoryPosition ?? 9999,
+            net: 0,
+            cost: 0,
+            vat: 0,
+          };
+          groups.set(key, g);
+        }
+        g.net += line.net;
+        g.cost += line.costTotal ?? 0;
+        g.vat += line.vat;
+      }
+    }
+    return [...groups.values()].sort((a, b) => a.position - b.position || b.net - a.net);
+  });
+
+  /** Если выбранная категория исчезла (сменились дата/магазин) — показываем «Общую». */
+  activeTabKey = computed(() => {
+    const tab = this.finTab();
+    return tab === 'total' || this.categoryStats().some((c) => c.key === tab) ? tab : 'total';
+  });
+
+  private activeCategory = computed(() => this.categoryStats().find((c) => c.key === this.activeTabKey()) ?? null);
+
+  /** Суммы активной вкладки: весь отчёт или одна категория. */
+  private activeSum = computed(() => {
+    const c = this.activeCategory();
+    return {
+      net: c ? c.net : this.totalNet(),
+      cost: c ? c.cost : this.totalCost(),
+      vat: c ? c.vat : this.totalVat(),
+    };
+  });
+
+  /**
+   * 3D-пирог «куда уходит сумма к оплате»: себестоимость + маржа + PDV.
+   * Геометрия считается здесь, SVG — только отрисовка (без сторонних библиотек).
+   */
+  activeSlices = computed(() => {
+    const s = this.activeSum();
+    return this.buildPie([
+      { key: 'cost', label: 'Себестоимость', value: s.cost, fill: '#7d8aa0', side: '#5f6b80' },
+      { key: 'margin', label: 'Маржа производства', value: Math.max(s.net - s.cost, 0), fill: '#2e9e5b', side: '#1f7a44' },
+      { key: 'vat', label: 'PDV к уплате', value: s.vat, fill: '#e0a32e', side: '#b57c15' },
+    ]);
+  });
+
+  activeDraw = computed(() => [...this.activeSlices()].sort((s1, s2) => Math.sin(s1.mid) - Math.sin(s2.mid)));
+  activeTotal = computed(() => {
+    const s = this.activeSum();
+    return Math.round((s.cost + Math.max(s.net - s.cost, 0) + s.vat) * 100) / 100;
+  });
+  activeTotalLabel = computed(() => `К оплате · PDV ${this.rateLabel(this.docVatRate())} %`);
+  activeMarginPctLabel = computed(() => {
+    const s = this.activeSum();
+    if (!(s.net > 0)) return '';
+    return `${(((s.net - s.cost) / s.net) * 100).toFixed(1).replace('.', ',')} % от нетто`;
+  });
+
+  /**
+   * Геометрия 3D-пирога: плоский эллипс сверху + боковые стенки, выдавленные вниз.
+   * Порядок в массиве — порядок секторов по кругу; порядок отрисовки задаёт activeDraw.
+   */
+  private buildPie(parts: PiePart[]): PieSlice[] {
+    const items = parts.filter((p) => p.value > 0);
+    const total = items.reduce((s, p) => s + p.value, 0);
+    if (!(total > 0)) return [];
+    const cx = 100;
+    const cy = 72;
+    const rx = 94;
+    const ry = 48;
+    const depth = 16;
+    const n = (v: number) => v.toFixed(2);
+    const pt = (a: number, dy = 0): [number, number] => [cx + rx * Math.cos(a), cy + ry * Math.sin(a) + dy];
+    let a = -Math.PI / 2;
+    return items.map((p) => {
+      const a0 = a;
+      const span = (p.value / total) * Math.PI * 2;
+      a = a0 + span;
+      const [x0, y0] = pt(a0);
+      const [x1, y1] = pt(a);
+      const [bx0, by0] = pt(a0, depth);
+      const [bx1, by1] = pt(a, depth);
+      const large = span > Math.PI ? 1 : 0;
+      const full = span >= Math.PI * 2 - 0.001;
+      const top = full
+        ? `M ${n(cx - rx)} ${n(cy)} A ${rx} ${ry} 0 1 1 ${n(cx + rx)} ${n(cy)} A ${rx} ${ry} 0 1 0 ${n(cx - rx)} ${n(cy)} Z`
+        : `M ${n(cx)} ${n(cy)} L ${n(x0)} ${n(y0)} A ${rx} ${ry} 0 ${large} 1 ${n(x1)} ${n(y1)} Z`;
+      const wall = full
+        ? `M ${n(cx - rx)} ${n(cy + depth)} A ${rx} ${ry} 0 1 1 ${n(cx + rx)} ${n(cy + depth)} ` +
+          `L ${n(cx + rx)} ${n(cy)} A ${rx} ${ry} 0 1 1 ${n(cx - rx)} ${n(cy)} Z`
+        : `M ${n(x0)} ${n(y0)} A ${rx} ${ry} 0 ${large} 1 ${n(x1)} ${n(y1)} ` +
+          `L ${n(bx1)} ${n(by1)} A ${rx} ${ry} 0 ${large} 0 ${n(bx0)} ${n(by0)} Z`;
+      return { ...p, pct: (p.value / total) * 100, mid: a0 + span / 2, top, wall };
+    });
+  }
+
+  pctLabel(pct: number): string {
+    return `${pct.toFixed(1).replace('.', ',')} %`;
+  }
   /** Ставка, реально применённая сервером (для магазина — 20 %, для офиса — выбранная). */
   docVatRate = computed(() => this.documents()[0]?.vatRate ?? this.vatRate());
 
@@ -132,7 +341,7 @@ export class OrderReportComponent implements OnInit {
 
   scopeLabel = computed(() => {
     if (this.storeMode) return 'Мой магазин';
-    return this.storeId === undefined ? 'Все магазины' : 'Один магазин';
+    return this.storeId() === undefined ? 'Все магазины' : 'Один магазин';
   });
 
   ngOnInit(): void {
@@ -143,10 +352,34 @@ export class OrderReportComponent implements OnInit {
         this.vatRate.set(saved);
         this.vatInput = saved;
       }
+      const savedLang = localStorage.getItem('report.lang');
+      if (savedLang === 'ru' || savedLang === 'en' || savedLang === 'sr') this.lang.set(savedLang);
     } catch {
-      /* приватный режим — остаётся 20 % */
+      /* приватный режим — остаётся 20 % и сербский */
+    }
+    if (!this.storeMode) {
+      this.api.points$().pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+        next: (rows) => {
+          this.stores.set(rows);
+          if (this.storeId() != null && !this.storeOptions().some((s) => s.id === this.storeId())) {
+            this.storeId.set(undefined);
+          }
+        },
+        error: () => undefined,
+      });
     }
     this.load();
+  }
+
+  /** Подпись точки в селекте: код, а имя — только если отличается. */
+  storeLabel(s: PointCard): string {
+    return s.name && s.name !== s.code ? `${s.code} — ${s.name}` : s.code;
+  }
+
+  /** Выбор магазина в шапке — только фильтр по уже загруженным документам, без перехода. */
+  setStore(value: string | number): void {
+    const id = value === '' || value == null ? undefined : Number(value);
+    this.storeId.set(Number.isInteger(id) && (id as number) > 0 ? (id as number) : undefined);
   }
 
   load(): void {
@@ -155,14 +388,18 @@ export class OrderReportComponent implements OnInit {
     this.err.set('');
     const request$ = this.storeMode
       ? this.api.myOrderReport$(this.date)
-      : this.api.orderReport$(this.date, this.storeId, this.priceMode(), this.vatRate());
+      : this.api.orderReport$(this.date, undefined, this.priceMode(), this.vatRate(), this.lang());
     request$
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (report) => {
           this.report.set(report);
+          // Ссылка могла вести на закрытый магазин или магазин без заказа этой даты.
+          if (this.stores().length && this.storeId() != null &&
+              !this.storeOptions().some((s) => s.id === this.storeId())) {
+            this.storeId.set(undefined);
+          }
           this.loading.set(false);
-          this.loadSnapshotInfo();
         },
         error: (e) => {
           this.loading.set(false);
@@ -171,9 +408,20 @@ export class OrderReportComponent implements OnInit {
       });
   }
 
+  /** Язык названий позиций: RU / EN / SR. Бланк Otpremnica остаётся на сербском. */
+  setLang(lang: 'ru' | 'en' | 'sr'): void {
+    if (this.lang() === lang) return;
+    this.lang.set(lang);
+    try {
+      localStorage.setItem('report.lang', lang);
+    } catch {
+      /* приватный режим */
+    }
+    this.load();
+  }
+
   /** Переключение «по себестоимости»: документ строится заново с другим набором цен. */
-  setPriceMode(mode: 'sale' | 'cost'): void {
-    if (this.priceMode() === mode) return;
+  setPriceMode(mode: 'sale' | 'cost'): void {    if (this.priceMode() === mode) return;
     this.priceMode.set(mode);
     this.load();
   }
@@ -187,7 +435,7 @@ export class OrderReportComponent implements OnInit {
     if (!this.date || this.pdfBusy() || !this.documents().length) return;
     this.pdfBusy.set(true);
     this.pdfErr.set('');
-    this.api.downloadOrderReportFile$(this.date, this.storeId, this.priceMode(), this.vatRate()).pipe(
+    this.api.downloadOrderReportFile$(this.date, this.storeId(), this.priceMode(), this.vatRate(), this.lang(), this.sort()).pipe(
       takeUntilDestroyed(this.destroyRef),
       finalize(() => this.pdfBusy.set(false)),
     ).subscribe({
@@ -218,41 +466,7 @@ export class OrderReportComponent implements OnInit {
     });
   }
 
-  /** Блок слепка цен: состояние фиксации на дату доставки. */
-  private loadSnapshotInfo(): void {
-    if (this.storeMode || !this.date) return;
-    this.api.priceSnapshotInfo$(this.date).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
-      next: (info) => this.snapshotInfo.set(info),
-      error: () => this.snapshotInfo.set(null),
-    });
-  }
-
-  /** «12.11.2026 00:05» из ISO-строки момента фиксации. */
-  frozenLabel(iso: string | null): string {
-    if (!iso) return '';
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return '';
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  }
-
-  /** Осознанный переснимок слепка прошедшей даты по текущим ценам и названиям. */
-  refreshSnapshot(): void {
-    if (!this.date || this.snapBusy()) return;
-    if (!confirm(`Переснять слепок на ${this.dateLabel()} по текущим ценам и названиям? Прошлые значения будут заменены.`)) return;
-    this.snapBusy.set(true);
-    this.snapErr.set('');
-    this.api.refreshPriceSnapshot$(this.date).pipe(
-      takeUntilDestroyed(this.destroyRef),
-      finalize(() => this.snapBusy.set(false)),
-    ).subscribe({
-      next: (r) => {
-        this.orderNote.set(`Слепок переснят: ${r.rows} строк`);
-        this.load();
-      },
-      error: (e) => this.snapErr.set(httpErr(e)),
-    });
-  }
+  /** Блок слепка цен удалён вместе с механизмом фиксации цен. */
 
   /** ✎ рядом со строкой: редактор рецептуры поверх отчёта. */
   editRecipe(nodeId: number): void {
@@ -466,9 +680,9 @@ export class OrderReportComponent implements OnInit {
     this.load();
   }
 
-  /** Единица для узкой колонки JM: «porcija» не помещается — печатаем «porc.». */
+  /** Единица для узкой колонки JM: «porcija» печатаем как сербское «kom» (komad). */
   unitLabel(unit: ReportLine['unit']): string {
-    return unit === 'porcija' ? 'porc.' : unit;
+    return unit === 'porcija' ? 'kom' : unit;
   }
 
   money(value: number): string {

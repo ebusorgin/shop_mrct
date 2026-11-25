@@ -19,9 +19,9 @@ const SQL_LIST = `
          coalesce(s.avg_cost, 0)::float8 as "avgCost",
          coalesce((select json_agg(a.alias_raw order by lower(a.alias_raw))
                      from product_aliases a where a.product_id = p.id), '[]'::json) as aliases
-    from products p
+    from materials p
     join units u on u.id = p.unit_id
-    join product_categories pc on pc.id = p.category_id
+    join material_categories pc on pc.id = p.category_id
     left join stock s on s.product_id = p.id`;
 
 /** Неотрицательное число или null (пусто/undefined -> null); для коэффициентов пересчёта. */
@@ -110,29 +110,28 @@ productsRouter.get(
   })
 );
 
-/** Где используется складское сырьё: операции карты, в базовых единицах позиции. */
+/** Где используется складское сырьё: рецептуры, в базовых единицах позиции. */
 productsRouter.get(
   '/:id/usage',
   wrap(async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) throw new ApiError(400, 'Некорректный id');
     const { rows: cards } = await pool.query(
-      `select n.id, n.name,
-              i.qty::float8 as qty,
-              u.code as "unitCode",
-              n.portion_qty::float8 as "portionQty",
-              nu.code as "portionUnitCode"
-         from prod_op_inputs i
-         join prod_ops o on o.id = i.op_id
-         join prod_nodes n on n.id = o.output_node_id and not n.archived
-         join prod_nodes pn on pn.id = i.node_id
-         join units u on u.id = pn.unit_id
-         join units nu on nu.id = n.unit_id
-        where pn.kind = 'product' and pn.ref_id = $1
-        order by n.name`,
+      `select p.id, p.name,
+              pn.qty::float8 as qty,
+              mu.code as "unitCode",
+              p.portion_qty::float8 as "portionQty",
+              pu.code as "portionUnitCode"
+         from product_nodes pn
+         join products p on p.id = pn.product_id
+         join materials m on m.id = pn.material_id
+         join units mu on mu.id = m.unit_id
+         join units pu on pu.id = p.unit_id
+        where pn.material_id = $1
+        order by p.name`,
       [id]
     );
-    // Форма ответа сохранена для страницы склада: «полуфабрикаты» теперь часть карты.
+    // Форма ответа сохранена для страницы склада.
     res.json({ semis: [], cards });
   })
 );
@@ -177,7 +176,7 @@ async function saveAliases(
   if (keys.length) {
     const { rows } = await client.query(
       `select a.alias, a.alias_raw, p.name
-         from product_aliases a join products p on p.id = a.product_id
+         from product_aliases a join materials p on p.id = a.product_id
         where a.alias = any($1) and a.product_id <> $2 limit 3`,
       [keys, productId]
     );
@@ -222,12 +221,12 @@ productsRouter.post(
     const aliases = aliasList(req.body);
     const id = await tx(async (client) => {
       await assertBaseUnit(client, unitId, 'Продукт');
-      await assertNameFree(client, name, 'products');
+      await assertNameFree(client, name, 'materials');
       const categoryId = requestedCategoryId == null
         ? await defaultCategoryId(client)
         : await assertCategoryId(client, requestedCategoryId);
       const { rows } = await client.query(
-        'insert into products (name, category_id, unit_id, min_stock, shelf_life_days, g_per_pcs, ml_per_pcs, g_per_ml, created_by, updated_by) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9) returning id',
+        'insert into materials (name, category_id, unit_id, min_stock, shelf_life_days, g_per_pcs, ml_per_pcs, g_per_ml, created_by, updated_by) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9) returning id',
         [name, categoryId, unitId, minStock, shelfLifeDays, gPerPcs, mlPerPcs, gPerMl, req.user?.id ?? null]
       );
       await client.query('insert into stock (product_id, qty, avg_cost) values ($1, 0, 0)', [rows[0].id]);
@@ -275,20 +274,20 @@ productsRouter.patch(
     }
     const id = Number(req.params.id);
     await tx(async (client) => {
-      if (newName) await assertNameFree(client, newName, 'products', id);
+      if (newName) await assertNameFree(client, newName, 'materials', id);
       if (hasCategory) push('category_id', await assertCategoryId(client, Number(rawCategoryId)));
       // снимок «до» — для журнала: видно, что именно поменяли.
       // коэффициенты (г в 1 шт, мл в 1 шт, плотность) — обязательно: от них зависят расход и себестоимость,
       // без них правка одного коэффициента попадала в журнал как пустое изменение.
       const snapCols =
         'name, category_id, unit_id, min_stock, shelf_life_days, active, g_per_pcs::float8 as g_per_pcs, ml_per_pcs::float8 as ml_per_pcs, g_per_ml::float8 as g_per_ml';
-      const { rows: before } = await client.query(`select ${snapCols} from products where id = $1`, [id]);
+      const { rows: before } = await client.query(`select ${snapCols} from materials where id = $1`, [id]);
       if (!before.length) throw new ApiError(404, 'Продукт не найден');
       params.push(req.user?.id ?? null);
       fields.push(`updated_by = $${params.length}`);
       params.push(id);
-      await client.query(`update products set ${fields.join(', ')} where id = $${params.length}`, params);
-      const { rows: after } = await client.query(`select ${snapCols} from products where id = $1`, [id]);
+      await client.query(`update materials set ${fields.join(', ')} where id = $${params.length}`, params);
+      const { rows: after } = await client.query(`select ${snapCols} from materials where id = $1`, [id]);
       if (aliases) await saveAliases(client, id, aliases, String(after[0].name));
       const changes = diff(before[0], after[0]);
       // число мог подсказать GPT (кнопка «Спросить у ИИ») — в журнале это должно отличаться
@@ -316,7 +315,7 @@ productsRouter.delete(
     if (!Number.isInteger(id)) throw new ApiError(400, 'Некорректный id');
 
     const result = await tx(async (client) => {
-      const { rows: prod } = await client.query('select name from products where id = $1', [id]);
+      const { rows: prod } = await client.query('select name from materials where id = $1', [id]);
       const title = `Продукт «${prod[0]?.name ?? '#' + id}»`;
       // Текущий остаток на складе (в базовых единицах).
       const stockRes = await client.query(
@@ -325,28 +324,24 @@ productsRouter.delete(
       );
       const stockQty = stockRes.rows.length ? Number(stockRes.rows[0].qty) : 0;
 
-      // Живые ссылки: состав операций карты, тара фасовок и история выпусков.
+      // Живые ссылки: состав рецептур и история склада.
       // Пока позиция где-то используется, физически удалять её нельзя — только архив.
       const usageRes = await client.query(
         `select
-           (select count(*) from prod_nodes n
-              join prod_op_inputs i on i.node_id = n.id
-             where n.kind = 'product' and n.ref_id = $1)::int as in_recipes,
-           (select count(*) from prod_packaging_tare where product_id = $1)::int as in_tare,
-           (select count(*) from map_batch_items where product_id = $1)::int as in_history`,
+           (select count(*) from product_nodes where material_id = $1)::int as in_recipes,
+           ((select count(*) from movements where product_id = $1)
+            + (select count(*) from waybill_items where product_id = $1))::int as in_history`,
         [id]
       );
-      const usage = usageRes.rows[0] as { in_recipes: number; in_tare: number; in_history: number };
+      const usage = usageRes.rows[0] as { in_recipes: number; in_history: number };
       const usedReason = usage.in_recipes > 0
         ? 'используется в рецептурах'
-        : usage.in_tare > 0
-          ? 'используется как тара фасовки'
-          : usage.in_history > 0
-            ? 'есть в истории выпусков'
-            : null;
+        : usage.in_history > 0
+          ? 'есть в истории склада'
+          : null;
 
       if (usedReason) {
-        await client.query('update products set active = false, updated_by = $2 where id = $1', [id, req.user?.id ?? null]);
+        await client.query('update materials set active = false, updated_by = $2 where id = $1', [id, req.user?.id ?? null]);
         await auditTx(client, req.user, {
           action: 'delete',
           entity: 'product',
@@ -359,7 +354,7 @@ productsRouter.delete(
 
       if (stockQty !== 0) {
         // Остаток не обнулён — не удаляем физически, только в архив.
-        await client.query('update products set active = false, updated_by = $2 where id = $1', [id, req.user?.id ?? null]);
+        await client.query('update materials set active = false, updated_by = $2 where id = $1', [id, req.user?.id ?? null]);
         await auditTx(client, req.user, {
           action: 'delete',
           entity: 'product',
@@ -379,7 +374,7 @@ productsRouter.delete(
                 (select count(*) from d2) as wb`,
         [id]
       );
-      await client.query('delete from products where id = $1', [id]);
+      await client.query('delete from materials where id = $1', [id]);
       const h = hist.rows[0];
       await auditTx(client, req.user, {
         action: 'delete',

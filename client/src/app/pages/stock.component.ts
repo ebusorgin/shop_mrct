@@ -7,14 +7,15 @@ import { ApiService } from '../core/api.service';
 import { Movement, NearExpiryRow } from '../core/models';
 import { fmtDateTime, fmtQty, httpErr } from '../core/format';
 import { StockItemsComponent } from '../shared/stock-items.component';
+import { TareStockComponent } from '../shared/tare-stock.component';
 import { TabItem, TabStripComponent } from '../shared/tab-strip.component';
 
-type Tab = 'items' | 'journal' | 'shelf';
+type Tab = 'items' | 'journal' | 'shelf' | 'tare';
 
 @Component({
   selector: 'app-stock',
   standalone: true,
-  imports: [CommonModule, FormsModule, StockItemsComponent, TabStripComponent, RouterLink],
+  imports: [CommonModule, FormsModule, StockItemsComponent, TareStockComponent, TabStripComponent, RouterLink],
   changeDetection: ChangeDetectionStrategy.OnPush,
   styles: [`
     .red { color: var(--red); }
@@ -34,6 +35,13 @@ type Tab = 'items' | 'journal' | 'shelf';
     @if (tab() === 'items') {
       <div class="tab-panel tab-body">
         <app-stock-items />
+      </div>
+    }
+
+    <!-- ================= ТАРА ================= -->
+    @if (tab() === 'tare') {
+      <div class="tab-panel tab-body">
+        <app-tare-stock />
       </div>
     }
 
@@ -133,6 +141,7 @@ export class StockComponent implements OnInit {
 
   readonly stockTabs: TabItem[] = [
     { id: 'items', label: 'Остатки и номенклатура', icon: '📦' },
+    { id: 'tare', label: 'Тара', icon: '🧰' },
     { id: 'shelf', label: 'Сроки годности', icon: '⏳' },
     { id: 'journal', label: 'Журнал движений', icon: '📜' },
   ];
@@ -160,7 +169,7 @@ export class StockComponent implements OnInit {
         this.tab.set('items');
         this.err.set('');
         this.msg.set('');
-      } else if (t === 'journal' || t === 'shelf') {
+      } else if (t === 'journal' || t === 'shelf' || t === 'tare') {
         this.tab.set(t);
         this.err.set('');
         this.msg.set('');
@@ -185,11 +194,11 @@ export class StockComponent implements OnInit {
   wbLink = ['/waybills'];
   wbQp = { panel: 'new' };
 
-  /** Строки партий с истекающим сроком — из показателей панели (expiryLimit больше). */
+  /** Строки партий с истекающим сроком — отдельный эндпоинт склада (FIFO по накладным). */
   loadShelf(): void {
     this.shelfBusy.set(true);
-    this.api.dashboard$({ expiryLimit: '200' }).subscribe({
-      next: (v) => { this.shelfBusy.set(false); this.shelf.set(v.nearExpiry); },
+    this.api.stockNearExpiry$(200).subscribe({
+      next: (v) => { this.shelfBusy.set(false); this.shelf.set(v); },
       error: (e) => { this.shelfBusy.set(false); this.err.set(httpErr(e)); },
     });
   }

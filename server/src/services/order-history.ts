@@ -124,9 +124,6 @@ function toPackQty(
 
   if (!packaging || !(packaging.qtyBase > 0)) return amount;
   if (packaging.priceBasis === 'portion') return amount;
-  if (packaging.priceBasis === 'piece') {
-    return packaging.dimension === 'count' ? amount / packaging.qtyBase : amount;
-  }
   if (packaging.dimension === 'count') return amount / packaging.qtyBase;
   return (amount * 1000) / packaging.qtyBase;
 }
@@ -150,9 +147,9 @@ export async function importOrderHistory(onlyDates?: string[]): Promise<OrderHis
     pool.query<{ id: number; qtyBase: number; priceBasis: string; dimension: string | null }>(
       `select pk.id, pk.qty_base::float8 as "qtyBase",
               pk.price_basis as "priceBasis", u.dimension
-         from prod_packagings pk
-         join prod_nodes tc on tc.id = pk.node_id
-         join units u on u.id = tc.unit_id`
+         from product_skus pk
+         join products p on p.id = pk.product_id
+         join units u on u.id = p.unit_id`
     ),
   ]);
   const storesById = new Map(stores.map((store) => [store.id, store.id]));

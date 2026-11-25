@@ -46,6 +46,40 @@ export class ApiService {
 
   // ---- stock ----
   stock$(): Observable<M.StockRow[]> { return this.http.get<M.StockRow[]>(`${this.base}/stock`); }
+  /** Остатки тары. */
+  packages$(): Observable<M.PackageStockRow[]> {
+    return this.http.get<M.PackageStockRow[]>(`${this.base}/packages`);
+  }
+  /** Новая позиция тары. */
+  createPackage$(body: { name: string; kind: string }): Observable<{ id: number; name: string; kind: string }> {
+    return this.http.post<{ id: number; name: string; kind: string }>(`${this.base}/packages`, body);
+  }
+  /** Удалить тару (только если не используется и без движений). */
+  deletePackage$(id: number): Observable<{ ok: boolean }> {
+    return this.http.delete<{ ok: boolean }>(`${this.base}/packages/${id}`);
+  }
+  /** Движения тары. */
+  packageMovements$(params: { packageId?: number; limit?: number } = {}): Observable<M.PackageMovementRow[]> {
+    let hp = new HttpParams();
+    if (params.packageId != null) hp = hp.set('packageId', String(params.packageId));
+    if (params.limit != null) hp = hp.set('limit', String(params.limit));
+    return this.http.get<M.PackageMovementRow[]>(`${this.base}/packages/movements`, { params: hp });
+  }
+  /** Приход, списание или корректировка тары. */
+  addPackageMovement$(body: {
+    packageId: number;
+    type: 'receipt' | 'writeoff' | 'adjustment';
+    qty: number;
+    unitCost?: number;
+    comment?: string;
+  }): Observable<{ ok: boolean }> {
+    return this.http.post<{ ok: boolean }>(`${this.base}/packages/movements`, body);
+  }
+
+  /** Сроки годности по партиям прихода (FIFO): остаток раскладывается по накладным. */
+  stockNearExpiry$(limit = 200): Observable<M.NearExpiryRow[]> {
+    return this.http.get<M.NearExpiryRow[]>(`${this.base}/stock/near-expiry`, { params: { limit: String(limit) } });
+  }
   movements$(params: Record<string, string>): Observable<M.Movement[]> {
     let hp = new HttpParams();
     Object.entries(params).forEach(([k, v]) => (hp = hp.set(k, v)));
@@ -94,17 +128,23 @@ export class ApiService {
   productCatalogs$(): Observable<M.ProductCatalog[]> {
     return this.http.get<M.ProductCatalog[]>(`${this.base}/meta/product-catalogs`);
   }
-  /** Активные фасовки карты: ручное сопоставление строк Google-таблицы. */
-  mapPackagings$(): Observable<{
-    id: number; nodeId: number; nodeName: string; title: string | null; name: string;
-    qtyBase: number; minOrder: number; available: boolean; price: number;
-    unitCode: string; unitId: number; catalogName: string | null;
+  /** Рецептуры новой модели: products + product_nodes + product_skus (только чтение). */
+  recipes$(): Observable<M.RecipesData> {
+    return this.http.get<M.RecipesData>(`${this.base}/recipes`);
+  }
+  /** Сохранение рецептуры: поля, состав и SKU одной транзакцией. */
+  saveRecipe(id: number, body: unknown): Observable<{ ok: boolean }> {
+    return this.http.put<{ ok: boolean }>(`${this.base}/recipes/${id}`, body);
+  }
+  /** Фасовки (SKU) для ручного сопоставления строк Google-таблицы. */
+  sheetSkus$(): Observable<{
+    id: number; nodeName: string; title: string | null; qtyBase: number;
+    available: boolean; price: number; unitCode: string; catalogName: string | null;
   }[]> {
     return this.http.get<{
-      id: number; nodeId: number; nodeName: string; title: string | null; name: string;
-      qtyBase: number; minOrder: number; available: boolean; price: number;
-      unitCode: string; unitId: number; catalogName: string | null;
-    }[]>(`${this.base}/production-map/packagings`);
+      id: number; nodeName: string; title: string | null; qtyBase: number;
+      available: boolean; price: number; unitCode: string; catalogName: string | null;
+    }[]>(`${this.base}/recipes/skus`);
   }
 
   // ---- production map (единый граф производства) ----
@@ -209,12 +249,14 @@ export class ApiService {
     date: string,
     storeId?: number,
     priceMode: 'sale' | 'cost' = 'sale',
-    vatRate = 20
+    vatRate = 20,
+    lang: 'ru' | 'en' | 'sr' = 'sr'
   ): Observable<M.OrderReport> {
     const params: Record<string, string> = { date };
     if (storeId !== undefined) params['storeId'] = String(storeId);
     if (priceMode === 'cost') params['price'] = 'cost';
     if (vatRate !== 20) params['vat'] = String(vatRate);
+    if (lang !== 'sr') params['lang'] = lang;
     return this.http.get<M.OrderReport>(`${this.base}/orders/report`, { params });
   }
   /** Сохранить ручной порядок строк отчёта-отгрузки (офис): id фасовок в новом порядке. */
@@ -226,29 +268,24 @@ export class ApiService {
     date: string,
     storeId?: number,
     priceMode: 'sale' | 'cost' = 'sale',
-    vatRate = 20
+    vatRate = 20,
+    lang: 'ru' | 'en' | 'sr' = 'sr',
+    sort?: { key: string; dir: 'asc' | 'desc' } | null
   ): Observable<HttpResponse<Blob>> {
     const params: Record<string, string> = { date };
     if (storeId !== undefined) params['storeId'] = String(storeId);
     if (priceMode === 'cost') params['price'] = 'cost';
     if (vatRate !== 20) params['vat'] = String(vatRate);
+    if (lang !== 'sr') params['lang'] = lang;
+    if (sort) {
+      params['sort'] = sort.key;
+      params['sortDir'] = sort.dir;
+    }
     return this.http.get(`${this.base}/orders/report/pdf`, { params, responseType: 'blob', observe: 'response' });
   }
   /** Изменить количество упаковок позиции в заказе (офис) — строка заказа перезаписывается. */
   setReportLineQty$(orderId: number, packagingId: number, qty: number): Observable<{ ok: boolean }> {
     return this.http.put<{ ok: boolean }>(`${this.base}/orders/report/line`, { orderId, packagingId, qty });
-  }
-  /** Состояние слепка цен и названий строк заказов на дату доставки. */
-  priceSnapshotInfo$(date: string): Observable<{
-    date: string; total: number; frozen: number; named: number; frozenAt: string | null; past: boolean;
-  }> {
-    return this.http.get<{
-      date: string; total: number; frozen: number; named: number; frozenAt: string | null; past: boolean;
-    }>(`${this.base}/orders/price-snapshot`, { params: { date } });
-  }
-  /** Переснять слепок прошедшей даты по текущим ценам (офис). */
-  refreshPriceSnapshot$(date: string): Observable<{ ok: boolean; rows: number }> {
-    return this.http.post<{ ok: boolean; rows: number }>(`${this.base}/orders/price-snapshot/refresh`, { date });
   }
 
   // ---- ручное списание склада по доставке (офис) ----

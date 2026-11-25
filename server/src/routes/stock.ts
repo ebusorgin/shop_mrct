@@ -3,6 +3,7 @@ import { pool, tx } from '../db';
 import { ApiError, reqNum, reqStr, wrap } from '../http';
 import { applyMovement } from '../services/stock';
 import { auditTx } from '../services/audit';
+import { nearExpiryRows } from '../services/stock-expiry';
 
 export const stockRouter = Router();
 
@@ -18,12 +19,21 @@ stockRouter.get(
              p.min_stock::float8 as "minStock",
              (s.qty < p.min_stock) as low
         from stock s
-        join products p on p.id = s.product_id
-        join product_categories pc on pc.id = p.category_id
+        join materials p on p.id = s.product_id
+        join material_categories pc on pc.id = p.category_id
         join units u on u.id = p.unit_id
        where p.active
        order by pc.position, pc.name, p.name`);
     res.json(rows);
+  })
+);
+
+/** Сроки годности: остаток раскладывается по приходам FIFO, только чтение. */
+stockRouter.get(
+  '/near-expiry',
+  wrap(async (req, res) => {
+    const limit = Math.min(500, Number(req.query.limit) || 200);
+    res.json(await nearExpiryRows(limit));
   })
 );
 
@@ -65,7 +75,7 @@ stockRouter.get(
               coalesce(nullif(btrim(mu.full_name), ''), m.user_login) as "userName",
               to_char(m.created_at, 'YYYY-MM-DD HH24:MI') as created_at
          from movements m
-         join products p on p.id = m.product_id
+         join materials p on p.id = m.product_id
          join units u on u.id = p.unit_id
          left join users mu on mu.id = m.user_id
         ${where.length ? 'where ' + where.join(' and ') : ''}
@@ -93,7 +103,7 @@ stockRouter.post(
         comment: comment || 'ручная корректировка',
         actor: req.user,
       });
-      const { rows } = await client.query('select name from products where id = $1', [productId]);
+      const { rows } = await client.query('select name from materials where id = $1', [productId]);
       await auditTx(client, req.user, {
         action: 'adjust',
         entity: 'stock',

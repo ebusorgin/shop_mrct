@@ -34,7 +34,7 @@ export async function applyMovement(client: PoolClient, m: MoveInput): Promise<v
   if (rows.length === 0) {
     const inserted = await client.query(
       `insert into stock (product_id, qty, avg_cost)
-       select p.id, 0, 0 from products p where p.id = $1
+       select p.id, 0, 0 from materials p where p.id = $1
        on conflict (product_id) do nothing
        returning qty::float8 as qty, avg_cost::float8 as avg_cost`,
       [m.productId]

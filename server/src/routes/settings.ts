@@ -242,7 +242,18 @@ settingsRouter.post(
   '/google-sheet/order-history',
   requireOffice,
   wrap(async (req, res) => {
-    const result = await importOrderHistory();
+    const rawDates = (req.body ?? {}).dates;
+    let dates: string[] | undefined;
+    if (rawDates != null) {
+      if (!Array.isArray(rawDates) || !rawDates.length) {
+        throw new ApiError(400, 'dates: нужен непустой массив дат YYYY-MM-DD');
+      }
+      dates = rawDates.map((v) => String(v));
+      if (dates.some((d) => !/^\d{4}-\d{2}-\d{2}$/.test(d))) {
+        throw new ApiError(400, 'dates: даты в формате YYYY-MM-DD');
+      }
+    }
+    const result = await importOrderHistory(dates);
     await audit(req.user, {
       action: 'sync',
       entity: 'store_order',
@@ -383,8 +394,8 @@ settingsRouter.post(
   })
 );
 
-// ============ КАТЕГОРИИ СЫРЬЯ (номенклатура склада, products) ============
-// Словарь product_categories — единственный владелец категории; products.category_id — FK на него.
+// ============ КАТЕГОРИИ СЫРЬЯ (номенклатура склада, materials) ============
+// Словарь material_categories — единственный владелец категории; materials.category_id — FK на него.
 // «прочее» — корзина нераспределённого (не заносится в словарь). Matching — без регистра.
 
 /** Список категорий сырья с количеством активных позиций. */
@@ -394,8 +405,8 @@ settingsRouter.get(
     const { rows } = await pool.query(
       `select pc.id, pc.name, pc.icon, pc.color, pc.protected, pc.position,
               count(p.id) filter (where p.active)::int as "productCount"
-         from product_categories pc
-         left join products p on p.category_id = pc.id
+         from material_categories pc
+         left join materials p on p.category_id = pc.id
         group by pc.id, pc.name, pc.icon, pc.color, pc.protected, pc.position
         order by pc.position, pc.name`
     );
@@ -410,12 +421,12 @@ settingsRouter.put(
     const ids = orderIds(req.body?.ids);
     await tx(async (client) => {
       const { rows } = await client.query(
-        'select id from product_categories where id = any($1::int[])',
+        'select id from material_categories where id = any($1::int[])',
         [ids]
       );
       if (rows.length !== ids.length) throw new ApiError(400, 'Часть категорий не найдена');
       for (let i = 0; i < ids.length; i++) {
-        await client.query('update product_categories set position = $2 where id = $1', [ids[i], i + 1]);
+        await client.query('update material_categories set position = $2 where id = $1', [ids[i], i + 1]);
       }
     });
     await audit(req.user, {
@@ -437,12 +448,12 @@ settingsRouter.post(
     const icon = catalogIcon(req.body.icon);
     const color = catalogColor(req.body.color);
     if (icon) {
-      const { rows: busy } = await pool.query('select name from product_categories where icon = $1', [icon]);
+      const { rows: busy } = await pool.query('select name from material_categories where icon = $1', [icon]);
       if (busy.length) throw new ApiError(409, `Иконка ${icon} уже используется категорией «${busy[0].name}»`);
     }
     const { rows } = await pool.query(
-      `insert into product_categories (name, icon, color, position)
-       values ($1, $2, $3, coalesce((select max(position) + 1 from product_categories), 1))
+      `insert into material_categories (name, icon, color, position)
+       values ($1, $2, $3, coalesce((select max(position) + 1 from material_categories), 1))
        on conflict (name) do nothing returning id, name, icon, color, position`,
       [name, icon, color]
     );
@@ -458,7 +469,7 @@ settingsRouter.patch(
   wrap(async (req, res) => {
     const id = Number(req.params.id);
     const { rows: cur } = await pool.query(
-      'select name, icon, color, protected from product_categories where id = $1',
+      'select name, icon, color, protected from material_categories where id = $1',
       [id]
     );
     if (!cur.length) throw new ApiError(404, 'Категория не найдена');
@@ -472,17 +483,17 @@ settingsRouter.patch(
     const color = has('color') ? catalogColor(req.body.color) : (cur[0].color as string);
     if (icon) {
       const { rows: busy } = await pool.query(
-        'select name from product_categories where icon = $1 and id <> $2',
+        'select name from material_categories where icon = $1 and id <> $2',
         [icon, id]
       );
       if (busy.length) throw new ApiError(409, `Иконка ${icon} уже используется категорией «${busy[0].name}»`);
     }
     await tx(async (client) => {
       if (name !== cur[0].name) {
-        const { rows: clash } = await client.query('select 1 from product_categories where name = $2 and id <> $1', [id, name]);
+        const { rows: clash } = await client.query('select 1 from material_categories where name = $2 and id <> $1', [id, name]);
         if (clash.length) throw new ApiError(409, 'Такая категория уже есть');
       }
-      await client.query('update product_categories set name = $2, icon = $3, color = $4 where id = $1', [id, name, icon, color]);
+      await client.query('update material_categories set name = $2, icon = $3, color = $4 where id = $1', [id, name, icon, color]);
     });
     await audit(req.user, { action: 'update', entity: 'setting', entityId: `rawcat:${id}`, title: `Категория сырья → «${name}»` });
     res.json({ ok: true, name, icon, color });
@@ -496,7 +507,7 @@ settingsRouter.delete(
     const id = Number(req.params.id);
     await tx(async (client) => {
       const { rows: cur } = await client.query(
-        'select name, protected from product_categories where id = $1',
+        'select name, protected from material_categories where id = $1',
         [id]
       );
       if (!cur.length) return;
@@ -504,11 +515,11 @@ settingsRouter.delete(
         throw new ApiError(409, 'Системную категорию нельзя удалить');
       }
       const { rows: fallback } = await client.query(
-        "select id from product_categories where lower(btrim(name)) = 'прочее' limit 1"
+        "select id from material_categories where lower(btrim(name)) = 'прочее' limit 1"
       );
       if (!fallback.length) throw new ApiError(500, 'В справочнике нет категории «прочее»');
-      await client.query('update products set category_id = $2 where category_id = $1', [id, fallback[0].id]);
-      await client.query('delete from product_categories where id = $1', [id]);
+      await client.query('update materials set category_id = $2 where category_id = $1', [id, fallback[0].id]);
+      await client.query('delete from material_categories where id = $1', [id]);
     });
     await audit(req.user, { action: 'delete', entity: 'setting', entityId: `rawcat:${id}`, title: 'Категория сырья удалена' });
     res.json({ ok: true });
@@ -522,7 +533,7 @@ settingsRouter.get(
     const { rows } = await pool.query(
       `select p.id, p.name, p.category_id as "categoryId", u.code as "unitCode",
               p.min_stock::float8 as "minStock", p.shelf_life_days as "shelfLifeDays"
-         from products p
+         from materials p
          left join units u on u.id = p.unit_id
         where p.active
         order by p.name`
@@ -566,7 +577,7 @@ settingsRouter.get(
     const { rows } = await pool.query(
       `select pc.id, pc.name, pc.icon, pc.color, pc.protected, pc.position, count(n.id)::int as "cardCount"
          from product_catalogs pc
-         left join prod_nodes n on n.catalog_id = pc.id and not n.archived and n.kind <> 'product'
+         left join products n on n.catalog_id = pc.id
         group by pc.id, pc.name, pc.position, pc.icon, pc.color, pc.protected
         order by pc.position, pc.name`
     );

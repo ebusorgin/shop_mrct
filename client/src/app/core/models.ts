@@ -345,14 +345,25 @@ export interface ReportLine {
   net: number;
   vat: number;
   gross: number;
+  /** Себестоимость единицы и строки — только в офисном отчёте (маржа). */
+  cost?: number;
+  costTotal?: number;
   /** Вес строки в кг (для объёма 1 л = 1 кг); 0 — штучное без веса. */
   weightKg: number;
+  /** Каталог рецептуры — разбивка экономики отчёта по категориям. */
+  categoryId: number | null;
+  categoryName: string;
+  categoryColor: string;
+  /** Порядок каталога — вкладки категорий идут как в рецептурах. */
+  categoryPosition: number;
 }
 
 /** Документ отчёта по заказу одного магазина за дату доставки. */
 export interface ReportDoc {
   /** id заказа магазина — к нему привязан сохранённый порядок строк. */
   orderId: number;
+  /** Магазин документа (фильтр в шапке). */
+  storeId: number;
   number: string;
   deliveryDate: string;
   savedAt: string;
@@ -1172,4 +1183,112 @@ export interface LabelItem {
 export interface LabelManifest {
   updatedAt: string;
   items: LabelItem[];
+}
+
+/** ---- Новая модель рецептур (products / product_nodes / product_skus) ---- */
+
+export interface RecipeSkuPackage {
+  id: number;
+  name: string;
+  /** jar | lid | bag | container | other */
+  kind: string;
+}
+
+export interface RecipeSku {
+  id: number;
+  name: string;
+  /** Размер фасовки в базовой единице рецептуры */
+  qtyBase: number;
+  /** База цены: unit (за единицу), portion (за упаковку) */
+  priceBasis: string;
+  price: number;
+  costPrice: number;
+  /** weight — выдача по весу, package — упаковка */
+  issueType: string;
+  isActive: boolean;
+  /** Убрана в архив (мягкое удаление) */
+  archived: boolean;
+  /** Сколько строк заказов ссылается на фасовку: такие удалять нельзя */
+  usedInOrders: number;
+  packages: RecipeSkuPackage[];
+}
+
+export interface RecipeNodeLine {
+  id: number;
+  materialId: number | null;
+  materialName: string | null;
+  /** Код единицы сырья: г / мл / шт */
+  unitCode: string | null;
+  subProductId: number | null;
+  subProductName: string | null;
+  qty: number;
+  lossPct: number;
+}
+
+export interface Recipe {
+  id: number;
+  name: string;
+  nameEn: string;
+  nameSr: string;
+  /** Базовая единица рецептуры: г / мл / шт */
+  unitCode: string;
+  unitId: number | null;
+  /** Выход партии в единице рецептуры */
+  portionQty: number;
+  catalogId: number | null;
+  description: string;
+  createdAt: string;
+  nodes: RecipeNodeLine[];
+  skus: RecipeSku[];
+}
+
+export interface RecipeMaterial {
+  id: number;
+  name: string;
+  /** Код единицы: г / мл / шт */
+  unitCode: string;
+  category: string;
+  /** Пересчёт единиц: граммов в штуке, мл в штуке, граммов в мл */
+  gPerPcs: number | null;
+  mlPerPcs: number | null;
+  gPerMl: number | null;
+}
+
+export interface RecipePackageItem {
+  id: number;
+  name: string;
+  kind: string;
+}
+
+export interface RecipesData {
+  catalogs: ProductCatalog[];
+  materials: RecipeMaterial[];
+  packages: RecipePackageItem[];
+  units: Unit[];
+  recipes: Recipe[];
+}
+
+/** ---- Учёт тары (packages) ---- */
+
+export interface PackageStockRow {
+  id: number;
+  name: string;
+  kind: string;
+  qty: number;
+  avgCost: number;
+  value: number;
+  updatedAt: string | null;
+}
+
+export interface PackageMovementRow {
+  id: number;
+  packageId: number;
+  packageName: string;
+  type: 'receipt' | 'writeoff' | 'adjustment';
+  qty: number;
+  unitCost: number;
+  comment: string | null;
+  userLogin: string | null;
+  userName: string | null;
+  createdAt: string;
 }

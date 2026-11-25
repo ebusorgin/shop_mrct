@@ -6,7 +6,6 @@
  */
 import { pool } from '../db';
 import { ensureDeliveryDocNumbers } from './order-numbering';
-import { freezeOrderSnapshots } from './order-price-snapshot';
 import { sheetLineOrderForDate } from './google-sheet';
 
 export const VAT_RATE = 20;
@@ -44,13 +43,25 @@ export interface ReportLine {
   net: number;
   vat: number;
   gross: number;
+  /** Себестоимость единицы отчёта — только для офиса (маржа). */
+  cost?: number;
+  /** Себестоимость строки — только для офиса (маржа). */
+  costTotal?: number;
   /** Вес строки в кг (для объёма 1 л = 1 кг); 0 — для штучных без веса. */
   weightKg: number;
+  /** Каталог рецептуры — для разбивки экономики отчёта по категориям. */
+  categoryId: number | null;
+  categoryName: string;
+  categoryColor: string;
+  /** Порядок каталога — вкладки категорий идут как в рецептурах. */
+  categoryPosition: number;
 }
 
 export interface ReportDoc {
   /** id заказа магазина — по нему сохраняется ручной порядок строк. */
   orderId: number;
+  /** Магазин документа (для фильтра в шапке отчёта). */
+  storeId: number;
   number: string;
   deliveryDate: string;
   /** Момент сохранения заказа — время в шапке документа. */
@@ -91,7 +102,12 @@ interface ReportRow {
   storeMbr: string;
   storeAccount: string;
   cardName: string;
+  cardNameEn: string;
   cardNameSr: string;
+  catalogId: number | null;
+  catalogName: string | null;
+  catalogColor: string | null;
+  catalogPosition: number | null;
   qty: number;
   qtyBase: number;
   price: number;
@@ -136,16 +152,19 @@ export function reportQuantity(
   };
 }
 
+export type ReportLang = 'ru' | 'en' | 'sr';
+
 export async function orderReport(
   deliveryDate: string,
   storeId: number | null,
   priceMode: ReportPriceMode = 'sale',
-  vatRate: number = VAT_RATE
+  vatRate: number = VAT_RATE,
+  lang: ReportLang = 'sr',
+  /** true — отдавать себестоимость строк (только офисный отчёт, для маржи). */
+  includeCost = false
 ): Promise<{ documents: ReportDoc[] }> {
-  // Сначала добираем номера документов, затем фиксируем слепок цен и строим отчёт.
+  // Сначала добираем номера документов, затем строим отчёт.
   await ensureDeliveryDocNumbers(deliveryDate);
-  // Даты, которые уже наступили, сначала фиксируют слепок — дальше читаем его.
-  await freezeOrderSnapshots();
   const { rows } = await pool.query<ReportRow>(
     `select o.id as "orderId",
             o.doc_no as "docNo",
@@ -157,18 +176,24 @@ export async function orderReport(
             s.id as "storeId", s.code as "storeCode", s.name as "storeName",
             s.address as "storeAddress", s.pib as "storePib",
             s.mbr as "storeMbr", s.account_no as "storeAccount",
-            coalesce(i.name_snapshot, pk.title, tc.name) as "cardName",
-            coalesce(i.name_sr_snapshot, pk.title_sr, nullif(tc.name_sr, ''), '') as "cardNameSr",
-            i.qty, coalesce(i.qty_base_snapshot, pk.qty_base)::float8 as "qtyBase",
-            coalesce(i.price_snapshot, pk.price)::float8 as price,
-            coalesce(i.cost_snapshot, pk.cost)::float8 as cost,
-            coalesce(i.basis_snapshot, pk.price_basis) as "priceBasis",
-            coalesce(i.dimension_snapshot, u.dimension) as dimension
+            coalesce(tc.name, pk.name) as "cardName",
+            coalesce(nullif(tc.name_en, ''), tc.name) as "cardNameEn",
+            coalesce(nullif(tc.name_sr, ''), '') as "cardNameSr",
+            tc.catalog_id as "catalogId",
+            pc.name as "catalogName",
+            pc.color as "catalogColor",
+            pc.position as "catalogPosition",
+            i.qty, pk.qty_base::float8 as "qtyBase",
+            pk.price::float8 as price,
+            pk.cost_price::float8 as cost,
+            pk.price_basis as "priceBasis",
+            u.dimension as dimension
        from store_orders o
        join stores s on s.id = o.store_id
        join store_order_items i on i.order_id = o.id
-       join prod_packagings pk on pk.id = i.packaging_id
-       join prod_nodes tc on tc.id = pk.node_id
+       join product_skus pk on pk.id = i.packaging_id
+       join products tc on tc.id = pk.product_id
+       left join product_catalogs pc on pc.id = tc.catalog_id
        join units u on u.id = tc.unit_id
       where o.delivery_date = $1::date
         and ($2::int is null or o.store_id = $2)
@@ -184,6 +209,7 @@ export async function orderReport(
     if (!doc) {
       doc = {
         orderId: r.orderId,
+        storeId: r.storeId,
         // Номер — год и порядковый номер внутри года (2027-1, 2027-2…);
         // у старых заказов без номера остаётся прежний вид год-id.
         number: `${r.docYear ?? r.deliveryDate.slice(0, 4)}-${r.docNo ?? r.orderId}`,
@@ -215,10 +241,16 @@ export async function orderReport(
     // Вес не зависит от базы цены: считаем по количеству упаковок и весу упаковки.
     // Объём переводим в кг условно 1 л = 1 кг; штучное без веса — 0.
     const weightKg = r.dimension === 'count' ? 0 : Math.round(r.qty * r.qtyBase) / 1000;
+    const name =
+      lang === 'ru'
+        ? r.cardName
+        : lang === 'en'
+          ? r.cardNameEn || r.cardName
+          : r.cardNameSr || r.cardName;
     doc.lines.push({
       packagingId: r.packagingId,
       nodeId: r.nodeId,
-      name: r.cardNameSr || r.cardName,
+      name,
       unit,
       qty,
       packQty: r.qty,
@@ -227,7 +259,12 @@ export async function orderReport(
       net,
       vat,
       gross: round2(net + vat),
+      ...(includeCost ? { cost: r.cost, costTotal: round2(qty * r.cost) } : {}),
       weightKg,
+      categoryId: r.catalogId ?? null,
+      categoryName: r.catalogName ?? '',
+      categoryColor: r.catalogColor ?? '',
+      categoryPosition: r.catalogPosition ?? 9999,
     });
     doc.net = round2(doc.net + net);
     doc.vat = round2(doc.vat + vat);

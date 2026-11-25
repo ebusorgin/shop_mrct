@@ -18,17 +18,17 @@ metaRouter.get(
   '/categories',
   wrap(async (_req, res) => {
     const { rows } = await pool.query(
-      'select id, name from product_categories order by position, name'
+      'select id, name from material_categories order by position, name'
     );
     res.json(rows);
   })
 );
 
-/** Справочник категорий номенклатуры (product_categories) — для выбора в форме позиции. */
+/** Справочник категорий номенклатуры (material_categories) — для выбора в форме позиции. */
 metaRouter.get(
   '/categories-dictionary',
   wrap(async (_req, res) => {
-    const { rows } = await pool.query('select id, name, icon, color from product_categories order by position, name');
+    const { rows } = await pool.query('select id, name, icon, color from material_categories order by position, name');
     res.json(rows);
   })
 );

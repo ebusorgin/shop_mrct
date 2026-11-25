@@ -18,7 +18,7 @@ export interface ProdConv {
 
 export async function loadProductConv(client: PoolClient): Promise<Map<number, ProdConv>> {
   const { rows } = await client.query(
-    'select id, g_per_pcs::float8 as gp, ml_per_pcs::float8 as mp, g_per_ml::float8 as gm from products'
+    'select id, g_per_pcs::float8 as gp, ml_per_pcs::float8 as mp, g_per_ml::float8 as gm from materials'
   );
   return new Map(
     rows.map((r) => [

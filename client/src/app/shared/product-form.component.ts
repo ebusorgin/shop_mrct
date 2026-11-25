@@ -166,6 +166,9 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
       </section>
 
       <div class="form-actions">
+        @if (edit.id !== null) {
+          <button type="button" class="btn danger" style="margin-right:auto" [disabled]="saving()" (click)="remove()">Удалить</button>
+        }
         <button type="button" class="btn" (click)="closed.emit()">Отмена</button>
         <button type="button" class="btn primary" [disabled]="saving() || (edit.id !== null && !loaded())" (click)="save()">{{ saving() ? 'Сохраняем…' : 'Сохранить' }}</button>
       </div>
@@ -399,5 +402,26 @@ const AI_CONFIDENCE: Record<string, string> = { high: 'высокая', medium: 
     } else {
       this.api.createProduct(body).subscribe(sub);
     }
+  }
+
+  /** Удаление позиции: сервер не даст удалить, если она используется. */
+  remove(): void {
+    if (!this.edit.id || this.saving()) return;
+    if (!confirm(`Удалить позицию «${this.edit.name}»? Если она используется в рецептурах или накладных, удалить не получится.`)) {
+      return;
+    }
+    this.saving.set(true);
+    this.err.set('');
+    this.api.deleteProduct(this.edit.id).subscribe({
+      next: () => {
+        this.saving.set(false);
+        this.saved.emit();
+        this.closed.emit();
+      },
+      error: (e: unknown) => {
+        this.saving.set(false);
+        this.err.set(httpErr(e));
+      },
+    });
   }
 }

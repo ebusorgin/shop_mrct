@@ -1,3 +1,7 @@
+-- Файл записан в UTF-8: фиксируем кодировку клиента, чтобы psql из консоли
+-- с другой кодировкой не создал «кракозябры» в справочниках.
+set client_encoding = 'utf8';
+
 -- ============================================================
 -- MIX markt CRM — единственный файл инициализации БД.
 -- Выполняется при каждом старте сервера (src/init-db.ts) и идемпотентен:
@@ -27,10 +31,10 @@ drop table if exists order_tabs cascade;
 drop table if exists order_categories cascade;
 drop table if exists writeoff_runs cascade;
 drop function if exists orders_audit_fn() cascade;
--- Старая история выпусков заменена map_batches; таблицы больше не используются.
+-- Старая история выпусков заменена новой моделью; таблицы больше не используются.
 drop table if exists production_batch_items cascade;
 drop table if exists production_batches cascade;
--- Старая модель полуфабрикатов/техкарт удалена; рецептуры живут в prod_nodes/prod_ops.
+-- Старая модель полуфабрикатов/техкарт удалена; рецептуры живут в products/product_nodes.
 drop table if exists product_packagings cascade;
 drop table if exists tech_card_items cascade;
 drop table if exists tech_cards cascade;
@@ -38,11 +42,6 @@ drop table if exists semi_inputs cascade;
 drop table if exists semi_products cascade;
 
 -- Исторические колонки старой модели больше не нужны.
-alter table if exists prod_nodes drop column if exists legacy_kind;
-alter table if exists prod_nodes drop column if exists legacy_id;
-alter table if exists prod_ops drop column if exists legacy_source;
-alter table if exists prod_ops drop column if exists legacy_id;
-alter table if exists prod_packagings drop column if exists legacy_id;
 alter table if exists store_order_items drop column if exists legacy_packaging_id;
 
 -- ---------- Справочники и склад ----------
@@ -56,7 +55,8 @@ create table if not exists units (
   constraint units_only_base check (base_factor = 1)
 );
 
-create table if not exists products (
+-- Складская номенклатура (сырьё и тара). Рецептуры живут в products ниже.
+create table if not exists materials (
   id              serial primary key,
   name            text unique not null,
   category_id     int,
@@ -72,42 +72,41 @@ create table if not exists products (
   updated_by      int
 );
 
-create table if not exists product_categories (
+create table if not exists material_categories (
   id   serial primary key,
   name text unique not null
 );
 
 -- оформление категории сырья: иконка (эмодзи) и фоновый цвет
-alter table product_categories add column if not exists icon text not null default '';
-alter table product_categories add column if not exists color text not null default '';
+alter table material_categories add column if not exists icon text not null default '';
+alter table material_categories add column if not exists color text not null default '';
 
-create unique index if not exists product_categories_icon_uniq
-  on product_categories (icon) where icon <> '';
+create unique index if not exists material_categories_icon_uniq
+  on material_categories (icon) where icon <> '';
 
 -- Системные категории склада: их нельзя удалить (и переименовать).
-alter table product_categories add column if not exists protected boolean not null default false;
+alter table material_categories add column if not exists protected boolean not null default false;
 -- Ручной порядок категорий (перетаскивание в настройках).
-alter table product_categories add column if not exists position int not null default 0;
+alter table material_categories add column if not exists position int not null default 0;
 do $$
 begin
   if not exists (select 1 from app_migrations where name = 'rawcat_position_v1') then
     with ordered as (
-      select id, row_number() over (order by name) as rn from product_categories
+      select id, row_number() over (order by name) as rn from material_categories
     )
-    update product_categories pc set position = o.rn from ordered o where o.id = pc.id;
+    update material_categories pc set position = o.rn from ordered o where o.id = pc.id;
     insert into app_migrations (name) values ('rawcat_position_v1');
   end if;
 end $$;
-insert into product_categories (name, icon, color, protected, position) values
-  ('упаковка', '📦', '#efe7d8', true, coalesce((select max(position) + 1 from product_categories), 1)),
-  ('прочее',   '🗂', '#e9e6df', true, coalesce((select max(position) + 1 from product_categories), 1) + 1)
+insert into material_categories (name, icon, color, protected, position) values
+  ('прочее', '🗂', '#e9e6df', true, coalesce((select max(position) + 1 from material_categories), 1))
 on conflict (name) do update set protected = true;
-update product_categories set protected = true
- where lower(btrim(name)) in ('упаковка', 'прочее');
+update material_categories set protected = true
+ where lower(btrim(name)) = 'прочее';
 
--- products.category_id — единственный ключ категории сырья.
--- Текстовой колонки products.category больше нет: имя живёт только в product_categories.
-alter table products add column if not exists category_id int;
+-- materials.category_id — единственный ключ категории сырья.
+-- Текстовой колонки materials.category больше нет: имя живёт только в material_categories.
+alter table materials add column if not exists category_id int;
 
 do $$
 declare
@@ -118,66 +117,66 @@ begin
     select 1
       from information_schema.columns
      where table_schema = current_schema()
-       and table_name = 'products'
+       and table_name = 'materials'
        and column_name = 'category'
   ) into has_text;
 
   if has_text then
     -- Перенести все текстовые категории в справочник, не создавая дублей по регистру.
     execute $mig$
-      insert into product_categories (name)
+      insert into material_categories (name)
       select distinct lower(btrim(p.category))
-        from products p
+        from materials p
        where btrim(p.category) <> ''
          and not exists (
-           select 1 from product_categories pc
+           select 1 from material_categories pc
             where lower(btrim(pc.name)) = lower(btrim(p.category))
          )
     $mig$;
 
     execute $mig$
-      update products p
+      update materials p
          set category_id = pc.id
-        from product_categories pc
+        from material_categories pc
        where p.category_id is null
          and lower(btrim(p.category)) = lower(btrim(pc.name))
     $mig$;
   end if;
 
   select id into default_id
-    from product_categories
+    from material_categories
    where lower(btrim(name)) = 'прочее'
    limit 1;
 
   if default_id is null then
-    insert into product_categories (name, protected)
+    insert into material_categories (name, protected)
     values ('прочее', true)
     returning id into default_id;
   end if;
 
-  update products set category_id = default_id where category_id is null;
+  update materials set category_id = default_id where category_id is null;
 
   if has_text then
-    execute 'alter table products drop column category';
+    execute 'alter table materials drop column category';
   end if;
 end $$;
 
-alter table products alter column category_id set not null;
+alter table materials alter column category_id set not null;
 
 do $$
 begin
   if not exists (
     select 1 from pg_constraint
-     where conname = 'products_category_id_fkey'
-       and conrelid = 'products'::regclass
+     where conname = 'materials_category_id_fkey'
+       and conrelid = 'materials'::regclass
   ) then
-    alter table products
-      add constraint products_category_id_fkey
-      foreign key (category_id) references product_categories(id);
+    alter table materials
+      add constraint materials_category_id_fkey
+      foreign key (category_id) references material_categories(id);
   end if;
 end $$;
 
-create index if not exists products_category_idx on products (category_id);
+create index if not exists materials_category_idx on materials (category_id);
 
 -- Каталог готовой продукции (разделы меню/витрины): техкарты ссылаются на него.
 create table if not exists product_catalogs (
@@ -193,6 +192,118 @@ alter table product_catalogs add column if not exists color text not null defaul
 -- иконка уникальна среди каталогов; пустая («без иконки») может повторяться
 create unique index if not exists product_catalogs_icon_uniq
   on product_catalogs (icon) where icon <> '';
+
+-- ---------- Новая модель рецептур ----------
+-- products — рецептуры (блюда и заготовки). Раньше эта таблица называлась
+-- складской номенклатурой; сырьё теперь в materials.
+create table if not exists products (
+  id          serial primary key,
+  name        text not null check (btrim(name) <> ''),
+  name_en     text not null default '',
+  name_sr     text not null default '',
+  unit_id     int references units(id),
+  portion_qty numeric not null default 0,
+  catalog_id  int references product_catalogs(id) on delete set null,
+  description text not null default '',
+  created_at  timestamptz not null default now()
+);
+alter table products add column if not exists unit_id int references units(id);
+alter table products add column if not exists portion_qty numeric not null default 0;
+create index if not exists products_catalog_idx on products (catalog_id);
+create index if not exists products_name_trgm on products using gin (name gin_trgm_ops);
+
+-- Состав рецептуры: ровно одно из полей — сырьё (material_id) или вложенная рецептура.
+create table if not exists product_nodes (
+  id             serial primary key,
+  product_id     int not null references products(id) on delete cascade,
+  material_id    int references materials(id),
+  sub_product_id int references products(id),
+  qty            numeric not null check (qty > 0),
+  loss_pct       numeric not null default 0 check (loss_pct >= 0 and loss_pct <= 100),
+  constraint product_nodes_ref_chk check ((material_id is not null) <> (sub_product_id is not null))
+);
+create index if not exists product_nodes_product_idx on product_nodes (product_id);
+create unique index if not exists product_nodes_material_uniq
+  on product_nodes (product_id, material_id) where material_id is not null;
+create unique index if not exists product_nodes_sub_product_uniq
+  on product_nodes (product_id, sub_product_id) where sub_product_id is not null;
+
+-- Тара (банки, крышки, пакеты): отдельный справочник, связь со складской позицией — material_id.
+create table if not exists packages (
+  id          serial primary key,
+  name        text unique not null check (btrim(name) <> ''),
+  kind        text not null default 'other' check (kind in ('jar', 'lid', 'bag', 'container', 'other')),
+  qty         numeric not null default 0,
+  avg_cost    numeric not null default 0,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+alter table packages add column if not exists qty numeric not null default 0;
+alter table packages add column if not exists avg_cost numeric not null default 0;
+alter table packages add column if not exists updated_at timestamptz not null default now();
+
+-- Движения тары: приход, списание и корректировка.
+create table if not exists package_movements (
+  id         bigserial primary key,
+  package_id int not null references packages(id) on delete cascade,
+  type       text not null check (type in ('receipt', 'writeoff', 'adjustment')),
+  qty        numeric not null,
+  unit_cost  numeric not null default 0,
+  doc_type   text,
+  doc_id     int,
+  comment    text,
+  user_id    int references users(id) on delete set null,
+  user_login text,
+  created_at timestamptz not null default now()
+);
+create index if not exists package_movements_package_idx on package_movements (package_id, created_at desc);
+
+-- Фасовки/варианты продажи рецептуры.
+create table if not exists product_skus (
+  id          serial primary key,
+  product_id  int not null references products(id) on delete cascade,
+  name        text not null default '',
+  qty_base    numeric not null default 0,
+  price       numeric not null default 0,
+  price_basis text not null default 'unit' check (price_basis in ('unit', 'portion')),
+  cost_price  numeric not null default 0,
+  issue_type  text not null check (issue_type in ('weight', 'package')),
+  is_active   boolean not null default true,
+  archived    boolean not null default false
+);
+alter table product_skus add column if not exists qty_base numeric not null default 0;
+alter table product_skus add column if not exists price_basis text not null default 'unit';
+alter table product_skus add column if not exists archived boolean not null default false;
+create index if not exists product_skus_archived_idx on product_skus (archived) where archived;
+update product_skus set price_basis = 'unit' where price_basis = 'piece';
+do $$
+begin
+  if exists (
+    select 1 from pg_constraint
+     where conrelid = 'product_skus'::regclass
+       and conname = 'product_skus_price_basis_check'
+       and position('piece' in pg_get_constraintdef(oid)) > 0
+  ) then
+    alter table product_skus drop constraint product_skus_price_basis_check;
+  end if;
+  if not exists (
+    select 1 from pg_constraint
+     where conrelid = 'product_skus'::regclass
+       and conname = 'product_skus_price_basis_check'
+  ) then
+    alter table product_skus
+      add constraint product_skus_price_basis_check check (price_basis in ('unit', 'portion'));
+  end if;
+end $$;
+create index if not exists product_skus_product_idx on product_skus (product_id);
+create index if not exists product_skus_active_idx on product_skus (is_active) where is_active;
+
+create table if not exists product_sku_packages (
+  sku_id     int not null references product_skus(id) on delete cascade,
+  package_id int not null references packages(id) on delete cascade,
+  primary key (sku_id, package_id)
+);
+create index if not exists product_sku_packages_package_idx on product_sku_packages (package_id);
 
 create table if not exists product_aliases (
   id         serial primary key,
@@ -225,7 +336,7 @@ create table if not exists movements (
   user_login text
 );
 
--- Старая модель полуфабрикатов и техкарт удалена; рецептуры живут в prod_nodes/prod_ops.
+-- Старая модель полуфабрикатов и техкарт удалена; рецептуры живут в products/product_nodes.
 
 -- ---------- Приходные накладные ----------
 
@@ -359,18 +470,18 @@ begin
     select *
       from (values
         ('audit_log',              'audit_log_user_id_fkey',                 'foreign key (user_id) references users(id) on delete set null'),
-        ('movements',              'movements_product_id_fkey',              'foreign key (product_id) references products(id)'),
+        ('movements',              'movements_product_id_fkey',              'foreign key (product_id) references materials(id)'),
         ('movements',              'movements_user_id_fkey',                 'foreign key (user_id) references users(id) on delete set null'),
-        ('product_aliases',        'product_aliases_product_id_fkey',        'foreign key (product_id) references products(id) on delete cascade'),
-        ('products',               'products_created_by_fkey',               'foreign key (created_by) references users(id) on delete set null'),
-        ('products',               'products_unit_id_fkey',                  'foreign key (unit_id) references units(id)'),
-        ('products',               'products_updated_by_fkey',               'foreign key (updated_by) references users(id) on delete set null'),
+        ('product_aliases',        'product_aliases_product_id_fkey',        'foreign key (product_id) references materials(id) on delete cascade'),
+        ('materials',              'materials_created_by_fkey',               'foreign key (created_by) references users(id) on delete set null'),
+        ('materials',              'materials_unit_id_fkey',                  'foreign key (unit_id) references units(id)'),
+        ('materials',              'materials_updated_by_fkey',               'foreign key (updated_by) references users(id) on delete set null'),
         ('sessions',               'sessions_user_id_fkey',                  'foreign key (user_id) references users(id) on delete cascade'),
-        ('stock',                  'stock_product_id_fkey',                  'foreign key (product_id) references products(id) on delete cascade'),
+        ('stock',                  'stock_product_id_fkey',                  'foreign key (product_id) references materials(id) on delete cascade'),
         ('stores',                 'stores_created_by_fkey',                 'foreign key (created_by) references users(id) on delete set null'),
         ('stores',                 'stores_updated_by_fkey',                 'foreign key (updated_by) references users(id) on delete set null'),
         ('users',                  'users_store_id_fkey',                    'foreign key (store_id) references stores(id) on delete set null'),
-        ('waybill_items',          'waybill_items_product_id_fkey',          'foreign key (product_id) references products(id)'),
+        ('waybill_items',          'waybill_items_product_id_fkey',          'foreign key (product_id) references materials(id)'),
         ('waybill_items',          'waybill_items_unit_id_fkey',             'foreign key (unit_id) references units(id)'),
         ('waybill_items',          'waybill_items_waybill_id_fkey',          'foreign key (waybill_id) references waybills(id) on delete cascade'),
         ('waybills',               'waybills_accepted_by_fkey',              'foreign key (accepted_by) references users(id) on delete set null'),
@@ -398,7 +509,7 @@ create index if not exists movements_doc_idx             on movements (doc_type,
 create index if not exists movements_product_idx         on movements (product_id, created_at desc);
 create index if not exists product_aliases_prod_idx      on product_aliases (product_id);
 create index if not exists product_aliases_trgm          on product_aliases using gin (alias gin_trgm_ops);
-create index if not exists products_name_trgm            on products using gin (name gin_trgm_ops);
+create index if not exists materials_name_trgm            on materials using gin (name gin_trgm_ops);
 create index if not exists sessions_expires_idx          on sessions (expires_at);
 create index if not exists sessions_user_idx             on sessions (user_id);
 create unique index if not exists users_login_lower_uidx on users (lower(login));
@@ -427,25 +538,15 @@ insert into units (code, name, dimension, base_factor) values
   ('шт', 'штука',     'count',  1)
 on conflict do nothing;
 
--- Тара для фасовок: складские позиции категории «упаковка» (банки, крышки, контейнеры).
--- Нужны, чтобы в «Фасовки и цены» можно было добавлять тару к упаковке продукта.
-insert into products (name, category_id, unit_id, min_stock, active)
-select v.name, (select id from product_categories where name = 'упаковка'),
-       (select id from units where code = 'шт'), 0, true
-  from (values
-    ('банка 1000г'),
-    ('банка 450г'),
-    ('крышка к банке 1000г'),
-    ('крышка к банке 450г'),
-    ('контейнер 2кг'),
-    ('одноразовая посуда для горячего')
-  ) as v(name)
+-- Тара для фасовок — отдельный справочник packages, вне складской номенклатуры.
+insert into packages (name, kind) values
+  ('банка 1000г', 'jar'),
+  ('банка 450г', 'jar'),
+  ('крышка к банке 1000г', 'lid'),
+  ('крышка к банке 450г', 'lid'),
+  ('контейнер 2кг', 'container'),
+  ('одноразовая посуда для горячего', 'other')
 on conflict (name) do nothing;
-
-insert into stock (product_id)
-select p.id from products p
- where p.category_id = (select id from product_categories where name = 'упаковка')
-on conflict (product_id) do nothing;
 
 insert into stores (id, code, name, position) values
   (103, 'Mix 38103', 'Магазин 103', 1),
@@ -577,7 +678,7 @@ on conflict (doc_year) do update
 -- Старая глобальная последовательность больше не используется.
 drop sequence if exists store_order_doc_seq;
 
--- Ручной порядок строк в отчёте-отгрузке: массив id фасовок карты (prod_packagings).
+-- Ручной порядок строк в отчёте-отгрузке: массив id фасовок (product_skus).
 -- Пусто/null — обычный порядок каталога; меняется перетаскиванием в отчёте.
 alter table store_orders add column if not exists line_order int[];
 
@@ -587,20 +688,6 @@ create table if not exists store_order_items (
   qty          int not null check (qty > 0 and qty <= 999),
   primary key (order_id, packaging_id)
 );
-
--- Слепок цен строки заказа на момент наступления даты доставки.
--- Отчёт-отгрузка и архив читают эти значения, поэтому изменение цен фасовок
--- в будущем не пересчитывает прошлые документы.
-alter table store_order_items add column if not exists price_snapshot numeric;
-alter table store_order_items add column if not exists cost_snapshot numeric;
-alter table store_order_items add column if not exists basis_snapshot text;
-alter table store_order_items add column if not exists snapshot_at timestamptz;
--- Слепок названий и единиц: переименование блюда/фасовки в будущем не меняет прошлые документы.
-alter table store_order_items add column if not exists name_snapshot text;
-alter table store_order_items add column if not exists name_en_snapshot text;
-alter table store_order_items add column if not exists name_sr_snapshot text;
-alter table store_order_items add column if not exists qty_base_snapshot numeric;
-alter table store_order_items add column if not exists dimension_snapshot text;
 
 -- ---------- Списание склада по доставке (вручную, кнопкой) ----------
 -- Каждая запись — факт списания сырья по техкартам всех заказов даты доставки.
@@ -847,155 +934,21 @@ update supplier_invoices i
    and i.number = v.number
    and i.source_file is distinct from v.file;
 
--- ---------- Карта производства (единый глобальный граф) ----------
--- Один общий стол: сырьё -> операции -> состояния -> блюда. Состояние и блюдо могут
--- использоваться несколькими операциями; количество входа задаётся на связи, а не на узле.
+-- ---------- Рецептуры ----------
+-- Старая карта производства (prod_nodes/prod_ops/prod_op_inputs/prod_packagings)
+-- удалена: рецептуры живут в products, состав — в product_nodes, фасовки — в product_skus.
 
-create table if not exists prod_nodes (
-  id          serial primary key,
-  kind        text not null check (kind in ('product','state','output')),
-  ref_id      int,
-  name        text not null default '',
-  unit_id     int not null,
-  x           numeric not null default 0,
-  y           numeric not null default 0,
-  position    int not null default 0,
-  portion_qty numeric not null default 0 check (portion_qty >= 0),
-  note        text not null default ''
-);
-create index if not exists prod_nodes_kind_idx on prod_nodes (kind);
--- архив вместо удаления: на фасовки ссылается история заказов
-alter table prod_nodes add column if not exists archived boolean not null default false;
-create index if not exists prod_nodes_archived_idx on prod_nodes (archived);
 
-create table if not exists prod_ops (
-  id             serial primary key,
-  name           text not null default '',
-  yield_pct      numeric check (yield_pct is null or (yield_pct > 0 and yield_pct <= 100)),
-  labor_hours    numeric not null default 0 check (labor_hours >= 0),
-  output_node_id int not null,
-  note           text not null default '',
-  x              numeric not null default 0,
-  y              numeric not null default 0,
-  position       int not null default 0
-);
-create index if not exists prod_ops_output_idx on prod_ops (output_node_id);
--- план выхода операции: сколько нужно получить; выход считается как сумма ингредиентов
-alter table prod_ops add column if not exists plan_qty numeric check (plan_qty is null or plan_qty >= 0);
-alter table prod_ops add column if not exists plan_unit_id int;
 
-create table if not exists prod_op_inputs (
-  id      serial primary key,
-  op_id   int not null,
-  node_id int not null,
-  qty     numeric not null check (qty > 0),
-  in_mass boolean not null default true,
-  loss_pct numeric check (loss_pct is null or (loss_pct >= 0 and loss_pct <= 100))
-);
--- потери на конкретной связи: уварка, очистки и т. п. (в процентах от количества)
-alter table prod_op_inputs add column if not exists loss_pct numeric check (loss_pct is null or (loss_pct >= 0 and loss_pct <= 100));
-create index if not exists prod_op_inputs_op_idx on prod_op_inputs (op_id);
-create unique index if not exists prod_op_inputs_uniq on prod_op_inputs (op_id, node_id);
-
--- карточка блюда в новой карте: названия на трёх языках, базовая цена и категория
-alter table prod_nodes add column if not exists name_en text not null default '';
-alter table prod_nodes add column if not exists name_sr text not null default '';
-alter table prod_nodes add column if not exists catalog_id int;
-alter table prod_nodes add column if not exists price numeric not null default 0;
-
--- Фасовки блюда в новой карте: витрина/продажа и цена по каждой упаковке.
-create table if not exists prod_packagings (
-  id          serial primary key,
-  node_id     int not null,
-  name        text not null default '',
-  qty_base    numeric not null check (qty_base > 0),
-  min_order   int not null default 1 check (min_order > 0),
-  is_default  boolean not null default false,
-  price       numeric not null default 0,
-  price_basis text not null default 'unit' check (price_basis in ('unit','portion','piece')),
-  cost        numeric not null default 0,
-  available   boolean not null default true,
-  position    int not null default 0
-);
-create index if not exists prod_packagings_node_idx on prod_packagings (node_id);
-alter table prod_packagings add column if not exists archived boolean not null default false;
-alter table prod_packagings add column if not exists title text;
-alter table prod_packagings add column if not exists title_en text;
-alter table prod_packagings add column if not exists title_sr text;
--- тара фасовки: несколько позиций склада из категории «упаковка» на одну фасовку,
--- без повторов (пара «фасовка + позиция» — первичный ключ).
-create table if not exists prod_packaging_tare (
-  packaging_id int not null references prod_packagings(id) on delete cascade,
-  product_id   int not null references products(id) on delete cascade,
-  position     int not null default 0,
-  primary key (packaging_id, product_id)
-);
-create index if not exists prod_packaging_tare_product_idx on prod_packaging_tare (product_id);
-do $$
-begin
-  if not exists (select 1 from app_migrations where name = 'packaging_tare_multi_v1') then
-    if exists (select 1 from information_schema.columns
-                where table_schema = current_schema()
-                  and table_name = 'prod_packagings' and column_name = 'tare_product_id') then
-      insert into prod_packaging_tare (packaging_id, product_id, position)
-        select id, tare_product_id, 0 from prod_packagings where tare_product_id is not null
-        on conflict do nothing;
-    end if;
-    insert into app_migrations (name) values ('packaging_tare_multi_v1');
-  end if;
-end $$;
-alter table prod_packagings drop constraint if exists prod_packagings_tare_fkey;
-alter table prod_packagings drop column if exists tare_product_id;
-create index if not exists prod_packagings_archived_idx on prod_packagings (archived);
-drop index if exists prod_packagings_default_uniq;
-create unique index if not exists prod_packagings_default_uniq
-  on prod_packagings (node_id) where is_default and not archived;
-
--- ---------- Операционный контур карты производства: выпуск партий ----------
-create table if not exists map_batches (
-  id            serial primary key,
-  op_name       text not null default '',
-  output_name   text not null default '',
-  qty           numeric not null check (qty > 0),
-  unit_id       int,
-  cost_total    numeric not null default 0,
-  status        text not null default 'posted' check (status in ('posted','reversed')),
-  note          text not null default '',
-  created_at    timestamptz not null default now(),
-  created_by    int,
-  created_login text
-);
-create table if not exists map_batch_items (
-  id         serial primary key,
-  batch_id   int not null,
-  product_id int not null,
-  qty        numeric not null check (qty > 0),
-  unit_cost  numeric not null default 0
-);
-create index if not exists map_batch_items_batch_idx on map_batch_items (batch_id);
-
--- Версия карты производства: защита от одновременного редактирования
-create table if not exists map_meta (
-  id         int primary key default 1,
-  version    int not null default 1,
-  updated_at timestamptz not null default now()
-);
-insert into map_meta (id, version) values (1, 1) on conflict (id) do nothing;
-
--- Строки заказов ссылаются на фасовки карты. FK добавляем, когда все id уже валидны.
+-- Строки заказов ссылаются на фасовки новой модели (product_skus).
 do $$
 begin
   if not exists (
-    select 1 from pg_constraint where conname = 'store_order_items_prod_packaging_fkey'
-  ) and not exists (
-    select 1
-      from store_order_items i
-      left join prod_packagings pk on pk.id = i.packaging_id
-     where pk.id is null
+    select 1 from pg_constraint where conname = 'store_order_items_sku_fkey'
   ) then
     alter table store_order_items
-      add constraint store_order_items_prod_packaging_fkey
-      foreign key (packaging_id) references prod_packagings(id);
+      add constraint store_order_items_sku_fkey
+      foreign key (packaging_id) references product_skus(id);
   end if;
 end $$;
 
@@ -1032,11 +985,14 @@ comment on table app_settings is
 comment on table units is
   'Базовые единицы измерения: г, мл, шт. У всех base_factor = 1, потому что склад, движения и составы ведутся только в базовых единицах.';
 
-comment on table products is
-  'Складская номенклатура: сырьё и товары. Хранит название, category_id (FK на product_categories), базовую единицу, коэффициенты пересчёта, минимальный остаток, срок годности и признак активности.';
+comment on table materials is
+  'Складская номенклатура: сырьё и тара. Хранит название, category_id (FK на material_categories), базовую единицу, коэффициенты пересчёта, минимальный остаток, срок годности и признак активности.';
 
-comment on table product_categories is
-  'Справочник категорий складского сырья: название, иконка, цвет, защищённость и порядок. products.category_id — внешний ключ на эту таблицу.';
+comment on table products is
+  'Рецептуры (блюда и заготовки): названия RU/EN/SR, каталог готовой продукции, описание и дата создания. Состав — в product_nodes, фасовки — в product_skus.';
+
+comment on table material_categories is
+  'Справочник категорий складского сырья: название, иконка, цвет, защищённость и порядок. materials.category_id — внешний ключ на эту таблицу.';
 
 comment on table product_catalogs is
   'Справочник каталогов готовой продукции (салаты, супы, заготовки, выпечка и т. п.), на который ссылаются узлы карты производства.';
@@ -1092,29 +1048,7 @@ comment on table store_order_items is
 comment on table store_delivery_writeoffs is
   'Факты ручного списания сырья по доставке: дата, магазин (null — все магазины даты), стоимость, число позиций, автор и заметка. Повтор на ту же дату и магазин запрещён.';
 
-comment on table prod_nodes is
-  'Узлы карты производства: сырьё (product), заготовка или состояние (state) и готовое блюдо (output). Хранит название, единицу, каталог, выход, цену, позицию и признак архива.';
 
-comment on table prod_ops is
-  'Операции карты производства: техкарты и заготовки. Хранит название, выход после обработки, план партии, человекочасы и узел-результат.';
-
-comment on table prod_op_inputs is
-  'Входы операции карты: узел-компонент, количество, участие в массе и потери на связи. Пара op_id и node_id уникальна.';
-
-comment on table prod_packagings is
-  'Фасовки узлов карты: продаваемый SKU с весом, минимальным заказом, ценой, базой цены, себестоимостью, доступностью и архивом. Именно этот id используется в заказах и отчётах.';
-
-comment on table prod_packaging_tare is
-  'Тара фасовки: связь фасовки карты с несколькими складскими позициями категории упаковка. Пара packaging_id и product_id уникальна.';
-
-comment on table map_batches is
-  'История выпусков карты производства: операция и результат по именам, количество, единица, себестоимость и статус posted или reversed. Отдельных op_id и node_id нет.';
-
-comment on table map_batch_items is
-  'Снимок сырья, списанного на выпуск карты: продукт, количество и себестоимость на момент выпуска. Используется для истории и отмены партии.';
-
-comment on table map_meta is
-  'Служебная строка карты производства: версия для оптимистичной блокировки одновременных сохранений. Всегда одна запись с id = 1.';
 
 comment on table audit_log is
   'Журнал действий: кто, что и когда сделал, сущность и entity_id, заголовок и JSON-детали. Ссылка на сущность полиморфная, без внешнего ключа.';
@@ -1149,25 +1083,7 @@ comment on column delivery_schedule.created_by is 'Кто добавил дат�
 comment on column delivery_schedule_period.kind is 'Тип правила: weekday или monthday.';
 comment on column delivery_schedule_period.value is 'День недели 1–7 или число месяца 1–31.';
 comment on column delivery_schedule_period.enabled is 'Включено ли правило в календаре.';
-comment on column map_batch_items.id is 'Первичный ключ строки выпуска.';
-comment on column map_batch_items.batch_id is 'Выпуск карты (map_batches.id).';
-comment on column map_batch_items.product_id is 'Списанный продукт (products.id).';
-comment on column map_batch_items.qty is 'Количество списания в базовых единицах.';
-comment on column map_batch_items.unit_cost is 'Себестоимость базовой единицы на момент выпуска.';
-comment on column map_batches.id is 'Первичный ключ выпуска карты.';
-comment on column map_batches.op_name is 'Имя операции на момент выпуска (снимок, не id).';
-comment on column map_batches.output_name is 'Имя результата операции на момент выпуска.';
-comment on column map_batches.qty is 'Выпущенное количество.';
-comment on column map_batches.unit_id is 'Единица выпуска (units.id).';
-comment on column map_batches.cost_total is 'Общая себестоимость сырья выпуска.';
-comment on column map_batches.status is 'Статус выпуска: posted или reversed.';
-comment on column map_batches.note is 'Заметка к выпуску.';
-comment on column map_batches.created_at is 'Когда выпуск проведён.';
-comment on column map_batches.created_by is 'Пользователь, выпустивший партию (users.id).';
-comment on column map_batches.created_login is 'Логин автора выпуска.';
-comment on column map_meta.id is 'Служебная строка карты, всегда 1.';
-comment on column map_meta.version is 'Версия карты для оптимистичной блокировки сохранений.';
-comment on column map_meta.updated_at is 'Когда карта последний раз сохранялась.';
+
 comment on column movements.id is 'Первичный ключ движения склада.';
 comment on column movements.product_id is 'Продукт движения (products.id).';
 comment on column movements.type is 'Тип движения: receipt, writeoff или adjustment.';
@@ -1179,56 +1095,7 @@ comment on column movements.comment is 'Комментарий к движени
 comment on column movements.created_at is 'Когда движение записано.';
 comment on column movements.user_id is 'Автор движения (users.id).';
 comment on column movements.user_login is 'Логин автора движения.';
-comment on column prod_nodes.id is 'Первичный ключ узла карты.';
-comment on column prod_nodes.kind is 'Тип узла: product (сырьё), state (заготовка) или output (блюдо).';
-comment on column prod_nodes.ref_id is 'products.id для kind=product; для состояний и блюд null.';
-comment on column prod_nodes.name is 'Название узла или результата.';
-comment on column prod_nodes.unit_id is 'Базовая единица узла (units.id).';
-comment on column prod_nodes.x is 'Координата X на карте производства.';
-comment on column prod_nodes.y is 'Координата Y на карте производства.';
-comment on column prod_nodes.position is 'Порядок узла в списке и раскладке.';
-comment on column prod_nodes.portion_qty is 'Выход на порцию или размер партии в базовой единице.';
-comment on column prod_nodes.note is 'Заметка к узлу.';
-comment on column prod_nodes.name_en is 'Английское название.';
-comment on column prod_nodes.name_sr is 'Сербское название.';
-comment on column prod_nodes.catalog_id is 'Каталог готовой продукции (product_catalogs.id).';
-comment on column prod_nodes.price is 'Базовая цена блюда.';
-comment on column prod_nodes.archived is 'Признак архивного узла; история заказов сохраняется.';
-comment on column prod_op_inputs.id is 'Первичный ключ входа операции.';
-comment on column prod_op_inputs.op_id is 'Операция (prod_ops.id).';
-comment on column prod_op_inputs.node_id is 'Входной узел карты (prod_nodes.id).';
-comment on column prod_op_inputs.qty is 'Количество входа в базовой единице.';
-comment on column prod_op_inputs.in_mass is 'Участвует ли вход в проверку массы партии.';
-comment on column prod_op_inputs.loss_pct is 'Потери на связи в процентах.';
-comment on column prod_ops.id is 'Первичный ключ операции.';
-comment on column prod_ops.name is 'Название операции.';
-comment on column prod_ops.yield_pct is 'Выход после обработки в процентах; в текущей формуле не используется.';
-comment on column prod_ops.labor_hours is 'Человекочасы операции.';
-comment on column prod_ops.output_node_id is 'Узел-результат операции (prod_nodes.id).';
-comment on column prod_ops.note is 'Заметка к операции.';
-comment on column prod_ops.x is 'Координата X на карте производства.';
-comment on column prod_ops.y is 'Координата Y на карте производства.';
-comment on column prod_ops.position is 'Порядок операции в списке и раскладке.';
-comment on column prod_ops.plan_qty is 'План выхода партии.';
-comment on column prod_ops.plan_unit_id is 'Единица плана партии (units.id).';
-comment on column prod_packaging_tare.packaging_id is 'Фасовка карты (prod_packagings.id).';
-comment on column prod_packaging_tare.product_id is 'Складская позиция тары (products.id).';
-comment on column prod_packaging_tare.position is 'Порядок тары в списке.';
-comment on column prod_packagings.id is 'Первичный ключ фасовки карты.';
-comment on column prod_packagings.node_id is 'Узел карты (prod_nodes.id).';
-comment on column prod_packagings.name is 'Внутреннее название фасовки, например 1000 г.';
-comment on column prod_packagings.qty_base is 'Вес, объём или количество одной упаковки в базовой единице.';
-comment on column prod_packagings.min_order is 'Минимальный заказ в упаковках.';
-comment on column prod_packagings.is_default is 'Фасовка по умолчанию для узла.';
-comment on column prod_packagings.price is 'Продажная цена.';
-comment on column prod_packagings.price_basis is 'База цены: unit, portion или piece.';
-comment on column prod_packagings.cost is 'Внутренняя себестоимость.';
-comment on column prod_packagings.available is 'Доступна ли фасовка к заказу магазинами.';
-comment on column prod_packagings.position is 'Порядок фасовки в списке.';
-comment on column prod_packagings.archived is 'Признак архивной фасовки.';
-comment on column prod_packagings.title is 'Своё название фасовки для продажи.';
-comment on column prod_packagings.title_en is 'Английское название фасовки.';
-comment on column prod_packagings.title_sr is 'Сербское название фасовки.';
+
 comment on column product_aliases.id is 'Первичный ключ псевдонима.';
 comment on column product_aliases.product_id is 'Продукт, к которому привязан псевдоним (products.id).';
 comment on column product_aliases.alias is 'Нормализованное написание для поиска; уникально.';
@@ -1241,25 +1108,55 @@ comment on column product_catalogs.position is 'Порядок каталога 
 comment on column product_catalogs.icon is 'Иконка каталога.';
 comment on column product_catalogs.color is 'Фоновый цвет каталога.';
 comment on column product_catalogs.protected is 'Системный каталог, который нельзя удалить.';
-comment on column product_categories.id is 'Первичный ключ категории сырья.';
-comment on column product_categories.name is 'Название категории.';
-comment on column product_categories.icon is 'Иконка категории.';
-comment on column product_categories.color is 'Фоновый цвет категории.';
-comment on column product_categories.protected is 'Системная категория, которую нельзя удалить.';
-comment on column product_categories.position is 'Порядок категории в интерфейсе.';
-comment on column products.id is 'Первичный ключ складской позиции.';
-comment on column products.name is 'Название позиции; уникально.';
-comment on column products.unit_id is 'Базовая единица хранения (units.id).';
-comment on column products.min_stock is 'Минимальный остаток в базовых единицах.';
-comment on column products.active is 'Признак активной позиции.';
-comment on column products.created_at is 'Когда позиция создана.';
-comment on column products.g_per_pcs is 'Граммов в одной штуке.';
-comment on column products.ml_per_pcs is 'Миллилитров в одной штуке.';
-comment on column products.g_per_ml is 'Граммов в одном миллилитре (плотность).';
-comment on column products.shelf_life_days is 'Срок годности в днях.';
-comment on column products.created_by is 'Кто создал позицию (users.id).';
-comment on column products.updated_by is 'Кто изменил позицию (users.id).';
-comment on column products.category_id is 'Категория сырья (product_categories.id).';
+comment on column material_categories.id is 'Первичный ключ категории сырья.';
+comment on column material_categories.name is 'Название категории.';
+comment on column material_categories.icon is 'Иконка категории.';
+comment on column material_categories.color is 'Фоновый цвет категории.';
+comment on column material_categories.protected is 'Системная категория, которую нельзя удалить.';
+comment on column material_categories.position is 'Порядок категории в интерфейсе.';
+comment on column materials.id is 'Первичный ключ складской позиции.';
+comment on column materials.name is 'Название позиции; уникально.';
+comment on column materials.unit_id is 'Базовая единица хранения (units.id).';
+comment on column materials.min_stock is 'Минимальный остаток в базовых единицах.';
+comment on column materials.active is 'Признак активной позиции.';
+comment on column materials.created_at is 'Когда позиция создана.';
+comment on column materials.g_per_pcs is 'Граммов в одной штуке.';
+comment on column materials.ml_per_pcs is 'Миллилитров в одной штуке.';
+comment on column materials.g_per_ml is 'Граммов в одном миллилитре (плотность).';
+comment on column materials.shelf_life_days is 'Срок годности в днях.';
+comment on column materials.created_by is 'Кто создал позицию (users.id).';
+comment on column materials.updated_by is 'Кто изменил позицию (users.id).';
+comment on column materials.category_id is 'Категория сырья (material_categories.id).';
+comment on column products.id is 'Первичный ключ рецептуры.';
+comment on column products.name is 'Название рецептуры (RU).';
+comment on column products.name_en is 'Название на английском.';
+comment on column products.name_sr is 'Название на сербском.';
+comment on column products.unit_id is 'Базовая единица рецептуры (units.id) — в ней задаются количества в составе.';
+comment on column products.portion_qty is 'Выход партии (в единице рецептуры) для проверки Σ ингредиентов.';
+comment on column products.catalog_id is 'Каталог готовой продукции (product_catalogs.id).';
+comment on column products.description is 'Описание рецептуры.';
+comment on column products.created_at is 'Когда рецептура создана.';
+comment on column product_nodes.product_id is 'Рецептура-владелец строки (products.id).';
+comment on column product_nodes.material_id is 'Сырьё строки (materials.id).';
+comment on column product_nodes.sub_product_id is 'Вложенная рецептура (products.id).';
+comment on column product_nodes.qty is 'Количество в базовой единице компонента.';
+comment on column product_nodes.loss_pct is 'Потери на связи, %.';
+comment on column packages.name is 'Название тары (банка, крышка, пакет).';
+comment on column packages.kind is 'Вид тары: jar, lid, bag, container, other.';
+comment on column packages.qty is 'Остаток тары, шт.';
+comment on column packages.avg_cost is 'Средневзвешенная себестоимость одной штуки.';
+comment on column packages.updated_at is 'Когда остаток тары менялся.';
+comment on column product_skus.product_id is 'Рецептура (products.id).';
+comment on column product_skus.name is 'Название варианта.';
+comment on column product_skus.qty_base is 'Размер фасовки в базовой единице рецептуры (г/мл/шт).';
+comment on column product_skus.price_basis is 'База цены: unit (за единицу рецептуры) или portion (за упаковку).';
+comment on column product_skus.price is 'Цена продажи.';
+comment on column product_skus.cost_price is 'Себестоимость.';
+comment on column product_skus.issue_type is 'Тип выдачи: weight или package.';
+comment on column product_skus.is_active is 'В продаже.';
+comment on column product_skus.archived is 'Убрана в архив (мягкое удаление): скрыта из продажи, но остаётся в истории заказов.';
+comment on column product_sku_packages.sku_id is 'Фасовка (product_skus.id).';
+comment on column product_sku_packages.package_id is 'Тара (packages.id).';
 comment on column qoder_dialogs.id is 'Первичный ключ диалога Qoder.';
 comment on column qoder_dialogs.user_id is 'Владелец диалога (users.id).';
 comment on column qoder_dialogs.title is 'Заголовок диалога.';
@@ -1290,16 +1187,7 @@ comment on column store_delivery_writeoffs.created_by is 'Автор списа�
 comment on column store_delivery_writeoffs.created_login is 'Логин автора списания.';
 comment on column store_order_items.order_id is 'Заказ (store_orders.id); часть составного PK.';
 comment on column store_order_items.qty is 'Количество упаковок в заказе.';
-comment on column store_order_items.packaging_id is 'Фасовка карты (prod_packagings.id); часть составного PK.';
-comment on column store_order_items.price_snapshot is 'Цена строки на дату доставки.';
-comment on column store_order_items.cost_snapshot is 'Себестоимость строки на дату доставки.';
-comment on column store_order_items.basis_snapshot is 'База цены на дату доставки.';
-comment on column store_order_items.snapshot_at is 'Когда снят слепок строки.';
-comment on column store_order_items.name_snapshot is 'Название на дату доставки.';
-comment on column store_order_items.name_en_snapshot is 'Английское название на дату доставки.';
-comment on column store_order_items.name_sr_snapshot is 'Сербское название на дату доставки.';
-comment on column store_order_items.qty_base_snapshot is 'Вес или объём упаковки на дату доставки.';
-comment on column store_order_items.dimension_snapshot is 'Размерность единицы на дату доставки.';
+comment on column store_order_items.packaging_id is 'Фасовка (product_skus.id); часть составного PK.';
 comment on column store_orders.id is 'Первичный ключ заказа.';
 comment on column store_orders.store_id is 'Магазин (stores.id).';
 comment on column store_orders.delivery_date is 'Дата доставки; вместе с store_id уникальна.';
@@ -1422,20 +1310,3 @@ comment on column waybills.reversed_by is 'Кто отменил накладн�
 comment on column waybills.reversed_login is 'Логин отменившего.';
 comment on column waybills.reversed_at is 'Когда накладная отменена.';
 
--- Минимальный заказ всегда кратен партии: ceil(выход рецептуры / выход фасовки).
--- Идемпотентно выравнивает ранее сохранённые значения при каждом запуске.
-update prod_packagings pk
-   set min_order = batch.qty * greatest(1, ceil(pk.min_order::numeric / batch.qty)::int)
-  from (
-    select pk2.id,
-           greatest(1, ceil(n.portion_qty / pk2.qty_base))::int as qty
-      from prod_packagings pk2
-      join prod_nodes n on n.id = pk2.node_id
-     where n.kind <> 'product'
-       and not n.archived
-       and not pk2.archived
-       and n.portion_qty > 0
-       and pk2.qty_base > 0
-  ) batch
- where batch.id = pk.id
-   and pk.min_order <> batch.qty * greatest(1, ceil(pk.min_order::numeric / batch.qty)::int);

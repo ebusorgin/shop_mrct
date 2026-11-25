@@ -11,7 +11,7 @@ import { pool } from '../db';
 import { ApiError, wrap } from '../http';
 import { audit } from '../services/audit';
 import { orderArchive } from '../services/order-archive';
-import { orderReport, VAT_RATE } from '../services/order-report';
+import { orderReport, VAT_RATE, type ReportLine } from '../services/order-report';
 import { createReportPdf } from '../services/order-report-pdf';
 import {
   deliveryWriteoffPreview,
@@ -34,6 +34,9 @@ function parseReportQuery(req: Request): {
   storeId: number | null;
   priceMode: 'sale' | 'cost';
   vatRate: number;
+  lang: 'ru' | 'en' | 'sr';
+  sort: ReportSortKey | null;
+  sortDir: 'asc' | 'desc';
 } {
   const date = typeof req.query.date === 'string' ? req.query.date : '';
   const parsed = new Date(`${date}T00:00:00Z`);
@@ -56,15 +59,71 @@ function parseReportQuery(req: Request): {
     if (!Number.isFinite(n) || n < 0 || n > 100) throw new ApiError(400, 'vat: ожидается число 0…100');
     vatRate = n;
   }
-  return { date, storeId, priceMode: rawPrice === 'cost' ? 'cost' : 'sale', vatRate };
+  return {
+    date,
+    storeId,
+    priceMode: rawPrice === 'cost' ? 'cost' : 'sale',
+    vatRate,
+    lang: parseLang(req.query.lang),
+    sort: parseSort(req.query.sort),
+    sortDir: req.query.sortDir === 'desc' ? 'desc' : 'asc',
+  };
+}
+
+/** Ключ сортировки строк документа (как в Excel). */
+type ReportSortKey = 'name' | 'unit' | 'qty' | 'price' | 'rate' | 'vat' | 'gross';
+const SORT_KEYS: ReportSortKey[] = ['name', 'unit', 'qty', 'price', 'rate', 'vat', 'gross'];
+
+function parseSort(raw: unknown): ReportSortKey | null {
+  if (raw === undefined || raw === '') return null;
+  if (typeof raw !== 'string' || !(SORT_KEYS as string[]).includes(raw)) {
+    throw new ApiError(400, 'sort: ожидается name, unit, qty, price, rate, vat или gross');
+  }
+  return raw as ReportSortKey;
+}
+
+/** Сортировка строк документа для PDF — та же логика, что в таблице Excel. */
+function sortLines(lines: ReportLine[], sort: ReportSortKey, dir: 'asc' | 'desc'): ReportLine[] {
+  const sign = dir === 'asc' ? 1 : -1;
+  const value = (line: ReportLine): string | number => {
+    switch (sort) {
+      case 'name':
+        return line.name;
+      case 'unit':
+        return line.unit;
+      case 'qty':
+        return line.qty;
+      case 'price':
+        return line.price;
+      case 'rate':
+        return line.vatRate;
+      case 'vat':
+        return line.vat;
+      case 'gross':
+        return line.gross;
+    }
+  };
+  return [...lines].sort((a, b) => {
+    const va = value(a);
+    const vb = value(b);
+    if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * sign;
+    return String(va).localeCompare(String(vb), 'ru', { sensitivity: 'base' }) * sign;
+  });
+}
+
+/** Язык названий позиций в отчёте: sr (по умолчанию), ru, en. */
+function parseLang(raw: unknown): 'ru' | 'en' | 'sr' {
+  if (raw === undefined || raw === '' || raw === 'sr') return 'sr';
+  if (raw === 'ru' || raw === 'en') return raw;
+  throw new ApiError(400, 'lang: ожидается sr, ru или en');
 }
 
 /** Предпросмотр отчёта-отгрузки: ?date=YYYY-MM-DD&storeId=&price=sale|cost (без storeId — все магазины). */
 ordersRouter.get(
   '/report',
   wrap(async (req, res) => {
-    const { date, storeId, priceMode, vatRate } = parseReportQuery(req);
-    res.json(await orderReport(date, storeId, priceMode, vatRate));
+    const { date, storeId, priceMode, vatRate, lang } = parseReportQuery(req);
+    res.json(await orderReport(date, storeId, priceMode, vatRate, lang, true));
   })
 );
 
@@ -76,9 +135,12 @@ ordersRouter.get(
 ordersRouter.get(
   '/report/pdf',
   wrap(async (req, res) => {
-    const { date, storeId, priceMode, vatRate } = parseReportQuery(req);
-    const { documents } = await orderReport(date, storeId, priceMode, vatRate);
+    const { date, storeId, priceMode, vatRate, lang, sort, sortDir } = parseReportQuery(req);
+    const { documents } = await orderReport(date, storeId, priceMode, vatRate, lang);
     if (!documents.length) throw new ApiError(404, 'За эту дату нет документов');
+    if (sort) {
+      for (const doc of documents) doc.lines = sortLines(doc.lines, sort, sortDir);
+    }
 
     res.setHeader('Cache-Control', 'no-store');
     if (documents.length === 1) {
@@ -157,81 +219,6 @@ ordersRouter.put(
       details: { positions: final.length },
     });
     res.json({ ok: true, packagingIds: final });
-  })
-);
-
-/**
- * GET /api/orders/price-snapshot?date=YYYY-MM-DD — состояние слепка цен и названий
- * строк заказов этой даты доставки.
- */
-ordersRouter.get(
-  '/price-snapshot',
-  wrap(async (req, res) => {
-    const date = typeof req.query.date === 'string' ? req.query.date : '';
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      throw new ApiError(400, 'date: требуется дата в формате YYYY-MM-DD');
-    }
-    const { rows } = await pool.query(
-      `select count(i.packaging_id)::int as total,
-              count(i.price_snapshot)::int as frozen,
-              count(i.name_snapshot)::int as named,
-              min(i.snapshot_at) as "frozenAt",
-              (select o2.delivery_date <= current_date
-                 from store_orders o2 where o2.delivery_date = $1::date limit 1) as past
-         from store_order_items i
-         join store_orders o on o.id = i.order_id
-        where o.delivery_date = $1::date`,
-      [date]
-    );
-    res.json({ date, ...rows[0] });
-  })
-);
-
-/**
- * POST /api/orders/price-snapshot/refresh — переснять слепок даты по текущим ценам.
- * Body: { date }. Только для дат, которые уже наступили: история не пересчитывается
- * сама, переснимок — осознанное действие офиса.
- */
-ordersRouter.post(
-  '/price-snapshot/refresh',
-  wrap(async (req, res) => {
-    const date = typeof (req.body ?? {}).date === 'string' ? (req.body as { date: string }).date : '';
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      throw new ApiError(400, 'date: требуется дата в формате YYYY-MM-DD');
-    }
-    const { rows: check } = await pool.query<{ past: boolean }>(
-      'select $1::date <= current_date as past',
-      [date]
-    );
-    if (!check[0]?.past) {
-      throw new ApiError(409, 'Дата ещё не наступила — слепок снимется автоматически в 00:00');
-    }
-    const upd = await pool.query(
-      `update store_order_items i
-          set price_snapshot = pk.price,
-              cost_snapshot  = pk.cost,
-              basis_snapshot = pk.price_basis,
-              name_snapshot  = coalesce(pk.title, tc.name),
-              name_en_snapshot = coalesce(nullif(btrim(pk.title_en), ''), tc.name_en),
-              name_sr_snapshot = coalesce(nullif(btrim(pk.title_sr), ''), tc.name_sr),
-              qty_base_snapshot = pk.qty_base,
-              dimension_snapshot = u.dimension,
-              snapshot_at    = now()
-         from store_orders o, prod_packagings pk
-         join prod_nodes tc on tc.id = pk.node_id
-         join units u on u.id = tc.unit_id
-        where i.order_id = o.id
-          and pk.id = i.packaging_id
-          and o.delivery_date = $1::date`,
-      [date]
-    );
-    await audit(req.user, {
-      action: 'update',
-      entity: 'store_order',
-      title: `Слепок цен переснят на ${date}`,
-      details: { rows: upd.rowCount ?? 0 },
-    });
-    res.json({ ok: true, rows: upd.rowCount ?? 0 });
   })
 );
 

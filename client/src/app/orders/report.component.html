@@ -3,7 +3,18 @@
   <h1 class="page-title">Отчёт-отгрузка</h1>
   @if (date) { <span class="badge blue">Доставка {{ dateLabel() }}</span> }
   @if (!loading() && !err() && documents().length) {
-    <span class="badge gray">{{ scopeLabel() }}</span>
+    @if (storeMode) {
+      <span class="badge gray">{{ scopeLabel() }}</span>
+    } @else {
+      <label class="store-pick" title="Магазин отчёта">
+        <select [ngModel]="storeId() ?? ''" (ngModelChange)="setStore($event)" [disabled]="loading()" aria-label="Магазин отчёта">
+          <option value="">Все магазины</option>
+          @for (s of storeOptions(); track s.id) {
+            <option [value]="s.id">{{ storeLabel(s) }}</option>
+          }
+        </select>
+      </label>
+    }
     <span class="badge gray">{{ documents().length }} {{ plural(documents().length, 'документ', 'документа', 'документов') }}</span>
     @if (priceMode() === 'cost') { <span class="badge amber">Себестоимость</span> }
     @if (!storeMode) {
@@ -55,6 +66,16 @@
       </div>
 
       <div class="rs-field">
+        <span class="rs-label">Язык названий</span>
+        <div class="rs-seg">
+          <button type="button" [class.on]="lang() === 'sr'" [disabled]="loading()" (click)="setLang('sr')">SR</button>
+          <button type="button" [class.on]="lang() === 'ru'" [disabled]="loading()" (click)="setLang('ru')">RU</button>
+          <button type="button" [class.on]="lang() === 'en'" [disabled]="loading()" (click)="setLang('en')">EN</button>
+        </div>
+        <small class="muted">Названия позиций в документе; бланк Otpremnica остаётся на сербском.</small>
+      </div>
+
+      <div class="rs-field">
         <span class="rs-label">Ставка налога</span>
         <div class="rs-line">
           <input type="number" min="0" max="100" step="0.5" [(ngModel)]="vatInput" (keydown.enter)="applyVat(vatInput)" aria-label="Ставка налога, %" />
@@ -101,31 +122,57 @@
           <small>RSD</small>
         </div>
       </section>
+
+      @if (priceMode() === 'sale') {
+        <section class="finance-card no-print" aria-label="Экономика отчёта">
+          <div class="fin-head">
+            <div class="fin-tabs" role="tablist" aria-label="Категория диаграммы">
+              <button type="button" role="tab" [class.on]="activeTabKey() === 'total'"
+                      [attr.aria-selected]="activeTabKey() === 'total'" (click)="finTab.set('total')">Общая</button>
+              @for (c of categoryStats(); track c.key) {
+                <button type="button" role="tab" [class.on]="activeTabKey() === c.key"
+                        [attr.aria-selected]="activeTabKey() === c.key" (click)="finTab.set(c.key)">{{ c.label }}</button>
+              }
+            </div>
+          </div>
+          <div class="fin-body">
+            <svg class="pie3d" viewBox="0 0 200 150" role="img"
+                 aria-label="К оплате: себестоимость, маржа и PDV">
+              @for (s of activeDraw(); track s.key) {
+                <path [attr.d]="s.wall" [attr.fill]="s.side" stroke="rgba(0,0,0,.08)" stroke-width=".5" />
+              }
+              @for (s of activeDraw(); track s.key) {
+                <path [attr.d]="s.top" [attr.fill]="s.fill" stroke="#fff" stroke-width="1.6" stroke-linejoin="round" />
+              }
+            </svg>
+            <div class="fin-side">
+              <ul class="fin-legend">
+                @for (s of activeSlices(); track s.key) {
+                  <li>
+                    <i class="dot" [style.background]="s.fill"></i>
+                    <span class="fl-l">{{ s.label }}</span>
+                    <b class="fl-v">{{ money(s.value) }}</b>
+                    <small class="fl-p">{{ pctLabel(s.pct) }}</small>
+                  </li>
+                } @empty {
+                  <li class="fin-empty">Нет данных за дату</li>
+                }
+                <li class="total">
+                  <span class="fl-l">{{ activeTotalLabel() }}</span>
+                  <b class="fl-v">{{ money(activeTotal()) }}</b>
+                </li>
+              </ul>
+              @if (activeMarginPctLabel()) {
+                <p class="fin-note">{{ activeMarginPctLabel() }}</p>
+              }
+            </div>
+          </div>
+        </section>
+      }
     }
   </details>
 }
 
-@if (!storeMode && date) {
-  <div class="snapshot-bar no-print" aria-live="polite">
-    @if (snapshotInfo(); as s) {
-      @if (s.past) {
-        <span class="sb-ico" aria-hidden="true">🔒</span>
-        <span>
-          Слепок цен и названий на дату доставки: <b>{{ s.frozen }} из {{ s.total }}</b> строк зафиксировано
-          @if (s.frozenAt) { <span class="muted"> · {{ frozenLabel(s.frozenAt) }}</span> }
-        </span>
-        <button type="button" class="btn sm" [disabled]="snapBusy()" (click)="refreshSnapshot()"
-                title="Заменить зафиксированные цены текущими — для исправления ошибки">
-          {{ snapBusy() ? 'Переснимаем…' : 'Переснять по текущим ценам' }}
-        </button>
-      } @else {
-        <span class="sb-ico" aria-hidden="true">⏳</span>
-        <span>Цены и названия зафиксируются автоматически в 00:00 {{ dateLabel() }} — до этого их можно менять.</span>
-      }
-      @if (snapErr()) { <span class="sb-err">{{ snapErr() }}</span> }
-    }
-  </div>
-}
 
 @if (loading()) {
   <section class="panel no-print"><p class="muted state" role="status">Готовим отчёт…</p></section>
@@ -159,7 +206,7 @@
     </div>
   }
 
-  @for (doc of documents(); track doc.number) {
+  @for (doc of viewDocuments(); track doc.number) {
     <article class="sheet" [attr.aria-label]="'Otpremnica ' + doc.number">
       <header class="doc-top">
         <div class="doc-line">
@@ -205,13 +252,13 @@
         <thead>
           <tr>
             <th>№</th>
-            <th>Naziv</th>
-            <th>JM</th>
-            <th>Količina</th>
-            <th>Cena</th>
-            <th>Stopa PDV-a, %</th>
-            <th>Iznos PDV-a</th>
-            <th>Ukupna cena sa PDV-om</th>
+            <th><button type="button" class="th-sort" title="Сортировать по названию" (click)="sortBy('name')">Naziv<span class="sort-arrow no-print">{{ sortMark('name') }}</span></button></th>
+            <th><button type="button" class="th-sort" title="Сортировать по единице" (click)="sortBy('unit')">JM<span class="sort-arrow no-print">{{ sortMark('unit') }}</span></button></th>
+            <th><button type="button" class="th-sort" title="Сортировать по количеству" (click)="sortBy('qty')">Količina<span class="sort-arrow no-print">{{ sortMark('qty') }}</span></button></th>
+            <th><button type="button" class="th-sort" title="Сортировать по цене" (click)="sortBy('price')">Cena<span class="sort-arrow no-print">{{ sortMark('price') }}</span></button></th>
+            <th><button type="button" class="th-sort" title="Сортировать по ставке PDV" (click)="sortBy('rate')">Stopa PDV-a, %<span class="sort-arrow no-print">{{ sortMark('rate') }}</span></button></th>
+            <th><button type="button" class="th-sort" title="Сортировать по сумме PDV" (click)="sortBy('vat')">Iznos PDV-a<span class="sort-arrow no-print">{{ sortMark('vat') }}</span></button></th>
+            <th><button type="button" class="th-sort" title="Сортировать по сумме с PDV" (click)="sortBy('gross')">Ukupna cena sa PDV-om<span class="sort-arrow no-print">{{ sortMark('gross') }}</span></button></th>
           </tr>
         </thead>
         <tbody>
@@ -225,7 +272,7 @@
                           title="Редактировать рецептуру" aria-label="Редактировать рецептуру">✎</button>
                 }
               </td>
-              <td class="center" [title]="line.unit === 'porcija' ? 'porcija' : line.unit">{{ unitLabel(line.unit) }}</td>
+              <td class="center" [title]="line.unit === 'porcija' ? 'kom (porcija)' : line.unit">{{ unitLabel(line.unit) }}</td>
               <td class="center">
                 @if (storeMode || qtyLocked()) {
                   <span [title]="qtyLocked() && !storeMode ? 'Прошлый заказ — количество не меняется' : ''">{{ qty(line) }}</span>
@@ -269,8 +316,8 @@
 @if (woOpen() && date) {
   <app-delivery-writeoff
     [date]="date"
-    [storeId]="storeId ?? null"
-    [scopeLabel]="storeId === undefined ? 'все магазины' : 'один магазин'"
+    [storeId]="storeId() ?? null"
+    [scopeLabel]="storeId() === undefined ? 'все магазины' : 'один магазин'"
     (closed)="woOpen.set(false)"
   />
 }

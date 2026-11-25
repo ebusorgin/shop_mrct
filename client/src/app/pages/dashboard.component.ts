@@ -21,8 +21,8 @@ import { fmtCost, fmtDateTime, fmtMoney, fmtQty, httpErr, trim } from '../core/f
       <div class="kpis">
         <div class="kpi"><div class="v">{{ data.stock.productsInStock }}</div><div class="l">позиций на складе</div></div>
         <div class="kpi"><div class="v">{{ fmtMoney(data.stock.stockValue) }}</div><div class="l">стоимость склада (себестоимость)</div></div>
-        <div class="kpi"><div class="v">{{ data.today.todayBatches }}</div><div class="l">отгрузок сегодня</div></div>
-        <div class="kpi"><div class="v">{{ fmtMoney(data.today.todayCost) }}</div><div class="l">себестоимость отгрузок сегодня</div></div>
+        <div class="kpi"><div class="v">{{ data.today.todayBatches }}</div><div class="l">списаний по доставке сегодня</div></div>
+        <div class="kpi"><div class="v">{{ fmtMoney(data.today.todayCost) }}</div><div class="l">себестоимость списанного сегодня</div></div>
         <div class="kpi"><div class="v">{{ data.monthWaybills.cnt }}</div><div class="l">накладных за месяц · {{ fmtMoney(data.monthWaybills.total) }}</div></div>
       </div>
 
@@ -114,13 +114,13 @@ import { fmtCost, fmtDateTime, fmtMoney, fmtQty, httpErr, trim } from '../core/f
       <div class="grid2">
         <div class="panel">
           <div class="row" style="align-items:center">
-            <h3 style="margin:0">🚚 Последние отгрузки</h3>
+            <h3 style="margin:0">🚚 Последние списания по доставке</h3>
           </div>
           <table class="tbl stack">
-            <tr class="th-row"><th>Техкарта</th><th>Дата</th><th class="num">Себест.</th><th>Статус</th></tr>
+            <tr class="th-row"><th>Отгрузка / магазин</th><th>Дата</th><th class="num">Себест.</th><th>Статус</th></tr>
             @for (b of data.recentBatches; track b.id) {
               <tr>
-                <td>{{ b.cardName }} × {{ b.portions }}</td>
+                <td>{{ b.cardName }} <span class="muted">· {{ b.portions }} поз.</span></td>
                 <td class="nw muted" data-l="дата">{{ b.batchDate }}</td>
                 <td class="num" data-l="себест.">{{ fmtMoney(b.costTotal) }}</td>
                 <td data-l="статус">
@@ -128,7 +128,7 @@ import { fmtCost, fmtDateTime, fmtMoney, fmtQty, httpErr, trim } from '../core/f
                   @else { <span class="badge gray">отменена</span> }
                 </td>
               </tr>
-            } @empty { <tr class="empty"><td colspan="4">Отгрузок пока не было</td></tr> }
+            } @empty { <tr class="empty"><td colspan="4">Списаний по доставке пока не было</td></tr> }
           </table>
         </div>
 

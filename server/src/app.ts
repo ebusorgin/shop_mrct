@@ -7,9 +7,11 @@ import { config } from './config';
 import { metaRouter } from './routes/meta';
 import { productsRouter } from './routes/products';
 import { stockRouter } from './routes/stock';
+import { packagesRouter } from './routes/packages';
 import { waybillsRouter } from './routes/waybills';
 import { importRouter } from './routes/import';
 import { productionMapRouter } from './routes/production-map';
+import { recipesRouter } from './routes/recipes';
 import { dashboardRouter } from './routes/dashboard';
 import { pointsRouter } from './routes/points';
 import { suppliersRouter } from './routes/suppliers';
@@ -51,10 +53,14 @@ export function createApp(): express.Express {
   app.use('/api/meta', requireOffice, metaRouter);
   app.use('/api/products', requireOffice, productsRouter);
   app.use('/api/stock', requireOffice, stockRouter);
+  // тара: собственный учёт остатков и движений (отдельно от складской номенклатуры)
+  app.use('/api/packages', requireOffice, packagesRouter);
   app.use('/api/waybills', requireOffice, waybillsRouter);
   app.use('/api/import', requireOffice, importRouter);
   // единая карта производства: общий граф сырьё -> операции -> рецептуры
   app.use('/api/production-map', requireOffice, productionMapRouter);
+  // рецептуры новой модели: products + product_nodes + product_skus (только чтение)
+  app.use('/api/recipes', requireOffice, recipesRouter);
   app.use('/api/dashboard', requireOffice, dashboardRouter);
   // торговые точки: справочник магазинов
   app.use('/api/points', requireOffice, pointsRouter);

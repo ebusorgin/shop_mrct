@@ -28,8 +28,8 @@ const convCols = (t: string): string =>
 const SQL_PRODUCT = `
   select p.name, u.code as "unitCode", nullif(trim(pc.name), '') as context,
          ${convCols('p')}
-    from products p
-    left join product_categories pc on pc.id = p.category_id
+    from materials p
+    left join material_categories pc on pc.id = p.category_id
     left join units u on u.id = p.unit_id
    where p.id = $1`;
 

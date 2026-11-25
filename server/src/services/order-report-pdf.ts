@@ -58,7 +58,7 @@ function dateLabel(iso: string): string {
 }
 
 function unitLabel(line: ReportLine): string {
-  return line.unit === 'porcija' ? 'porc.' : line.unit;
+  return line.unit === 'porcija' ? 'kom' : line.unit;
 }
 
 /** Пропорции колонок как в печатной таблице (6 / 26 / 7 / 12 / 12 / 10 / 13 / 14 %). */

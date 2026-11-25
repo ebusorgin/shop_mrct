@@ -3,6 +3,10 @@
 # 2) сервер: PM2 на порту 4000, с автоперезапуском.
 $ErrorActionPreference = 'Continue'
 
+# PM2 иначе каждые 30 с запускает скрытый PowerShell ради метрик процесса
+# (pidusage -> gwmi). 5 минут достаточно для контроля max_memory_restart.
+$env:PM2_WORKER_INTERVAL = '300000'
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $nodeDir  = 'C:\nvm4w\nodejs'
 if (Test-Path $nodeDir) { $env:Path = "$nodeDir;$env:Path" }

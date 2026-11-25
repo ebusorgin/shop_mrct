@@ -3,11 +3,11 @@ import { ApiError } from '../http';
 
 // Рецептуры живут на карте и проверяются при сохранении карты;
 // здесь остаётся уникальность складской номенклатуры.
-export type NameTable = 'products';
+export type NameTable = 'materials';
 export type NameColumn = 'name' | 'name_en' | 'name_sr';
 
 const SECTION: Record<NameTable, string> = {
-  products: 'Сырьё',
+  materials: 'Сырьё',
 };
 
 /**

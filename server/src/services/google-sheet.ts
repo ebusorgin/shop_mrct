@@ -27,7 +27,7 @@ export interface GoogleSheetTab {
   /** Строки как в таблице: значения уже отформатированы Google, длина = ширине листа. */
   rows: string[][];
   width: number;
-  /** Фасовка (prod_packagings.id) для каждой строки; null — позиция не сопоставлена. */
+  /** Фасовка (product_skus.id) для каждой строки; null — позиция не сопоставлена. */
   links: (number | null)[];
   /** Название продукции (техкарта + фасовка) для каждой строки; null — позиция не сопоставлена. */
   names: (string | null)[];
@@ -277,14 +277,14 @@ interface Matchers {
 /** Индексы для сопоставления: полное название (техкарта + фасовка), базовое и фасовки по id. */
 async function loadMatchers(): Promise<Matchers> {
   const { rows } = await pool.query<Omit<PackagingRef, 'qtyBase'> & { qtyBase: number }>(
-    `select pk.id, pk.node_id as "cardId", tc.name as "cardName", pk.name as "packagingName",
-            nullif(btrim(pk.title), '') as title, nullif(btrim(pk.title_sr), '') as "titleSr",
-            pk.qty_base::float8 as "qtyBase", pk.is_default as "isDefault",
+    `select pk.id, pk.product_id as "cardId", p.name as "cardName", pk.name as "packagingName",
+            null::text as title, null::text as "titleSr",
+            pk.qty_base::float8 as "qtyBase", false as "isDefault",
             u.code as "unitCode", u.dimension
-       from prod_packagings pk
-       join prod_nodes tc on tc.id = pk.node_id
-       join units u on u.id = tc.unit_id
-      where not pk.archived and not tc.archived`
+       from product_skus pk
+       join products p on p.id = pk.product_id
+       join units u on u.id = p.unit_id
+      where not pk.archived`
   );
   const exactSale = new Map<string, number>();
   const exactCardPick = new Map<string, { id: number; rank: number }>();
@@ -539,12 +539,12 @@ export async function setSheetRowLink(
   }
 
   const { rows: packagings } = await pool.query<{ cardName: string; qtyBase: number; unitCode: string }>(
-    `select tc.name as "cardName", pk.qty_base::float8 as "qtyBase",
+    `select p.name as "cardName", pk.qty_base::float8 as "qtyBase",
             u.code as "unitCode"
-       from prod_packagings pk
-       join prod_nodes tc on tc.id = pk.node_id
-       join units u on u.id = tc.unit_id
-      where pk.id = $1`,
+       from product_skus pk
+       join products p on p.id = pk.product_id
+       join units u on u.id = p.unit_id
+      where pk.id = $1 and not pk.archived`,
     [packagingId]
   );
   if (!packagings.length) throw new ApiError(400, 'Фасовка не найдена');

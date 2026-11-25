@@ -6,7 +6,6 @@
  */
 import { pool } from '../db';
 import { deliveryWindows } from './order-window';
-import { freezeOrderSnapshots } from './order-price-snapshot';
 import { reportQuantity, type Dimension, type PriceBasis, type ReportUnit } from './order-report';
 
 /** Будущая дата доставки: open — приём заказа ещё не закрыт. */
@@ -42,7 +41,6 @@ export interface OrderArchivePayload {
 }
 
 export async function orderArchive(storeId: number | null): Promise<OrderArchivePayload> {
-  await freezeOrderSnapshots();
   const [{ rows: orders }, windows] = await Promise.all([
     pool.query<ArchiveOrderRow>(
       `select o.id,
@@ -56,26 +54,26 @@ export async function orderArchive(storeId: number | null): Promise<OrderArchive
               coalesce(json_agg(json_build_object(
                          'packagingId', i.packaging_id,
                          'qty', i.qty,
-                         'cardName', coalesce(i.name_snapshot, pk.title, tc.name),
-                         'cardNameEn', coalesce(i.name_en_snapshot, pk.title_en, tc.name_en),
-                         'cardNameSr', coalesce(i.name_sr_snapshot, pk.title_sr, tc.name_sr),
+                         'cardName', tc.name,
+                         'cardNameEn', coalesce(nullif(tc.name_en, ''), tc.name),
+                         'cardNameSr', coalesce(nullif(tc.name_sr, ''), tc.name),
                          'packagingName', pk.name,
-                         'qtyBase', coalesce(i.qty_base_snapshot, pk.qty_base)::float8,
+                         'qtyBase', pk.qty_base::float8,
                          'unitCode', u.code,
-                         'priceBasis', coalesce(i.basis_snapshot, pk.price_basis),
-                         'dimension', coalesce(i.dimension_snapshot, u.dimension),
-                         'price', coalesce(i.price_snapshot, pk.price)::float8,
+                         'priceBasis', pk.price_basis,
+                         'dimension', u.dimension,
+                         'price', pk.price::float8,
                          'catalogId', tc.catalog_id,
                          'catalogName', c.name,
                          'catalogIcon', c.icon,
                          'catalogColor', c.color
-                       ) order by coalesce(c.position, 999999), coalesce(pk.title, tc.name), pk.qty_base)
+                       ) order by coalesce(c.position, 999999), tc.name, pk.qty_base)
                        filter (where i.packaging_id is not null), '[]') as items
          from store_orders o
          join stores s on s.id = o.store_id
          left join store_order_items i on i.order_id = o.id
-         left join prod_packagings pk on pk.id = i.packaging_id
-         left join prod_nodes tc on tc.id = pk.node_id
+         left join product_skus pk on pk.id = i.packaging_id
+         left join products tc on tc.id = pk.product_id
          left join product_catalogs c on c.id = tc.catalog_id
          left join units u on u.id = tc.unit_id
         where $1::int is null or o.store_id = $1

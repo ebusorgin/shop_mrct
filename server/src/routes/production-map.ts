@@ -7,6 +7,7 @@ import { auditTx } from '../services/audit';
 import { produceMapBatch, reverseMapBatch, shipMapOutput } from '../services/map-production';
 import { saveMap, type SaveNode, type SaveOp } from '../services/map-save';
 import { aiLayout, type LayoutNode, type LayoutOp } from '../services/map-layout';
+import { batchMinOrder } from '../services/packagings';
 
 export const productionMapRouter = Router();
 
@@ -101,8 +102,10 @@ function parseBody(body: Record<string, unknown>): { nodes: NodeDto[]; ops: OpDt
       const p = reqObject(rp);
       const qtyBase = reqNum(p, 'qtyBase');
       if (!(qtyBase > 0)) throw new ApiError(400, 'Выход фасовки должен быть больше 0');
-      const minOrder = p.minOrder == null || p.minOrder === '' ? 1 : reqInt(p, 'minOrder');
-      if (minOrder < 1) throw new ApiError(400, 'Минимальный заказ — целое число больше 0');
+      const requestedMinOrder = p.minOrder == null || p.minOrder === '' ? 1 : reqInt(p, 'minOrder');
+      if (requestedMinOrder < 1) throw new ApiError(400, 'Минимальный заказ — целое число больше 0');
+      // Минимум всегда кратен одной партии рецептуры — см. batchMinOrder.
+      const minOrder = batchMinOrder(kind === 'product' ? 0 : portionQty, qtyBase, requestedMinOrder);
       const price = p.price == null || p.price === '' ? 0 : reqNum(p, 'price');
       const cost = p.cost == null || p.cost === '' ? 0 : reqNum(p, 'cost');
       if (price < 0 || cost < 0) throw new ApiError(400, 'Цена и себестоимость фасовки не могут быть отрицательными');

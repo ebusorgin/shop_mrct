@@ -7,6 +7,18 @@ export function packagingWeight(qtyBase: number, unitCode: string): string {
   return `${trim(abs)} ${unitCode}`;
 }
 
+/**
+ * Минимальный заказ в упаковках — целое число партий рецептуры.
+ * Партия даёт ceil(выход / выход фасовки) упаковок; заказ поднимается
+ * вверх до ближайшей целой партии, но не меньше одной.
+ */
+export function batchMinOrder(portionQty: number, qtyBase: number, minOrder: number): number {
+  const requested = Math.max(1, Math.round(minOrder) || 1);
+  if (!(portionQty > 0) || !(qtyBase > 0)) return requested;
+  const batch = Math.max(1, Math.ceil(portionQty / qtyBase - 1e-9));
+  return Math.max(batch, Math.ceil(requested / batch - 1e-9) * batch);
+}
+
 /** Размер из названия: граммы/миллилитры/штуки в базовой величине. */
 function sizeOf(value: string): { value: number; dimension: string } | null {
   const match = value.toLowerCase().match(/(\d+(?:[.,]\d+)?)\s*(кг|гр|г|мл|л|kg|g|шт)/);

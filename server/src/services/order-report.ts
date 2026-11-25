@@ -5,9 +5,9 @@
  * storeId = null — документы по всем магазинам, у которых есть заказ на дату.
  */
 import { pool } from '../db';
-import { sheetsPool } from '../db-sheets';
 import { ensureDeliveryDocNumbers } from './order-numbering';
 import { freezeOrderSnapshots } from './order-price-snapshot';
+import { sheetLineOrderForDate } from './google-sheet';
 
 export const VAT_RATE = 20;
 
@@ -136,35 +136,6 @@ export function reportQuantity(
   };
 }
 
-/**
- * Порядок строк из листа Google-таблицы за дату доставки: id фасовки -> номер строки.
- * Отчёт строится строго в порядке Excel-таблицы; листы называются «18.11» / «5.11».
- * Если отдельная база листов недоступна, порядок остаётся прежним.
- */
-async function sheetLineOrder(deliveryDate: string): Promise<Map<number, number> | null> {
-  const [, mm, dd] = deliveryDate.split('-');
-  if (!mm || !dd) return null;
-  const wantDay = Number(dd);
-  const wantMonth = Number(mm);
-  try {
-    const { rows } = await sheetsPool.query<{ name: string; links: (number | null)[] }>(
-      'select name, links from google_sheet_tabs'
-    );
-    const tab = rows.find((t) => {
-      const m = String(t.name ?? '').trim().match(/^(\d{1,2})[.,](\d{1,2})$/);
-      return !!m && Number(m[1]) === wantDay && Number(m[2]) === wantMonth;
-    });
-    if (!tab || !Array.isArray(tab.links)) return null;
-    const position = new Map<number, number>();
-    tab.links.forEach((pid, index) => {
-      if (pid != null && !position.has(Number(pid))) position.set(Number(pid), index);
-    });
-    return position;
-  } catch {
-    return null;
-  }
-}
-
 export async function orderReport(
   deliveryDate: string,
   storeId: number | null,
@@ -266,7 +237,7 @@ export async function orderReport(
 
   // Строгое правило: строки документа идут в порядке листа Excel за эту дату.
   // Позиции, которых в листе нет, остаются в конце в прежнем порядке.
-  const sheetOrder = await sheetLineOrder(deliveryDate);
+  const sheetOrder = await sheetLineOrderForDate(deliveryDate);
   if (sheetOrder) {
     for (const doc of docs.values()) {
       doc.lines.sort((a, b) => {

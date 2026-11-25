@@ -7,7 +7,7 @@ import { TranslatePipe } from '@ngx-translate/core';
 import { ApiService } from '../core/api.service';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 import { AppSettings, DeliveryRule, GoogleSheet, GptTestResult, LabelItem, OrderHistoryResult, PointCard, ProductCatalog, RawCategory } from '../core/models';
-import { fmtQty, httpErr, trim } from '../core/format';
+import { fmtMoney, fmtQty, httpErr, trim } from '../core/format';
 import { CURRENCY_PRESETS, setCurrencySymbol } from '../core/currency';
 import { packagingLabel } from '../core/packaging-label';
 import { PasswordFormComponent } from '../shared/password-form.component';
@@ -30,6 +30,8 @@ interface LinkPackaging {
   title: string | null;
   qtyBase: number;
   minOrder: number;
+  available: boolean;
+  price: number;
   unitCode: string;
   catalogName: string | null;
 }
@@ -263,10 +265,13 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
     .excel-grid td.link-pick button { width:100%; border:1px dashed #c9a227; border-radius:6px; background:#fff; color:#7a5b00; font:inherit; font-size:11px; padding:3px 6px; cursor:pointer; white-space:nowrap; }
     .excel-grid td.link-pick button:hover { background:#fff7dd; }
     .excel-grid .link-edit { border:0; background:transparent; color:var(--brand-blue-dark); font-size:11px; padding:0 2px; cursor:pointer; }
+    .excel-grid .link-price { display:inline-block; margin-left:5px; padding:0 5px; border-radius:8px; background:var(--green-soft); color:var(--green); font-size:10px; font-weight:700; line-height:16px; vertical-align:middle; }
+    .excel-grid .link-off { display:inline-block; margin-left:5px; padding:0 5px; border-radius:8px; background:var(--amber-soft); color:var(--amber); font-size:10px; font-weight:700; line-height:16px; vertical-align:middle; }
     .link-scrim { position:fixed; inset:0; z-index:80; }
     .link-pop { position:fixed; z-index:81; width:300px; padding:8px; background:var(--panel); border:1px solid var(--border); border-radius:10px; box-shadow:0 12px 30px rgba(10,18,32,.22); }
     .link-pop-head { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; margin-bottom:6px; font-size:12px; }
     .link-pop-head span { overflow:hidden; text-overflow:ellipsis; }
+    .link-pop-hint { margin:-2px 0 6px; font-size:11px; color:var(--muted); }
     .link-pop-x { border:0; background:transparent; color:var(--muted); font-size:14px; cursor:pointer; line-height:1; }
     .link-unset { width:100%; margin-top:6px; padding:6px; border:1px solid var(--border); border-radius:8px; background:#fff; color:var(--red); font:inherit; font-size:12px; cursor:pointer; }
     .link-unset:disabled { opacity:.6; cursor:progress; }
@@ -823,8 +828,9 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
         <div class="excel-sync-info">
           <b>История заказов из листов</b>
           <span>Кнопка «Синхронизировать историю» раскладывает сохранённые листы по магазинам и датам
-            и записывает заказы в архив. Повторный запуск обновляет те же заказы; дробное количество
-            округляется вверх до целой упаковки. Листы без даты и копии пропускаются.</span>
+            и записывает заказы в архив. Повторный запуск обновляет те же заказы. Количество в клетке
+            листа — в единице строки «Ед-ца изм-я»: кг/л пересчитываются в упаковки по весу фасовки,
+            «порц» — уже упаковки, остаток дроби округляется вверх. Листы без даты и копии пропускаются.</span>
         </div>
         <button class="btn" (click)="syncHistory()" [disabled]="sheetBusy() || historyBusy() || !sheetDoc()">
           {{ historyBusy() ? 'Импортируем…' : '📥 Синхронизировать историю' }}
@@ -872,6 +878,8 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
                             <td class="link-id">{{ id }}</td>
                             <td class="local-name">
                               {{ sheetLocalName(rowIndex) || '—' }}
+                              @if (sheetLinkPrice(rowIndex); as price) { <span class="link-price">{{ price }}</span> }
+                              @if (sheetLinkAvailable(rowIndex) === false) { <span class="link-off">не в продаже</span> }
                               <button type="button" class="link-edit" title="Изменить или снять сопоставление"
                                       (click)="openLinkPicker($event, rowIndex)">✎</button>
                             </td>
@@ -921,6 +929,7 @@ function ruleMatches(from: string, to: string, weekdays: number[], monthDays: nu
                   <span>Строка {{ target.row + 1 }}: «{{ target.rowName }}»</span>
                   <button type="button" class="link-pop-x" aria-label="Закрыть" (click)="closeLinkPicker()">✕</button>
                 </div>
+                <div class="link-pop-hint">Выбранная фасовка и её цена попадут в заказ.</div>
                 <app-picker [options]="linkOptions()" [selectedId]="target.packagingId" [autoOpen]="true"
                             placeholder="Найти фасовку…" (picked)="pickLink($event)"></app-picker>
                 @if (target.packagingId != null) {
@@ -1185,6 +1194,22 @@ export class SettingsComponent implements OnInit {
     return this.linkPackages().find((pk) => pk.id === id)?.minOrder ?? null;
   }
 
+  private sheetLinkPackaging(rowIndex: number): LinkPackaging | null {
+    const id = this.sheetLink(rowIndex);
+    return id === null ? null : this.linkPackages().find((pk) => pk.id === id) ?? null;
+  }
+
+  /** Цена связанной фасовки — именно она попадёт в заказ. */
+  sheetLinkPrice(rowIndex: number): string {
+    const pk = this.sheetLinkPackaging(rowIndex);
+    return pk ? fmtMoney(pk.price) : '';
+  }
+
+  /** Доступна ли связанная фасовка к заказу; null — позиция не сопоставлена. */
+  sheetLinkAvailable(rowIndex: number): boolean | null {
+    return this.sheetLinkPackaging(rowIndex)?.available ?? null;
+  }
+
   /** Позиция листа без продукции — в её ячейке вместо пустого поля показываем выбор. */
   sheetMiss(rowIndex: number): boolean {
     return this.sheetActive()?.misses?.includes(rowIndex) ?? false;
@@ -1243,8 +1268,10 @@ export class SettingsComponent implements OnInit {
     this.linkPackages()
       .map((pk) => ({
         id: pk.id,
-        label: packagingLabel(pk.title ?? pk.nodeName, fmtQty(pk.qtyBase, pk.unitCode)),
+        label: packagingLabel(pk.nodeName, fmtQty(pk.qtyBase, pk.unitCode)),
         unit: fmtQty(pk.qtyBase, pk.unitCode),
+        price: fmtMoney(pk.price),
+        note: pk.available ? undefined : 'не в продаже',
         group: pk.catalogName ?? undefined,
       }))
       .sort((a, b) => a.label.localeCompare(b.label, 'ru'))

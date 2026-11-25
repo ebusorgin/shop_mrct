@@ -4,7 +4,10 @@
  * Лист — день доставки: дата берётся из названия листа (DD.MM), год — из строки
  * «Доставка DD.MM.YYYY». Колонки после «Min Заказ» подписаны кодами магазинов
  * (103, Mix 38103); служебные колонки (Сумма, Столбец 1, предзак, 109+) пропускаются.
- * Дробное количество округляется вверх: позиция заказа хранится в целых упаковках.
+ * Количество в клетке — в единице из колонки «Ед-ца изм-я» строки листа:
+ * кг/л переводятся в упаковки по весу/объёму фасовки, «порц»/«уп» — уже упаковки,
+ * «шт» — по числу штук в упаковке. Остаток дроби округляется вверх: позиция
+ * заказа хранится в целых упаковках.
  */
 import { pool, tx } from '../db';
 import { ApiError } from '../http';
@@ -63,28 +66,69 @@ function storeColumns(
   return columns;
 }
 
-function headerOf(tab: GoogleSheetTab): { row: number; minCol: number } | null {
+function headerOf(tab: GoogleSheetTab): { row: number; minCol: number; unitCol: number | null } | null {
   for (let row = 0; row < Math.min(10, tab.rows.length); row++) {
-    const minCol = tab.rows[row].findIndex((value) => /min\.?\s*заказ/i.test(value ?? ''));
+    const headers = tab.rows[row];
+    const minCol = headers.findIndex((value) => /min\.?\s*заказ/i.test(value ?? ''));
     if (minCol < 0) continue;
-    if ((tab.rows[row][minCol] ?? '').trim().length > 24) continue;
-    return { row, minCol };
+    if ((headers[minCol] ?? '').trim().length > 24) continue;
+    let unitCol: number | null = null;
+    for (let col = 0; col < minCol; col++) {
+      if (/ед[.\s-]*ца\s*изм|изм-я/i.test(headers[col] ?? '')) unitCol = col;
+    }
+    return { row, minCol, unitCol };
   }
   return null;
 }
 
-/** Количество упаковок из клетки: пусто, «не нужен», «0» и мусор — пропускаются. */
-function parseQty(value: string | undefined): { qty: number; rounded: boolean } | null {
+/** Количество из клетки: пусто, «не нужен», «0» и мусор — пропускаются. */
+function parseAmount(value: string | undefined): number | null {
   const compact = (value ?? '').trim().toLowerCase().replace(/\s+/g, '').replace(',', '.');
   if (!compact || /^(не\s*нужен|не\s*нужно|не\s*надо|нет|-|—)$/.test(compact)) return null;
   const match = compact.match(/^(\d+(?:\.\d+)?)/);
   if (!match) return null;
   const amount = Number(match[1]);
-  if (!Number.isFinite(amount) || amount <= 0) return null;
-  return {
-    qty: Math.min(999, Math.max(1, Math.ceil(amount))),
-    rounded: amount % 1 !== 0,
-  };
+  return Number.isFinite(amount) && amount > 0 ? amount : null;
+}
+
+/** Фасовка для пересчёта клетки листа в количество упаковок. */
+interface PackagingQty {
+  qtyBase: number;
+  priceBasis: string;
+  dimension: string | null;
+}
+
+/**
+ * Клетка листа — количество в единице строки «Ед-ца изм-я»: «кг»/«л» переводим
+ * по весу/объёму фасовки, «порц»/«уп» — уже упаковки, «шт» — по числу штук.
+ * Если единица в листе не указана — прежнее правило по базе цены фасовки.
+ */
+function toPackQty(
+  amount: number,
+  packaging: PackagingQty | undefined,
+  sheetUnit: string
+): number {
+  const unit = (sheetUnit ?? '').toLowerCase().replace(/\s+/g, '');
+  const qtyBase = packaging && packaging.qtyBase > 0 ? packaging.qtyBase : 0;
+
+  if (/^(порц|порци|порция|порции|уп|упак|упаковка|упаковки|упак\.)/.test(unit)) return amount;
+  if (/^(шт|штук|штука|штуки|шт\.)$/.test(unit)) {
+    return qtyBase > 0 && packaging?.dimension === 'count' ? amount / qtyBase : amount;
+  }
+  if (qtyBase > 0) {
+    if (/^(кг|kg)$/.test(unit) && packaging?.dimension === 'mass') return (amount * 1000) / qtyBase;
+    if (/^(г|гр|g|гр\.)$/.test(unit) && packaging?.dimension === 'mass') return amount / qtyBase;
+    if (/^(л|l)$/.test(unit) && packaging?.dimension === 'volume') return (amount * 1000) / qtyBase;
+    if (/^(мл|ml)$/.test(unit) && packaging?.dimension === 'volume') return amount / qtyBase;
+  }
+
+  if (!packaging || !(packaging.qtyBase > 0)) return amount;
+  if (packaging.priceBasis === 'portion') return amount;
+  if (packaging.priceBasis === 'piece') {
+    return packaging.dimension === 'count' ? amount / packaging.qtyBase : amount;
+  }
+  if (packaging.dimension === 'count') return amount / packaging.qtyBase;
+  return (amount * 1000) / packaging.qtyBase;
 }
 
 interface PendingOrder {
@@ -93,19 +137,29 @@ interface PendingOrder {
   items: Map<number, number>;
 }
 
-export async function importOrderHistory(): Promise<OrderHistoryResult> {
+export async function importOrderHistory(onlyDates?: string[]): Promise<OrderHistoryResult> {
   const sheet = await savedGoogleSheet();
   if (!sheet) {
     throw new ApiError(400, 'Google-таблица ещё не скачана — сначала нажмите «Синхронизировать»');
   }
+  // Без списка дат перестраивается вся история; список — точечно перечитать один день.
+  const only = onlyDates?.length ? new Set(onlyDates) : null;
 
   const [{ rows: stores }, { rows: packagings }] = await Promise.all([
     pool.query<{ id: number; code: string }>('select id, code from stores'),
-    pool.query<{ id: number }>('select id from prod_packagings'),
+    pool.query<{ id: number; qtyBase: number; priceBasis: string; dimension: string | null }>(
+      `select pk.id, pk.qty_base::float8 as "qtyBase",
+              pk.price_basis as "priceBasis", u.dimension
+         from prod_packagings pk
+         join prod_nodes tc on tc.id = pk.node_id
+         join units u on u.id = tc.unit_id`
+    ),
   ]);
   const storesById = new Map(stores.map((store) => [store.id, store.id]));
   const storesByCode = new Map(stores.map((store) => [store.code, store.id]));
-  const knownPackagings = new Set(packagings.map((packaging) => packaging.id));
+  const packagingQty = new Map<number, PackagingQty>(
+    packagings.map((packaging) => [packaging.id, packaging])
+  );
 
   const tabsByDate = new Map<string, GoogleSheetTab>();
   const skipped: string[] = [];
@@ -129,6 +183,7 @@ export async function importOrderHistory(): Promise<OrderHistoryResult> {
   const pending = new Map<string, PendingOrder>();
   let rounded = 0;
   for (const [date, tab] of tabsByDate) {
+    if (only && !only.has(date)) continue;
     const header = headerOf(tab);
     if (!header) {
       skipped.push(tab.name);
@@ -142,18 +197,22 @@ export async function importOrderHistory(): Promise<OrderHistoryResult> {
     const end = Math.max(summaryStart(tab.rows), header.row + 1);
     for (let row = header.row + 1; row < end; row++) {
       const packagingId = tab.links[row];
-      if (packagingId == null || !knownPackagings.has(packagingId)) continue;
+      if (packagingId == null || !packagingQty.has(packagingId)) continue;
+      const packaging = packagingQty.get(packagingId);
+      const sheetUnit = header.unitCol == null ? '' : tab.rows[row]?.[header.unitCol] ?? '';
       for (const { col, storeId } of columns) {
-        const parsed = parseQty(tab.rows[row]?.[col]);
-        if (!parsed) continue;
-        if (parsed.rounded) rounded++;
+        const amount = parseAmount(tab.rows[row]?.[col]);
+        if (!amount) continue;
+        const packs = toPackQty(amount, packaging, sheetUnit);
+        const qty = Math.min(999, Math.max(1, Math.ceil(packs - 1e-9)));
+        if (Math.abs(packs - qty) > 1e-6) rounded++;
         const key = `${storeId}|${date}`;
         let order = pending.get(key);
         if (!order) {
           order = { storeId, date, items: new Map() };
           pending.set(key, order);
         }
-        order.items.set(packagingId, (order.items.get(packagingId) ?? 0) + parsed.qty);
+        order.items.set(packagingId, (order.items.get(packagingId) ?? 0) + qty);
       }
     }
   }

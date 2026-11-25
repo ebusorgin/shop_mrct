@@ -249,9 +249,9 @@ interface PackagingRef {
   isDefault: boolean;
 }
 
-/** Название в списке: своё название фасовки, иначе «техкарта · фасовка». */
-const saleName = (p: PackagingRef): string =>
-  (p.title ?? '').trim() || packagingLabel(p.cardName, packagingWeight(p.qtyBase, p.unitCode));
+/** Название в списке — из рецептуры: «техкарта · фасовка». */
+const recipeName = (p: PackagingRef): string =>
+  packagingLabel(p.cardName, packagingWeight(p.qtyBase, p.unitCode));
 
 /** Размер порции из названия позиции — для выбора фасовки того же веса. */
 function sizeOf(value: string): { value: number; dimension: string } | null {
@@ -293,7 +293,7 @@ async function loadMatchers(): Promise<Matchers> {
   for (const row of rows) {
     const ref: PackagingRef = { ...row, qtyBase: Number(row.qtyBase) };
     exactSale.set(normName(`${ref.cardName} ${ref.packagingName}`), ref.id);
-    // Своё название фасовки сопоставляем напрямую: в листах встречаются названия
+    // Своё название фасовки — алиас для автоподбора: в листах встречаются названия
     // вида «Квашеная капуста ведра 1000г», которых нет в составном «техкарта + фасовка».
     if (ref.title) exactSale.set(normName(ref.title), ref.id);
     if (ref.titleSr) exactSale.set(normName(ref.titleSr), ref.id);
@@ -308,7 +308,7 @@ async function loadMatchers(): Promise<Matchers> {
     const rank = sameSize ? 2 : ref.isDefault ? 1 : 0;
     const picked = exactCardPick.get(cardKey);
     if (!picked || rank > picked.rank) exactCardPick.set(cardKey, { id: ref.id, rank });
-    nameById.set(ref.id, saleName(ref));
+    nameById.set(ref.id, recipeName(ref));
     const base = baseName(ref.cardName);
     byBase.set(base, [...(byBase.get(base) ?? []), ref]);
   }
@@ -333,8 +333,13 @@ function autoLinks(rows: string[][], matchers: Matchers): (number | null)[] {
     if (card) return card;
     const group = matchers.byBase.get(baseName(name)) ?? [];
     if (!group.length) return null;
-    if (group.length === 1) return group[0].id;
     const size = sizeOf(name);
+    if (group.length === 1) {
+      const only = group[0];
+      // Единственная фасовка другого веса — не подставляем её молча: в заказ уйдёт не та упаковка.
+      if (size && (only.dimension !== size.dimension || Math.abs(only.qtyBase - size.value) >= 1e-6)) return null;
+      return only.id;
+    }
     if (size) {
       const fits = group.filter((p) => p.dimension === size.dimension && Math.abs(p.qtyBase - size.value) < 1e-6);
       if (fits.length === 1) return fits[0].id;
@@ -360,6 +365,51 @@ async function applyOverridesToSheet(sheet: GoogleSheet, matchers: Matchers): Pr
     for (const index of tab.misses) unmatched.add(itemName(tab.rows[index] ?? []));
   }
   sheet.unmatched = [...unmatched].sort((a, b) => a.localeCompare(b, 'ru'));
+}
+
+/**
+ * Порядок строк листа за дату доставки: id фасовки -> номер строки.
+ * Ручные связи учитываются наравне с автоподбором — иначе пересопоставленная
+ * позиция оказывается в конце отчёта. null — лист за эту дату не найден.
+ */
+export async function sheetLineOrderForDate(
+  deliveryDate: string
+): Promise<Map<number, number> | null> {
+  const [, mm, dd] = deliveryDate.split('-');
+  const day = Number(dd);
+  const month = Number(mm);
+  if (!Number.isInteger(day) || !Number.isInteger(month)) return null;
+  try {
+    const { rows } = await sheetsPool.query<{
+      name: string; rows: string[][]; links: (number | null)[];
+    }>(
+      `select name, rows, links from google_sheet_tabs
+        where spreadsheet_id = $1 and btrim(name) ~ $2
+        order by position`,
+      [GOOGLE_SHEET_ID, `^0?${day}[.,]0?${month}$`]
+    );
+    if (!rows.length) return null;
+    const tab = rows[0];
+    const links = [...tab.links];
+    const decisions = (await manualOverrides()).get(tab.name);
+    if (decisions) {
+      const start = summaryStart(tab.rows);
+      tab.rows.forEach((row, index) => {
+        if (index >= start) return;
+        const name = itemName(row);
+        if (!name) return;
+        const packagingId = decisions.get(normName(name));
+        if (packagingId !== undefined) links[index] = packagingId;
+      });
+    }
+    const position = new Map<number, number>();
+    links.forEach((pid, index) => {
+      if (pid != null && !position.has(pid)) position.set(pid, index);
+    });
+    return position;
+  } catch {
+    return null;
+  }
 }
 
 /** id фасовки или null — «позицию не сопоставлять»; отсутствие ключа — решение не принимали. */
@@ -408,6 +458,9 @@ function applyOverrides(
 
 /** Производные поля: название продукции по ссылке и индексы позиций без фасовки. */
 function fillTabDerived(tab: GoogleSheetTab, nameById: Map<number, string>): void {
+  // Автоподбор мог сохраниться до архивации фасовки — такую связь снимаем,
+  // иначе в заказ попадает архивная позиция с нулевой ценой.
+  tab.links = tab.links.map((id) => (id !== null && nameById.has(id) ? id : null));
   tab.names = tab.links.map((id) => (id === null ? null : nameById.get(id) ?? null));
   const start = summaryStart(tab.rows);
   tab.misses = tab.links.reduce<number[]>((misses, id, index) => {
@@ -486,7 +539,7 @@ export async function setSheetRowLink(
   }
 
   const { rows: packagings } = await pool.query<{ cardName: string; qtyBase: number; unitCode: string }>(
-    `select coalesce(pk.title, tc.name) as "cardName", pk.qty_base::float8 as "qtyBase",
+    `select tc.name as "cardName", pk.qty_base::float8 as "qtyBase",
             u.code as "unitCode"
        from prod_packagings pk
        join prod_nodes tc on tc.id = pk.node_id

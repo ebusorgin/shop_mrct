@@ -3,12 +3,26 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { norm } from '../core/semi-calc';
 
+/** Единицы в названиях и запросе: «250g», «250 г», «250гр» ищут одно и то же. */
+const UNIT_FORMS: Record<string, string> = { kg: 'кг', 'кг': 'кг', gr: 'г', 'гр': 'г', g: 'г', 'г': 'г', ml: 'мл', 'мл': 'мл', l: 'л', 'л': 'л' };
+
+function searchText(value: string): string {
+  return norm(value).replace(
+    /(\d)\s*(kg|кг|gr|гр|g|г|ml|мл|l|л)(?=\s|$)/g,
+    (_, digit: string, unit: string) => digit + UNIT_FORMS[unit]
+  );
+}
+
 /** Вариант в поисковом выборе компонента состава. */
 export interface PickOption {
   id: number;
   label: string;
   /** Единица измерения входа — показываем рядом с названием. */
   unit?: string;
+  /** Цена позиции — для выбора нужной фасовки. */
+  price?: string;
+  /** Пояснение: например, «не в продаже». */
+  note?: string;
   /** Категория/пояснение второй строкой. */
   group?: string;
   /** Причина, по которой выбрать нельзя (например, цикл). */
@@ -30,6 +44,7 @@ export interface PickOption {
       @if (!open()) {
         <button type="button" class="pk-val" [class.empty]="!chosen()" [disabled]="disabled" (click)="show()">
           <span class="pk-txt">{{ chosen()?.label ?? placeholder }}</span>
+          @if (chosen()?.price) { <span class="pk-price">{{ chosen()!.price }}</span> }
           @if (chosen()?.unit) { <span class="pk-unit">{{ chosen()!.unit }}</span> }
           <span class="pk-caret">▾</span>
         </button>
@@ -50,8 +65,10 @@ export interface PickOption {
                 <span class="pk-txt">{{ o.label }}</span>
                 <span class="pk-side">
                   @if (o.group) { <span class="pk-grp">{{ o.group }}</span> }
+                  @if (o.price) { <span class="pk-price">{{ o.price }}</span> }
                   @if (o.unit) { <span class="pk-unit">{{ o.unit }}</span> }
                 </span>
+                @if (o.note) { <span class="pk-note">{{ o.note }}</span> }
                 @if (o.blocked) { <span class="pk-block">🚫 {{ o.blocked }}</span> }
               </button>
             } @empty {
@@ -83,6 +100,14 @@ export interface PickOption {
     .pk-unit {
       font-size: 11px; font-weight: 600; color: var(--accent); background: var(--accent-soft);
       border-radius: 999px; padding: 1px 7px; flex: none;
+    }
+    .pk-price {
+      font-size: 11px; font-weight: 600; color: var(--green); background: var(--green-soft);
+      border-radius: 999px; padding: 1px 7px; flex: none;
+    }
+    .pk-note {
+      flex-basis: 100%; font-size: 11px; color: var(--amber); background: var(--amber-soft);
+      border-radius: 6px; padding: 1px 7px; align-self: flex-start;
     }
     .pk-scrim { position: fixed; inset: 0; z-index: 70; }
     .pk-drop {
@@ -135,11 +160,11 @@ export class PickerComponent implements OnInit {
 
   /** Сначала совпадения в начале названия, затем вхождение; заблокированные — в конце. */
   visible = computed(() => {
-    const q = norm(this.query());
+    const q = searchText(this.query());
     const all = this.optionsSig();
     if (!q) return all;
-    const hit = all.filter((o) => norm(o.label).includes(q));
-    const starts = hit.filter((o) => norm(o.label).startsWith(q));
+    const hit = all.filter((o) => searchText(o.label).includes(q));
+    const starts = hit.filter((o) => searchText(o.label).startsWith(q));
     return [...starts, ...hit.filter((o) => !starts.includes(o))];
   });
 

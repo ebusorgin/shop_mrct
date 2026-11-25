@@ -16,7 +16,7 @@ import { FormsModule } from '@angular/forms';
 import { ApiService } from '../core/api.service';
 import { ToastService } from '../core/toast.service';
 import { MapNodeKind, Product, ProductCatalog, Unit } from '../core/models';
-import { calcProductionMap, ProductionMapCalc } from '../core/production-map-calc';
+import { batchMinOrder, calcProductionMap, ProductionMapCalc } from '../core/production-map-calc';
 import { fmtMoney, fmtQty, trim } from '../core/format';
 import { toBaseClient } from '../core/units';
 
@@ -588,7 +588,8 @@ function inkOn(hex: string): string {
                         </select>
                       </label>
                       <label class="f">Порция
-                        <input type="number" min="0" step="any" [ngModel]="out.portionQty" (ngModelChange)="patchNode(out.uid, 'portionQty', $event)" />
+                        <input type="number" min="0" step="any" [ngModel]="out.portionQty" (ngModelChange)="patchNode(out.uid, 'portionQty', $event)"
+                               (blur)="alignNodeMins(out.uid)" />
                       </label>
                       @if (out.packagings.length) {
                         <label class="f grow req">
@@ -640,7 +641,8 @@ function inkOn(hex: string): string {
                         </select>
                       </label>
                       <label class="f">Порция
-                        <input type="number" min="0" step="any" [ngModel]="n.portionQty" (ngModelChange)="patchNode(n.uid, 'portionQty', $event)" />
+                        <input type="number" min="0" step="any" [ngModel]="n.portionQty" (ngModelChange)="patchNode(n.uid, 'portionQty', $event)"
+                               (blur)="alignNodeMins(n.uid)" />
                       </label>
                       @if (n.packagings.length) {
                         <label class="f grow req">
@@ -715,7 +717,8 @@ function inkOn(hex: string): string {
           <div class="pack-card">
             <div class="pack-line">
               <input class="pack-qty" type="number" min="0" step="any" placeholder="выход"
-                     [ngModel]="p.qtyBase" (ngModelChange)="patchPack(out.uid, p.uid, 'qtyBase', $event)" />
+                     [ngModel]="p.qtyBase" (ngModelChange)="patchPack(out.uid, p.uid, 'qtyBase', $event)"
+                     (blur)="normalizePackMin(out.uid, p.uid)" />
               <span class="inp-unit">{{ out.unitCode }}</span>
               <input class="pack-price" [class.missing]="!packPriceOk(p)" type="number" min="0" step="any" placeholder="цена *"
                      [ngModel]="p.price" (ngModelChange)="patchPack(out.uid, p.uid, 'price', $event)" />
@@ -726,7 +729,9 @@ function inkOn(hex: string): string {
             </div>
             <div class="pack-line">
               <input class="pack-min" type="number" min="1" step="1" placeholder="мин"
-                     [ngModel]="p.minOrder" (ngModelChange)="patchPack(out.uid, p.uid, 'minOrder', $event)" />
+                     title="Минимум упаковок, кратный одной партии: выход рецептуры ÷ выход фасовки"
+                     [ngModel]="p.minOrder" (ngModelChange)="patchPack(out.uid, p.uid, 'minOrder', $event)"
+                     (blur)="normalizePackMin(out.uid, p.uid)" />
               <input class="pack-cost" type="number" min="0" step="any" placeholder="себест."
                      [ngModel]="p.cost" (ngModelChange)="patchPack(out.uid, p.uid, 'cost', $event)" />
               <select class="pack-basis" [ngModel]="p.priceBasis" (ngModelChange)="patchPack(out.uid, p.uid, 'priceBasis', $event)">
@@ -1873,7 +1878,7 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
             uid: p.id,
             name: p.name || `${p.qtyBase} ${n.unitCode}`,
             qtyBase: String(p.qtyBase),
-            minOrder: String(p.minOrder ?? 1),
+            minOrder: String(batchMinOrder(num(n.portionQty), Number(p.qtyBase), Number(p.minOrder) || 1)),
             isDefault: p.isDefault,
             price: p.price ? String(p.price) : '',
             priceBasis: p.priceBasis,
@@ -2318,7 +2323,7 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
           uid: p.uid,
           name: p.name,
           qtyBase: num(p.qtyBase),
-          minOrder: Math.max(1, Math.round(num(p.minOrder) || 1)),
+          minOrder: batchMinOrder(num(n.portionQty), num(p.qtyBase), num(p.minOrder) || 1),
           isDefault: p.isDefault,
           price: num(p.price),
           priceBasis: p.priceBasis,
@@ -2594,6 +2599,31 @@ export class ProductionMapComponent implements OnInit, AfterViewInit, OnDestroy 
           }),
         };
       })
+    );
+  }
+
+  /** Мин. заказ — целое число партий: ceil(выход рецептуры / выход фасовки). */
+  normalizePackMin(nodeUid: number, packUid: number): void {
+    const node = this.nodes().find((n) => n.uid === nodeUid);
+    const pack = node?.packagings.find((p) => p.uid === packUid);
+    if (!node || !pack) return;
+    const minOrder = batchMinOrder(num(node.portionQty), num(pack.qtyBase), num(pack.minOrder) || 1);
+    if (String(minOrder) !== pack.minOrder) this.patchPack(nodeUid, packUid, 'minOrder', minOrder);
+  }
+
+  alignNodeMins(nodeUid: number): void {
+    this.nodes.update((list) =>
+      list.map((n) =>
+        n.uid === nodeUid
+          ? {
+              ...n,
+              packagings: n.packagings.map((p) => ({
+                ...p,
+                minOrder: String(batchMinOrder(num(n.portionQty), num(p.qtyBase), num(p.minOrder) || 1)),
+              })),
+            }
+          : n
+      )
     );
   }
 

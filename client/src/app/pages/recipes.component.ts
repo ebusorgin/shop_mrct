@@ -22,6 +22,7 @@ import {
   Unit,
 } from '../core/models';
 import { fmtQty, httpErr } from '../core/format';
+import { batchMinOrder } from '../core/production-map-calc';
 import { toBaseClient } from '../core/units';
 import { SearchOption, SearchSelectComponent } from '../shared/search-select.component';
 import { ProductCardComponent, ProductCardItem } from '../shared/product-card.component';
@@ -553,7 +554,8 @@ interface EditorSnapshot {
               <div class="sum-output">
                 <label class="f">Выход *
                   <input type="number" min="0" step="any" [ngModel]="draftPortionQty()"
-                         (ngModelChange)="setDraftPortionQty($event)" />
+                         (ngModelChange)="setDraftPortionQty($event)"
+                         (blur)="alignMinOrders()" />
                 </label>
                 <label class="f">Единица
                   <select [ngModel]="draftUnitId()" (ngModelChange)="draftUnitId.set($event)">
@@ -885,7 +887,9 @@ interface EditorSnapshot {
                           ?
                           <span class="hint-pop">
                             <b>Минимальный заказ</b>
-                            Сколько упаковок минимум можно заказать магазину. Целое число от 1.
+                            Сколько упаковок минимум можно заказать магазину. Всегда кратно
+                            одной партии: выход рецептуры ÷ выход фасовки, округление вверх.
+                            Целое число от 1.
                           </span>
                         </span>
                       </th>
@@ -958,11 +962,13 @@ interface EditorSnapshot {
                         </td>
                         <td class="num">
                           <input type="number" min="0" step="any" [ngModel]="p.qtyBase"
-                                 (ngModelChange)="patchPackaging(i, 'qtyBase', $event)" />
+                                 (ngModelChange)="patchPackaging(i, 'qtyBase', $event)"
+                                 (blur)="normalizeMinOrder(i)" />
                         </td>
                         <td class="num">
                           <input type="number" min="1" step="1" [ngModel]="p.minOrder"
-                                 (ngModelChange)="patchPackaging(i, 'minOrder', $event)" />
+                                 (ngModelChange)="patchPackaging(i, 'minOrder', $event)"
+                                 (blur)="normalizeMinOrder(i)" />
                         </td>
                         <td class="num">
                           <input type="number" min="0" step="0.01" [ngModel]="p.price"
@@ -1735,17 +1741,20 @@ export class RecipesComponent implements OnInit {
     this.draftPortionQty.set(Number(node?.portionQty) || 0);
     this.draftUnitId.set(node?.unitId ?? null);
     this.draftPackagings.set(
-      (node?.packagings ?? []).map((p) => ({
-        uid: p.id,
-        qtyBase: Number(p.qtyBase),
-        minOrder: Number(p.minOrder) || 1,
-        price: Number(p.price) || 0,
-        priceBasis: p.priceBasis,
-        cost: Number(p.cost) || 0,
-        available: p.available !== false,
-        isDefault: !!p.isDefault,
-        tareProductIds: [...(p.tareProductIds ?? [])],
-      }))
+      (node?.packagings ?? []).map((p) => {
+        const qtyBase = Number(p.qtyBase);
+        return {
+          uid: p.id,
+          qtyBase,
+          minOrder: batchMinOrder(Number(node?.portionQty) || 0, qtyBase, Number(p.minOrder) || 1),
+          price: Number(p.price) || 0,
+          priceBasis: p.priceBasis,
+          cost: Number(p.cost) || 0,
+          available: p.available !== false,
+          isDefault: !!p.isDefault,
+          tareProductIds: [...(p.tareProductIds ?? [])],
+        };
+      })
     );
     this.draft.set(
       (op?.inputs ?? []).map((i) => ({
@@ -1840,6 +1849,21 @@ export class RecipesComponent implements OnInit {
         const n = Number(value);
         return { ...p, [field]: Number.isFinite(n) ? n : 0 } as DraftPackaging;
       })
+    );
+  }
+
+  /** Мин. заказ — целое число партий рецептуры; выравниваем после правки выхода или фасовки. */
+  normalizeMinOrder(index: number): void {
+    const p = this.draftPackagings()[index];
+    if (!p) return;
+    const minOrder = batchMinOrder(this.draftPortionQty(), p.qtyBase, p.minOrder);
+    if (minOrder !== p.minOrder) this.patchPackaging(index, 'minOrder', minOrder);
+  }
+
+  alignMinOrders(): void {
+    const portion = this.draftPortionQty();
+    this.draftPackagings.update((list) =>
+      list.map((p) => ({ ...p, minOrder: batchMinOrder(portion, p.qtyBase, p.minOrder) }))
     );
   }
 
@@ -2619,7 +2643,7 @@ export class RecipesComponent implements OnInit {
       uid: p.uid,
       name: `${Number(p.qtyBase.toFixed(3))} ${this.node()?.unitCode ?? ''}`.trim(),
       qtyBase: p.qtyBase,
-      minOrder: p.minOrder,
+      minOrder: batchMinOrder(this.draftPortionQty(), p.qtyBase, p.minOrder),
       isDefault: p.isDefault,
       price: p.price,
       priceBasis: p.priceBasis,

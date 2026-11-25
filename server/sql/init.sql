@@ -1421,3 +1421,21 @@ comment on column waybills.accepted_at is 'Когда накладная при�
 comment on column waybills.reversed_by is 'Кто отменил накладную (users.id).';
 comment on column waybills.reversed_login is 'Логин отменившего.';
 comment on column waybills.reversed_at is 'Когда накладная отменена.';
+
+-- Минимальный заказ всегда кратен партии: ceil(выход рецептуры / выход фасовки).
+-- Идемпотентно выравнивает ранее сохранённые значения при каждом запуске.
+update prod_packagings pk
+   set min_order = batch.qty * greatest(1, ceil(pk.min_order::numeric / batch.qty)::int)
+  from (
+    select pk2.id,
+           greatest(1, ceil(n.portion_qty / pk2.qty_base))::int as qty
+      from prod_packagings pk2
+      join prod_nodes n on n.id = pk2.node_id
+     where n.kind <> 'product'
+       and not n.archived
+       and not pk2.archived
+       and n.portion_qty > 0
+       and pk2.qty_base > 0
+  ) batch
+ where batch.id = pk.id
+   and pk.min_order <> batch.qty * greatest(1, ceil(pk.min_order::numeric / batch.qty)::int);
